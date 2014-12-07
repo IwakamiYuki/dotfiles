@@ -15,7 +15,7 @@ au BufWrite /private/etc/pw.* set nowritebackup
 colorscheme desert
 syntax on
 
-" listの設定
+" タブの表示
 set list
 set listchars=tab:▸\ ,eol:↲,extends:❯,precedes:❮
 
@@ -31,7 +31,7 @@ set smartcase
 set wrapscan
 
 " macとクリップボードを連携する
-set clipboard+=unnamed
+set clipboard=unnamed,autoselect
 
 set scrolloff=8               " 上下8行の視界を確保
 set sidescrolloff=16           " 左右スクロール時の視界を確保
@@ -68,6 +68,19 @@ set cursorline
 set laststatus=2
 set cmdheight=2
 
+" 前回終了したカーソル行に移動
+autocmd BufReadPost * if line("'\"") > 0 && line("'\"") <= line("$") | exe "normal g`\"" | endif
+
+"日本語入力リセット
+au BufNewFile,BufRead * set iminsert=0
+
+"入力モード時、ステータスラインのカラーを変更
+augroup InsertHook
+autocmd!
+autocmd InsertEnter * highlight StatusLine guifg=#ccdc90 guibg=#2E4340
+autocmd InsertLeave * highlight StatusLine guifg=#2E4340 guibg=#ccdc90
+augroup END
+
 " w!! でスーパーユーザーとして保存（sudoが使える環境限定）
 cmap w!! w !sudo tee > /dev/null %
 " ESCを二回押すことでハイライトを消す
@@ -85,7 +98,23 @@ nnoremap g# g#zz
 " j の二度押しでノーマルモードへ戻る
 inoremap jj <Esc>
 
+" ノーマルモードではセミコロンをコロンに。
+nnoremap ; :
+
 imap <C-j> <esc>
+
+" insert mode での移動
+inoremap <C-e> <END>
+inoremap <C-a> <HOME>
+inoremap <C-j> <Down>
+inoremap <C-k> <Up>
+inoremap <C-h> <Left>
+inoremap <C-l> <Right>
+inoremap <ESC> <ESC>:set iminsert=0<CR> " ESCでIMEを確実にOFF
+" 行単位で移動(1行が長い場合に便利)
+nnoremap j gj
+nnoremap k gk
+
 
 "--------------------------------------------------------------------------
 " ペーストする際に、自動でpaste modeにする
