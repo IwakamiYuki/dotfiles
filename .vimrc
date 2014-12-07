@@ -11,22 +11,34 @@ au BufWrite /private/tmp/crontab.* set nowritebackup
 " Don't write backup file if vim is being called by "chpass"
 au BufWrite /private/etc/pw.* set nowritebackup
 
+" コードの色分け
 colorscheme desert
 syntax on
 
-"set paste
-
+" listの設定
 set list
 set listchars=tab:▸\ ,eol:↲,extends:❯,precedes:❮
-set ruler
+
 set incsearch
 set hlsearch
 set cindent
+
+" 大文字/小文字の区別なく検索する
+set ignorecase
+" 検索文字列に大文字が含まれている場合は区別して検索する
+set smartcase
+" 検索時に最後まで行ったら最初に戻る
+set wrapscan
+
+" macとクリップボードを連携する
+set clipboard+=unnamed
+
 set scrolloff=8               " 上下8行の視界を確保
 set sidescrolloff=16           " 左右スクロール時の視界を確保
 set sidescroll=1               " 左右スクロールは一文字づつ行う
 
 set autoindent
+" インデントをスペース2つ分に設定
 set tabstop=2
 set shiftwidth=2
 
@@ -49,7 +61,9 @@ set shiftround
 
 " 行番号を表示
 set number
+" 編集中のファイル名を表示
 set title
+
 set cursorline
 set laststatus=2
 set cmdheight=2
@@ -71,6 +85,7 @@ nnoremap g# g#zz
 " j の二度押しでノーマルモードへ戻る
 inoremap jj <Esc>
 
+imap <C-j> <esc>
 
 "--------------------------------------------------------------------------
 " ペーストする際に、自動でpaste modeにする
