@@ -68,6 +68,10 @@ set cursorline
 set laststatus=2
 set cmdheight=2
 
+" 選択している範囲のインデントを帰るときに選択が外されない
+vnoremap > >gv
+vnoremap < <gv
+
 " 前回終了したカーソル行に移動
 autocmd BufReadPost * if line("'\"") > 0 && line("'\"") <= line("$") | exe "normal g`\"" | endif
 
