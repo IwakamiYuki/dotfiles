@@ -75,8 +75,12 @@ vnoremap < <gv
 " 前回終了したカーソル行に移動
 autocmd BufReadPost * if line("'\"") > 0 && line("'\"") <= line("$") | exe "normal g`\"" | endif
 
-"日本語入力リセット
-au BufNewFile,BufRead * set iminsert=0
+" insertモードを抜けるとIMEオフ
+set noimdisable
+set iminsert=0 imsearch=0
+set noimcmdline
+inoremap <silent> <ESC> <ESC>:set iminsert=0<CR>
+
 
 "入力モード時、ステータスラインのカラーを変更
 augroup InsertHook
@@ -177,4 +181,5 @@ set mouse=a
 NeoBundle "scrooloose/syntastic"
 
 NeoBundle 'hail2u/vim-css3-syntax'
+
 
