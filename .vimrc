@@ -150,6 +150,10 @@ vnoremap ' "zdi'<C-R>z'<ESC>
 " 保存時に行末の空白を除去する
 autocmd BufWritePre * :%s/\s\+$//ge
 
+"<space>j, <space>kで画面送り
+noremap <Space>j <C-f>
+noremap <Space>k <C-b>
+
 "--------------------------------------------------------------------------
 " ペーストする際に、自動でpaste modeにする
 if &term =~ "xterm"
