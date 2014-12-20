@@ -125,6 +125,29 @@ inoremap <ESC> <ESC>:set iminsert=0<CR> " ESCでIMEを確実にOFF
 nnoremap j gj
 nnoremap k gk
 
+"  Insert mode中で単語単位/行単位の削除をアンドゥ可能にする
+inoremap <C-u>  <C-g>u<C-u>
+inoremap <C-w>  <C-g>u<C-w>
+
+" XMLの閉タグを自動挿入
+augroup MyXML
+  autocmd!
+  autocmd Filetype xml inoremap <buffer> </ </<C-x><C-o>
+augroup END
+
+" 括弧を自動補完
+inoremap { {}<LEFT>
+inoremap [ []<LEFT>
+inoremap ( ()<LEFT>
+inoremap " ""<LEFT>
+inoremap ' ''<LEFT>
+vnoremap { "zdi^V{<C-R>z}<ESC>
+vnoremap [ "zdi^V[<C-R>z]<ESC>
+vnoremap ( "zdi^V(<C-R>z)<ESC>
+vnoremap " "zdi^V"<C-R>z^V"<ESC>
+vnoremap ' "zdi'<C-R>z'<ESC>
+
+
 
 "--------------------------------------------------------------------------
 " ペーストする際に、自動でpaste modeにする
