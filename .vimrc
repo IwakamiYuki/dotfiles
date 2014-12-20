@@ -154,6 +154,15 @@ autocmd BufWritePre * :%s/\s\+$//ge
 noremap <Space>j <C-f>
 noremap <Space>k <C-b>
 
+"ビジュアルモード時vで行末まで選択
+vnoremap v $h
+
+"; to :
+nnoremap ; :
+
+"入力モードで削除
+inoremap <C-x> <Del>
+
 "--------------------------------------------------------------------------
 " ペーストする際に、自動でpaste modeにする
 if &term =~ "xterm"
