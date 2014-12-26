@@ -16,8 +16,8 @@ colorscheme desert
 syntax on
 
 " タブの表示
-set list
-set listchars=tab:▸\ ,eol:↲,extends:❯,precedes:❮
+"set list
+"set listchars=tab:▸\ ,eol:↲,extends:❯,precedes:❮
 
 set incsearch
 set hlsearch
@@ -51,7 +51,7 @@ set vb t_vb=
 set novisualbell
 
 " 対応括弧に<と>のペアを追加
-set matchpairs& matchpairs+=<:>
+" set matchpairs& matchpairs+=<:>
 " 対応括弧をハイライト表示する
 set showmatch
 " 対応括弧の表示秒数を3秒にする
@@ -136,16 +136,16 @@ augroup MyXML
 augroup END
 
 " 括弧を自動補完
-inoremap { {}<LEFT>
-inoremap [ []<LEFT>
-inoremap ( ()<LEFT>
-inoremap " ""<LEFT>
-inoremap ' ''<LEFT>
-vnoremap { "zdi^V{<C-R>z}<ESC>
-vnoremap [ "zdi^V[<C-R>z]<ESC>
-vnoremap ( "zdi^V(<C-R>z)<ESC>
-vnoremap " "zdi^V"<C-R>z^V"<ESC>
-vnoremap ' "zdi'<C-R>z'<ESC>
+"inoremap { {}<LEFT>
+"inoremap [ []<LEFT>
+"inoremap ( ()<LEFT>
+"inoremap " ""<LEFT>
+"inoremap ' ''<LEFT>
+"vnoremap { "zdi^V{<C-R>z}<ESC>
+"vnoremap [ "zdi^V[<C-R>z]<ESC>
+"vnoremap ( "zdi^V(<C-R>z)<ESC>
+"vnoremap " "zdi^V"<C-R>z^V"<ESC>
+"vnoremap ' "zdi'<C-R>z'<ESC>
 
 " 保存時に行末の空白を除去する
 autocmd BufWritePre * :%s/\s\+$//ge
