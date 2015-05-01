@@ -22,6 +22,7 @@ syntax on
 set incsearch
 set hlsearch
 set cindent
+filetype indent off
 
 " 大文字/小文字の区別なく検索する
 set ignorecase
@@ -136,16 +137,16 @@ augroup MyXML
 augroup END
 
 " 括弧を自動補完
-"inoremap { {}<LEFT>
-"inoremap [ []<LEFT>
-"inoremap ( ()<LEFT>
-"inoremap " ""<LEFT>
-"inoremap ' ''<LEFT>
-"vnoremap { "zdi^V{<C-R>z}<ESC>
-"vnoremap [ "zdi^V[<C-R>z]<ESC>
-"vnoremap ( "zdi^V(<C-R>z)<ESC>
-"vnoremap " "zdi^V"<C-R>z^V"<ESC>
-"vnoremap ' "zdi'<C-R>z'<ESC>
+inoremap { {}<LEFT>
+inoremap [ []<LEFT>
+inoremap ( ()<LEFT>
+inoremap " ""<LEFT>
+inoremap ' ''<LEFT>
+vnoremap { "zdi^V{<C-R>z}<ESC>
+vnoremap [ "zdi^V[<C-R>z]<ESC>
+vnoremap ( "zdi^V(<C-R>z)<ESC>
+vnoremap " "zdi^V"<C-R>z^V"<ESC>
+vnoremap ' "zdi'<C-R>z'<ESC>
 
 " 保存時に行末の空白を除去する
 autocmd BufWritePre * :%s/\s\+$//ge
@@ -162,6 +163,20 @@ nnoremap ; :
 
 "入力モードで削除
 inoremap <C-x> <Del>
+
+".swapファイルを作らない
+set noswapfile
+
+" 右下に表示される行・列の番号を表示する
+set ruler
+
+if has('multi_byte_ime') || has('xim')
+    " 日本語入力ON時のカーソルの色を設定
+    highlight CursorIM guibg=Purple guifg=NONE
+endif
+
+" ヘルプを画面いっぱいに開く
+set helpheight=999
 
 "--------------------------------------------------------------------------
 " ペーストする際に、自動でpaste modeにする
@@ -212,15 +227,65 @@ set number
 
 set title
 set cursorline
+" ステータス行を常に表示
 set laststatus=2
+" メッセージ表示欄を2行確保
 set cmdheight=2
-
 
 set mouse=a
 
+
+""""""""""""""""""""""""""""""
+"挿入モード時、ステータスラインの色を変更
+""""""""""""""""""""""""""""""
+let g:hi_insert = 'highlight StatusLine guifg=darkblue guibg=darkyellow gui=none ctermfg=blue ctermbg=yellow cterm=none'
+
+if has('syntax')
+  augroup InsertHook
+    autocmd!
+    autocmd InsertEnter * call s:StatusLine('Enter')
+    autocmd InsertLeave * call s:StatusLine('Leave')
+  augroup END
+endif
+
+let s:slhlcmd = ''
+function! s:StatusLine(mode)
+  if a:mode == 'Enter'
+    silent! let s:slhlcmd = 'highlight ' . s:GetHighlight('StatusLine')
+    silent exec g:hi_insert
+  else
+    highlight clear StatusLine
+    silent exec s:slhlcmd
+  endif
+endfunction
+
+function! s:GetHighlight(hi)
+  redir => hl
+  exec 'highlight '.a:hi
+  redir END
+  let hl = substitute(hl, '[\r\n]', '', 'g')
+  let hl = substitute(hl, 'xxx', '', '')
+  return hl
+endfunction
+
+
+" set: dictionary= で辞書ファイルを指定
+" php dict.php | sort > ~/.vim/dictionaries/php.dict
+" Neobundleinstall!
+autocmd BufRead *.php\|*.ctp\|*.tpl :set dictionary=~/.vim/dictionaries/php.dict filetype=php
+
+NeoBundle 'Shougo/neocomplcache'
+
+let g:neocomplcache_enable_at_startup = 1
+let g:neocomplcache_enable_camel_case_completion = 1
+let g:neocomplcache_enable_underbar_completion = 1
+let g:neocomplcache_smart_case = 1
+let g:neocomplcache_min_syntax_length = 3
+let g:neocomplcache_manual_completion_start_length = 0
+let g:neocomplcache_caching_percent_in_statusline = 1
+let g:neocomplcache_enable_skip_completion = 1
+let g:neocomplcache_skip_input_time = '0.5'
+
+
 NeoBundle "scrooloose/syntastic"
-
 NeoBundle 'hail2u/vim-css3-syntax'
-
-
-
