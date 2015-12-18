@@ -162,8 +162,15 @@ vnoremap v $h
 "; to :
 nnoremap ; :
 
+" 入力補完を常に表示
+set completeopt=menuone
+for k in split("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_",'\zs')
+	exec "imap <expr> " . k . " pumvisible() ? '" . k . "' : '" . k . "\<C-X>\<C-P>\<C-N>'"
+endfor
+
+
 "入力モードで削除
-inoremap <C-x> <Del>
+" inoremap <C-x> <Del>
 
 ".swapファイルを作らない
 set noswapfile
