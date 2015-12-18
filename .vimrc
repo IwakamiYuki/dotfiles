@@ -14,6 +14,7 @@ au BufWrite /private/etc/pw.* set nowritebackup
 " コードの色分け
 colorscheme desert
 syntax on
+set synmaxcol=200
 
 " タブの表示
 "set list
@@ -65,7 +66,7 @@ set number
 " 編集中のファイル名を表示
 set title
 
-set cursorline
+" set cursorline
 set laststatus=2
 set cmdheight=2
 
