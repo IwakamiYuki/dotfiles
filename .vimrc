@@ -214,22 +214,6 @@ if has('vim_starting')
 endif
 
 
-call neobundle#rc(expand('~/.vim/bundle/'))
-
-filetype plugin indent on     " Required!
-
-" Installation check.
-if neobundle#exists_not_installed_bundles()
-  echomsg 'Not installed bundles : ' .
-        \ string(neobundle#get_not_installed_bundle_names())
-  echomsg 'Please execute ":NeoBundleInstall" command.'
-  "finish
-endif
-
-NeoBundle 'editorconfig/editorconfig-vim'
-
-execute pathogen#infect()
-
 " 行番号を表示
 set number
 
@@ -278,11 +262,12 @@ endfunction
 
 
 " set: dictionary= で辞書ファイルを指定
-" php dict.php | sort > ~/.vim/dictionaries/php.dict
+" php -r '$f=get_defined_functions();echo join("\n",$f["internal"]);'|sort > ~/.vim/dict/php.dict
+autocmd FileType php,ctp :set dictionary=~/.vim/dict/php.dict
+
 " Neobundleinstall!
 autocmd BufRead *.php\|*.ctp\|*.tpl :set dictionary=~/.vim/dictionaries/php.dict filetype=php
 
-NeoBundle 'Shougo/neocomplcache'
 
 let g:neocomplcache_enable_at_startup = 1
 let g:neocomplcache_enable_camel_case_completion = 1
@@ -294,6 +279,24 @@ let g:neocomplcache_caching_percent_in_statusline = 1
 let g:neocomplcache_enable_skip_completion = 1
 let g:neocomplcache_skip_input_time = '0.5'
 
+call neobundle#begin(expand('~/.vim/bundle'))
+	NeoBundle 'Shougo/neocomplcache'
+	NeoBundle "scrooloose/syntastic"
+	NeoBundle 'hail2u/vim-css3-syntax'
+	NeoBundle 'editorconfig/editorconfig-vim'
 
-NeoBundle "scrooloose/syntastic"
-NeoBundle 'hail2u/vim-css3-syntax'
+"call neobundle#rc(expand('~/.vim/bundle/'))
+filetype plugin indent on     " Required!
+
+" Installation check.
+if neobundle#exists_not_installed_bundles()
+  echomsg 'Not installed bundles : ' .
+        \ string(neobundle#get_not_installed_bundle_names())
+  echomsg 'Please execute ":NeoBundleInstall" command.'
+  "finish
+endif
+"execute pathogen#infect()
+call neobundle#end()
+
+
+
