@@ -64,7 +64,7 @@ set cmdheight=2
 set number
 
 set title
-set cursorline
+" set cursorline "処理が重くなるのでコメントアウト
 
 " ステータス行を常に表示
 set laststatus=2
