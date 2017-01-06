@@ -7,8 +7,10 @@ au BufWrite /private/tmp/crontab.* set nowritebackup
 au BufWrite /private/etc/pw.* set nowritebackup
 
 colorscheme desert
+" ハイライト設定
 syntax on
-set synmaxcol=200
+" 1000文字くらいまで頑張ってもらう
+set synmaxcol=1000
 
 set incsearch
 set hlsearch
@@ -23,7 +25,7 @@ set smartcase
 set wrapscan
 
 " macとクリップボードを連携する
-set clipboard=unnamed,autoselect
+set clipboard+=unnamed
 
 set scrolloff=8               " 上下8行の視界を確保
 set sidescrolloff=16           " 左右スクロール時の視界を確保
@@ -125,7 +127,8 @@ inoremap <C-j> <Down>
 inoremap <C-k> <Up>
 inoremap <C-h> <Left>
 inoremap <C-l> <Right>
-inoremap <ESC> <ESC>:set iminsert=0<CR> " ESCでIMEを確実にOFF
+" ESCでIMEを確実にOFF
+inoremap <ESC> <ESC>:set iminsert=0<CR>
 " 行単位で移動(1行が長い場合に便利)
 nnoremap j gj
 nnoremap k gk
