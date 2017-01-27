@@ -13,4 +13,3 @@ git clone git://github.com/Shougo/neobundle.vim ~/.vim/bundle/neobundle.vim
 
 ## tmux
 brew install reattach-to-user-namespace
-
