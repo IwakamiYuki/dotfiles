@@ -127,6 +127,7 @@ inoremap <C-j> <Down>
 inoremap <C-k> <Up>
 inoremap <C-h> <Left>
 inoremap <C-l> <Right>
+
 " ESCでIMEを確実にOFF
 inoremap <ESC> <ESC>:set iminsert=0<CR>
 " 行単位で移動(1行が長い場合に便利)
@@ -272,6 +273,9 @@ call neobundle#begin(expand('~/.vim/bundle'))
 	NeoBundle "scrooloose/syntastic"
 	NeoBundle 'hail2u/vim-css3-syntax'
 	NeoBundle 'editorconfig/editorconfig-vim'
+	NeoBundle 'tpope/vim-markdown'
+	NeoBundle 'kannokanno/previm'
+	NeoBundle 'tyru/open-browser.vim'
 
 "call neobundle#rc(expand('~/.vim/bundle/'))
 filetype plugin indent on     " Required!
@@ -286,3 +290,13 @@ endif
 "execute pathogen#infect()
 call neobundle#end()
 
+
+ """ markdown {{{
+	autocmd BufRead,BufNewFile *.mkd  set filetype=markdown
+	autocmd BufRead,BufNewFile *.md  set filetype=markdown
+	" Need: kannokanno/previm
+	nnoremap <silent> <C-p> :PrevimOpen<CR> " Ctrl-pでプレビュー
+	" 自動で折りたたまないようにする
+	let g:vim_markdown_folding_disabled=1
+	let g:previm_enable_realtime = 1
+" }}}
