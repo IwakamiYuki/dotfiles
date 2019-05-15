@@ -22,4 +22,5 @@ git clone git://github.com/Shougo/neobundle.vim ~/.vim/bundle/neobundle.vim
 
 ```
 brew install reattach-to-user-namespace
+go get -u github.com/Code-Hex/battery/cmd/battery
 ```
