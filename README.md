@@ -24,3 +24,5 @@ git clone git://github.com/Shougo/neobundle.vim ~/.vim/bundle/neobundle.vim
 brew install reattach-to-user-namespace
 go get -u github.com/Code-Hex/battery/cmd/battery
 ```
+※wifiコマンドは以下からコピペして/usr/local/bin/wifiなどに配置する
+https://github.com/b4b4r07/dotfiles/blob/master/.tmux/bin/wifi
