@@ -4,6 +4,7 @@
 ln -sf ~/dotfiles/.vimrc ~/.vimrc
 ln -sf ~/dotfiles/.tmux.conf ~/.tmux.conf
 ln -s ~/.vimrc ~/.ideavimrc
+ln -sf ~/dotfiles/.zshrc ~/.zshrc
 ```
 
 ※homeディレクトリにクローンした場合の手順になる
