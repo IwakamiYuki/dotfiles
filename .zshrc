@@ -16,4 +16,4 @@ SAVEHIST=1000000
 ## Aliasの設定
 alias ls='ls --color=auto'
 alias l='ls'
-alias ll='ls -l'
+alias ll='ls -la'
