@@ -169,12 +169,6 @@ vnoremap v $h
 "; to :
 nnoremap ; :
 
-" 入力補完を常に表示
-set completeopt=menuone
-for k in split("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_",'\zs')
-	exec "imap <expr> " . k . " pumvisible() ? '" . k . "' : '" . k . "\<C-X>\<C-P>\<C-N>'"
-endfor
-
 ".swapファイルを作らない
 set noswapfile
 
@@ -254,49 +248,56 @@ endfunction
 " php -r '$f=get_defined_functions();echo join("\n",$f["internal"]);'|sort > ~/.vim/dict/php.dict
 autocmd FileType php,ctp :set dictionary=~/.vim/dict/php.dict
 
-" Neobundleinstall!
-autocmd BufRead *.php\|*.ctp\|*.tpl :set dictionary=~/.vim/dictionaries/php.dict filetype=php
+" "" Neobundleinstall!
+" "autocmd BufRead *.php\|*.ctp\|*.tpl :set dictionary=~/.vim/dictionaries/php.dict filetype=php
+" "
+" "
+" "let g:neocomplcache_enable_at_startup = 1
+" "let g:neocomplcache_enable_camel_case_completion = 1
+" "let g:neocomplcache_enable_underbar_completion = 1
+" "let g:neocomplcache_smart_case = 1
+" "let g:neocomplcache_min_syntax_length = 3
+" "let g:neocomplcache_manual_completion_start_length = 0
+" "let g:neocomplcache_caching_percent_in_statusline = 1
+" "let g:neocomplcache_enable_skip_completion = 1
+" "let g:neocomplcache_skip_input_time = '0.5'
+" "
+" "call neobundle#begin(expand('~/.vim/bundle'))
+" "	NeoBundle 'Shougo/neocomplcache'
+" "	NeoBundle "scrooloose/syntastic"
+" "	NeoBundle 'hail2u/vim-css3-syntax'
+" "	NeoBundle 'editorconfig/editorconfig-vim'
+" "	NeoBundle 'tpope/vim-markdown'
+" "	NeoBundle 'kannokanno/previm'
+" "	NeoBundle 'tyru/open-browser.vim'
+" "
+" ""call neobundle#rc(expand('~/.vim/bundle/'))
+" "filetype plugin indent on     " Required!
+" "
+" "" Installation check.
+" "if neobundle#exists_not_installed_bundles()
+" "  echomsg 'Not installed bundles : ' .
+" "        \ string(neobundle#get_not_installed_bundle_names())
+" "  echomsg 'Please execute ":NeoBundleInstall" command.'
+" "  "finish
+" "endif
+" ""execute pathogen#infect()
+" "call neobundle#end()
+" "
+" "
+" " """ markdown {{{
+" "	autocmd BufRead,BufNewFile *.mkd  set filetype=markdown
+" "	autocmd BufRead,BufNewFile *.md  set filetype=markdown
+" "	" Need: kannokanno/previm
+" "	nnoremap <silent> <C-p> :PrevimOpen<CR> " Ctrl-pでプレビュー
+" "	" 自動で折りたたまないようにする
+" "	let g:vim_markdown_folding_disabled=1
+" "	let g:previm_enable_realtime = 1
+" "" }}}
 
 
-let g:neocomplcache_enable_at_startup = 1
-let g:neocomplcache_enable_camel_case_completion = 1
-let g:neocomplcache_enable_underbar_completion = 1
-let g:neocomplcache_smart_case = 1
-let g:neocomplcache_min_syntax_length = 3
-let g:neocomplcache_manual_completion_start_length = 0
-let g:neocomplcache_caching_percent_in_statusline = 1
-let g:neocomplcache_enable_skip_completion = 1
-let g:neocomplcache_skip_input_time = '0.5'
-
-call neobundle#begin(expand('~/.vim/bundle'))
-	NeoBundle 'Shougo/neocomplcache'
-	NeoBundle "scrooloose/syntastic"
-	NeoBundle 'hail2u/vim-css3-syntax'
-	NeoBundle 'editorconfig/editorconfig-vim'
-	NeoBundle 'tpope/vim-markdown'
-	NeoBundle 'kannokanno/previm'
-	NeoBundle 'tyru/open-browser.vim'
-
-"call neobundle#rc(expand('~/.vim/bundle/'))
-filetype plugin indent on     " Required!
-
-" Installation check.
-if neobundle#exists_not_installed_bundles()
-  echomsg 'Not installed bundles : ' .
-        \ string(neobundle#get_not_installed_bundle_names())
-  echomsg 'Please execute ":NeoBundleInstall" command.'
-  "finish
-endif
-"execute pathogen#infect()
-call neobundle#end()
-
-
- """ markdown {{{
-	autocmd BufRead,BufNewFile *.mkd  set filetype=markdown
-	autocmd BufRead,BufNewFile *.md  set filetype=markdown
-	" Need: kannokanno/previm
-	nnoremap <silent> <C-p> :PrevimOpen<CR> " Ctrl-pでプレビュー
-	" 自動で折りたたまないようにする
-	let g:vim_markdown_folding_disabled=1
-	let g:previm_enable_realtime = 1
-" }}}
+" 背景を透明にする"
+highlight Normal ctermbg=NONE guibg=NONE
+highlight NonText ctermbg=NONE guibg=NONE
+highlight SpecialKey ctermbg=NONE guibg=NONE
+highlight EndOfBuffer ctermbg=NONE guibg=NONE
