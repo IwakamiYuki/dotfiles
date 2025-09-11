@@ -6,7 +6,24 @@ set backspace=2
 au BufWrite /private/tmp/crontab.* set nowritebackup
 au BufWrite /private/etc/pw.* set nowritebackup
 
+" カラースキーム設定
 colorscheme desert
+" オレンジ系のカスタムハイライト設定
+highlight LineNr ctermfg=208
+highlight CursorLineNr ctermfg=214 cterm=bold
+highlight Statement ctermfg=208
+highlight Constant ctermfg=214
+highlight PreProc ctermfg=172
+highlight Type ctermfg=215
+highlight Special ctermfg=209
+highlight Comment ctermfg=180
+highlight StatusLine ctermbg=208 ctermfg=232
+highlight StatusLineNC ctermbg=238 ctermfg=208
+highlight VertSplit ctermfg=208 ctermbg=NONE
+highlight Search ctermbg=214 ctermfg=232
+highlight IncSearch ctermbg=172 ctermfg=232
+highlight Visual ctermbg=214 ctermfg=232
+highlight MatchParen ctermbg=172 ctermfg=232 cterm=bold
 " ハイライト設定
 syntax on
 " 1000文字くらいまで頑張ってもらう
@@ -213,7 +230,7 @@ endif
 """"""""""""""""""""""""""""""
 "挿入モード時、ステータスラインの色を変更
 """"""""""""""""""""""""""""""
-let g:hi_insert = 'highlight StatusLine guifg=darkblue guibg=darkyellow gui=none ctermfg=blue ctermbg=yellow cterm=none'
+let g:hi_insert = 'highlight StatusLine guifg=darkblue guibg=darkyellow gui=none ctermfg=232 ctermbg=214 cterm=none'
 
 if has('syntax')
   augroup InsertHook
