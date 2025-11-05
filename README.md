@@ -5,6 +5,7 @@ ln -sf ~/dotfiles/.vimrc ~/.vimrc
 ln -sf ~/dotfiles/.tmux.conf ~/.tmux.conf
 ln -s ~/.vimrc ~/.ideavimrc
 ln -sf ~/dotfiles/.zshrc ~/.zshrc
+ln -sf ~/dotfiles/.gitignore_global ~/.gitignore_global
 ln -sf ~/dotfiles/claude/agents ~/.claude/agents
 ln -sf ~/dotfiles/claude/commands ~/.claude/commands
 ln -sf ~/dotfiles/claude/scripts ~/.claude/scripts
