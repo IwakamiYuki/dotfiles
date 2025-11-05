@@ -1,4 +1,47 @@
 {
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.gs2.io)",
+      "mcp__serena__find_symbol",
+      "mcp__serena__search_for_pattern",
+      "mcp__serena__find_file",
+      "mcp__serena__get_symbols_overview",
+      "mcp__serena__insert_after_symbol",
+      "mcp__serena__think_about_task_adherence",
+      "Bash(grep:*)",
+      "mcp__serena__list_dir",
+      "mcp__serena__replace_symbol_body",
+      "mcp__serena__find_referencing_symbols",
+      "Bash(find:*)",
+      "mcp__serena__check_onboarding_performed",
+      "mcp__serena__think_about_collected_information",
+      "mcp__serena__think_about_whether_you_are_done",
+      "mcp__jetbrains__find_files_by_name_keyword",
+      "mcp__jetbrains__list_directory_tree",
+      "mcp__sequential-thinking__sequentialthinking",
+      "WebSearch",
+      "mcp__jetbrains__get_file_text_by_path",
+      "mcp__serena__read_memory",
+      "mcp__serena__list_memories",
+      "Bash(git log:*)",
+      "Bash(gh issue view:*)",
+      "Bash(awk:*)",
+      "Bash(rg:*)",
+      "Bash(ls -la:*)",
+      "Bash(xargs:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Read(//private/tmp/**)",
+      "Bash(cat:*)",
+      "Read(//tmp/**)",
+      "mcp__jetbrains__find_files_by_glob",
+      "mcp__serena__initial_instructions",
+      "mcp__jetbrains__search_in_files_by_text",
+      "Bash(make app-generate:*)",
+      "Bash(go build:*)"
+    ],
+    "deny": []
+	},
   "hooks": {
     "Stop": [
       {

@@ -5,10 +5,12 @@ ln -sf ~/dotfiles/.vimrc ~/.vimrc
 ln -sf ~/dotfiles/.tmux.conf ~/.tmux.conf
 ln -s ~/.vimrc ~/.ideavimrc
 ln -sf ~/dotfiles/.zshrc ~/.zshrc
+ln -sf ~/dotfiles/claude/agents ~/.claude/agents
 ln -sf ~/dotfiles/claude/commands ~/.claude/commands
 ln -sf ~/dotfiles/claude/scripts ~/.claude/scripts
 ln -sf ~/dotfiles/claude/skills ~/.claude/skills
 ln -sf ~/dotfiles/claude/settings.json ~/.claude/settings.json
+ln -sf ~/dotfiles/claude/CLAUDE.md ~/.claude/CLAUDE.md
 ```
 
 ※homeディレクトリにクローンした場合の手順になる
@@ -25,6 +27,7 @@ git clone git@github.com:Shougo/neobundle.vim.git ~/.vim/bundle/neobundle.vim
 
 ## tmuxの初期設定
 
+### 基本的な依存関係のインストール
 ```
 brew install reattach-to-user-namespace
 go get -u github.com/Code-Hex/battery/cmd/battery
