@@ -12,6 +12,7 @@
       "mcp__serena__list_dir",
       "mcp__serena__replace_symbol_body",
       "mcp__serena__find_referencing_symbols",
+      "mcp__serena__activate_project", 
       "Bash(find:*)",
       "mcp__serena__check_onboarding_performed",
       "mcp__serena__think_about_collected_information",
