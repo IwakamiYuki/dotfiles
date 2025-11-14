@@ -12,6 +12,8 @@ ln -sf ~/dotfiles/claude/scripts ~/.claude/scripts
 ln -sf ~/dotfiles/claude/skills ~/.claude/skills
 ln -sf ~/dotfiles/claude/settings.json ~/.claude/settings.json
 ln -sf ~/dotfiles/claude/CLAUDE.md ~/.claude/CLAUDE.md
+mkdir -p ~/Library/Application\ Support/lazygit
+ln -sf ~/dotfiles/lazygit/config.yml ~/Library/Application\ Support/lazygit/config.yml
 ```
 
 ※homeディレクトリにクローンした場合の手順になる
@@ -35,3 +37,14 @@ go get -u github.com/Code-Hex/battery/cmd/battery
 ```
 ※wifiコマンドは以下からコピペして/usr/local/bin/wifiなどに配置する
 https://github.com/b4b4r07/dotfiles/blob/master/.tmux/bin/wifi
+### オプション機能
+
+#### lazygitのインストール
+```bash
+brew install lazygit
+```
+`Ctrl-t g`でlazygitをポップアップで開けます
+
+#### tmux-aiの設定（必要な場合）
+tmux-aiを使用する場合は、別途インストールが必要です。
+

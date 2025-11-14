@@ -1,0 +1,74 @@
+git:
+  autocommit: false
+  paging:
+    colorArg: always
+    pager: delta --paging=never --true-color=auto --dark --side-by-side --line-numbers
+gui:
+  # オレンジ系カラースキーム（vim/tmuxと統一）
+  theme:
+    activeBorderColor:
+      - '#ff8700' # オレンジ（ANSI 208相当）
+      - bold
+    inactiveBorderColor:
+      - '#6c6c6c' # グレー
+    selectedLineBgColor:
+      - '#3a3a3a' # ダークグレー背景
+    selectedRangeBgColor:
+      - '#3a3a3a'
+    cherryPickedCommitBgColor:
+      - '#ff8700'
+    cherryPickedCommitFgColor:
+      - '#000000'
+    unstagedChangesColor:
+      - '#ff8700' # オレンジ
+  # ウィンドウサイズ
+  screenMode: 'normal'
+  scrollHeight: 2
+  scrollPastBottom: true
+  mouseEvents: true
+  skipStashWarning: false
+  showFileTree: true
+  showListFooter: true
+  showRandomTip: false
+  showBranchCommitHash: true
+  showBottomLine: true
+  showPanelJumps: true
+  showCommandLog: false
+  showIcons: true
+  nerdFontsVersion: "3"
+  # コミットメッセージ長
+  commitLength:
+    show: true
+  # スキップ設定
+  skipRewordInEditorWarning: false
+  skipNoStagedFilesWarning: false
+  skipDiscardChangeWarning: false
+customCommands:
+  - key: 'n'
+    context: 'worktrees'
+    description: '命名規則に従ってWorktreeを作成'
+    prompts:
+      - type: 'input'
+        title: '作業名を入力 (例: feature-A)'
+        key: 'TaskName'
+    command: |
+      # 現在のリポジトリ名（フォルダ名）を取得
+      REPO_NAME=$(basename $(git rev-parse --show-toplevel))
+
+      # ディレクトリ名を構築: ../[repo]_worktree_[task]
+      DIR_NAME="../${REPO_NAME}_worktree_{{ .Form.TaskName }}"
+
+      # worktreeを作成
+      # -b で入力した作業名と同じ名前のブランチも同時に作成します
+      git worktree add -b "{{ .Form.TaskName }}" "$DIR_NAME"
+    loadingText: 'Worktreeを作成中...'
+# Conventional Commitsプリセット
+os:
+  editPreset: 'nvim'
+# 更新チェック無効化（dotfilesで管理するため）
+update:
+  method: 'never'
+# リフレッシュモード
+refresher:
+  refreshInterval: 10
+  fetchInterval: 60
