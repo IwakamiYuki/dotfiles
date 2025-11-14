@@ -10,6 +10,8 @@
     "allow": [
       "Read(**)",
       "WebFetch(domain:docs.gs2.io)",
+      "mcp__serena__initial_instructions",
+      "mcp__serena__get_current_config", 
       "mcp__serena__find_symbol",
       "mcp__serena__search_for_pattern",
       "mcp__serena__find_file",
@@ -37,17 +39,25 @@
       "Bash(awk:*)",
       "Bash(rg:*)",
       "Bash(ls -la:*)",
+      "Bash(tree:*)",
       "Bash(xargs:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
       "Bash(cat:*)",
       "mcp__jetbrains__find_files_by_glob",
-      "mcp__serena__initial_instructions",
       "mcp__jetbrains__search_in_files_by_text",
       "Bash(make app-generate:*)",
       "Bash(go build:*)"
     ],
-    "deny": []
+    "deny": [
+      "Bash(cat >:*)",
+      "Bash(cat <<:*)",
+      "Bash(echo >:*)",
+      "Bash(echo >>:*)",
+      "Bash(sed :*)",
+      "Bash(awk -i:*)",
+      "Bash(perl -i:*)"
+    ]
   },
   "hooks": {
     "Stop": [
