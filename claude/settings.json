@@ -1,4 +1,11 @@
 {
+  "cleanupPeriodDays": 30,
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "600000",
+    "BASH_MAX_TIMEOUT_MS": "600000",
+    "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "true"
+  }, 
+  "includeCoAuthoredBy": false,
   "permissions": {
     "allow": [
       "Read(**)",
