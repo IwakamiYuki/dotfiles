@@ -49,17 +49,20 @@
       "Bash(make app-generate:*)",
       "Bash(go build:*)"
     ],
-    "deny": [
-      "Bash(cat >:*)",
-      "Bash(cat <<:*)",
-      "Bash(echo >:*)",
-      "Bash(echo >>:*)",
-      "Bash(sed :*)",
-      "Bash(awk -i:*)",
-      "Bash(perl -i:*)"
-    ]
+    "deny": []
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/scripts/validate-bash.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",
