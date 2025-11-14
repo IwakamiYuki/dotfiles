@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Read(**)",
       "WebFetch(domain:docs.gs2.io)",
       "mcp__serena__find_symbol",
       "mcp__serena__search_for_pattern",
@@ -12,7 +13,7 @@
       "mcp__serena__list_dir",
       "mcp__serena__replace_symbol_body",
       "mcp__serena__find_referencing_symbols",
-      "mcp__serena__activate_project", 
+      "mcp__serena__activate_project",
       "Bash(find:*)",
       "mcp__serena__check_onboarding_performed",
       "mcp__serena__think_about_collected_information",
@@ -32,9 +33,7 @@
       "Bash(xargs:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
-      "Read(//private/tmp/**)",
       "Bash(cat:*)",
-      "Read(//tmp/**)",
       "mcp__jetbrains__find_files_by_glob",
       "mcp__serena__initial_instructions",
       "mcp__jetbrains__search_in_files_by_text",
@@ -42,7 +41,7 @@
       "Bash(go build:*)"
     ],
     "deny": []
-	},
+  },
   "hooks": {
     "Stop": [
       {
