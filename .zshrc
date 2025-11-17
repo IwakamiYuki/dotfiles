@@ -13,7 +13,17 @@ HISTFILE=~/.zsh_history
 HISTSIZE=1000000
 SAVEHIST=1000000
 
+# 履歴検索の設定
+# setopt hist_ignore_dups     # 重複を記録しない
+setopt hist_ignore_space    # スペースで始まるコマンドを記録しない
+setopt hist_reduce_blanks   # 余分な空白を削除
+# setopt share_history        # 履歴を共有
+setopt append_history       # 履歴を追加
 ## Aliasの設定
 alias ls='ls --color=auto'
 alias l='ls'
 alias ll='ls -la'
+
+# FZFの履歴検索設定（フィルタ文字列を非表示）
+export FZF_CTRL_R_OPTS="--reverse --exact --no-sort --height=40% --border --prompt='履歴検索: ' --header='Ctrl+R: 履歴検索 | Enter: 実行 | Esc: キャンセル'"
+# export FZF_TMUX_OPTS="-p"
