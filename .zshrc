@@ -27,3 +27,5 @@ alias ll='ls -la'
 # FZFの履歴検索設定（フィルタ文字列を非表示）
 export FZF_CTRL_R_OPTS="--reverse --exact --no-sort --height=40% --border --prompt='履歴検索: ' --header='Ctrl+R: 履歴検索 | Enter: 実行 | Esc: キャンセル'"
 # export FZF_TMUX_OPTS="-p"
+
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
