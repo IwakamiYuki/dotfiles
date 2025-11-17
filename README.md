@@ -42,8 +42,10 @@ https://github.com/b4b4r07/dotfiles/blob/master/.tmux/bin/wifi
 #### lazygitのインストール
 ```bash
 brew install lazygit
+brew install git-delta
 ```
 `Ctrl-t g`でlazygitをポップアップで開けます
+※lazygitのdiff表示にはdeltaが必要です
 
 #### tmux-aiの設定（必要な場合）
 tmux-aiを使用する場合は、別途インストールが必要です。
