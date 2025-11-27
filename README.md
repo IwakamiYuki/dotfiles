@@ -12,6 +12,8 @@ ln -sf ~/dotfiles/claude/scripts ~/.claude/scripts
 ln -sf ~/dotfiles/claude/skills ~/.claude/skills
 ln -sf ~/dotfiles/claude/settings.json ~/.claude/settings.json
 ln -sf ~/dotfiles/claude/CLAUDE.md ~/.claude/CLAUDE.md
+mkdir -p ~/.tmux/scripts
+ln -sf ~/dotfiles/tmux/scripts/tmux-pane-border ~/.tmux/scripts/tmux-pane-border
 mkdir -p ~/Library/Application\ Support/lazygit
 ln -sf ~/dotfiles/lazygit/config.yml ~/Library/Application\ Support/lazygit/config.yml
 ```
