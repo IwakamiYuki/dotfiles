@@ -1,8 +1,8 @@
 git:
   autocommit: false
-  paging:
-    colorArg: always
-    pager: delta --paging=never --true-color=auto --dark --side-by-side --line-numbers
+  pagers:
+    - colorArg: always
+      pager: delta --paging=never --true-color=auto --dark --side-by-side --line-numbers
 gui:
   # オレンジ系カラースキーム（vim/tmuxと統一）
   theme:
@@ -49,18 +49,65 @@ customCommands:
     description: '命名規則に従ってWorktreeを作成'
     prompts:
       - type: 'input'
-        title: '作業名を入力 (例: feature-A)'
+        title: 'ブランチ名を入力 (例: feature/new-feature)'
         key: 'TaskName'
     command: |
       # 現在のリポジトリ名（フォルダ名）を取得
       REPO_NAME=$(basename $(git rev-parse --show-toplevel))
 
+      # ブランチ名のスラッシュをアンダースコアに置換
+      TASK_NAME_SAFE="{{ .Form.TaskName }}"
+      TASK_NAME_SAFE="${TASK_NAME_SAFE//\//_}"
+
       # ディレクトリ名を構築: ../[repo]_worktree_[task]
-      DIR_NAME="../${REPO_NAME}_worktree_{{ .Form.TaskName }}"
+      # 例: feature/test → wow_client_worktree_feature_test
+      DIR_NAME="../${REPO_NAME}_worktree_${TASK_NAME_SAFE}"
 
       # worktreeを作成
       # -b で入力した作業名と同じ名前のブランチも同時に作成します
       git worktree add -b "{{ .Form.TaskName }}" "$DIR_NAME"
+
+      # プロジェクトタイプを判定して除外パターンを構築（追記型、モノリポ対応）
+      EXCLUDE_PATTERN='\.DS_Store$'  # デフォルト除外
+
+      ## Unityプロジェクト判定（サブディレクトリも検索）
+      ### 除外対象: Library/（ビルドキャッシュ）, Temp/, Logs/, .csproj, .sln
+      if find . -maxdepth 3 -type d \( -name "Assets" -o -name "ProjectSettings" \) 2>/dev/null | grep -q .; then
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/Library/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/Temp/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/Logs/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.csproj$"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.sln$"
+      fi
+
+      ## Node.jsプロジェクト判定
+      ### 除外対象: node_modules/, dist/, build/
+      if find . -maxdepth 3 -name "package.json" 2>/dev/null | grep -q .; then
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/node_modules/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/dist/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/build/"
+      fi
+
+      ## Goプロジェクト判定
+      ### 除外対象: vendor/
+      if find . -maxdepth 3 -name "go.mod" 2>/dev/null | grep -q .; then
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/vendor/"
+      fi
+
+      ## Rustプロジェクト判定
+      ### 除外対象: target/
+      if find . -maxdepth 3 -name "Cargo.toml" 2>/dev/null | grep -q .; then
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/target/"
+      fi
+
+      ## 共通除外（全プロジェクト）
+      ### 除外対象: .log ファイル
+      EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.log$"
+
+      # gitignoreされているファイルをコピー（プロジェクトタイプ別に除外）
+      git ls-files --others -i --exclude-standard | \
+        grep -v -E "$EXCLUDE_PATTERN" | \
+        rsync -a --files-from=- . "$DIR_NAME/"
     loadingText: 'Worktreeを作成中...'
 # Conventional Commitsプリセット
 os:
