@@ -3,12 +3,29 @@
 # Claude Code の Current session 情報を取得（statusLine 用）
 # tmux capture-pane を使用して /usage の TUI 画面をキャプチャ
 
+# キャッシュ設定
+CACHE_FILE="/tmp/claude-usage-cache.json"
+CACHE_DURATION=300  # キャッシュ有効期間（秒）: 300秒 = 5分
+
 # タイムアウト時間（秒）
 TIMEOUT=30
 
 # 一時的なセッション名（現在のセッションとは独立）
 TEMP_SESSION="claude-usage-$$"
 CAPTURE_FILE="/tmp/claude-usage-$$.txt"
+
+# キャッシュチェック
+if [ -f "$CACHE_FILE" ]; then
+    cache_time=$(stat -f %m "$CACHE_FILE" 2>/dev/null || stat -c %Y "$CACHE_FILE" 2>/dev/null)
+    current_time=$(date +%s)
+    elapsed=$((current_time - cache_time))
+
+    # キャッシュが有効期間内なら、キャッシュを返す
+    if [ "$elapsed" -lt "$CACHE_DURATION" ]; then
+        cat "$CACHE_FILE"
+        exit 0
+    fi
+fi
 
 # クリーンアップ関数（スクリプト終了時に必ず実行）
 cleanup() {
@@ -52,11 +69,17 @@ session_pct=$(grep -A1 "Current session" "$CAPTURE_FILE" | tail -1 | grep -oE '[
 # Current session のリセット時間を抽出
 session_reset=$(grep "Resets" "$CAPTURE_FILE" | head -1 | sed 's/^[[:space:]]*//' | sed 's/Resets //')
 
-# 結果を出力（JSON形式）
+# 結果を JSON 形式で生成
 if [ -n "$session_pct" ] && [ -n "$session_reset" ]; then
-    echo "{\"usage\":\"${session_pct}%\",\"resets\":\"${session_reset}\"}"
+    result="{\"usage\":\"${session_pct}%\",\"resets\":\"${session_reset}\"}"
 else
-    echo "{\"usage\":\"N/A\",\"resets\":\"N/A\"}"
+    result="{\"usage\":\"N/A\",\"resets\":\"N/A\"}"
 fi
+
+# キャッシュに保存
+echo "$result" > "$CACHE_FILE"
+
+# 結果を出力
+echo "$result"
 
 # クリーンアップはtrapで自動実行される
