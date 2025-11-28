@@ -60,7 +60,7 @@ customCommands:
       TASK_NAME_SAFE="${TASK_NAME_SAFE//\//_}"
 
       # ディレクトリ名を構築: ../[repo]_worktree_[task]
-      # 例: feature/test → wow_client_worktree_feature_test
+      # 例: feature/test → project_repository_worktree_feature_test
       DIR_NAME="../${REPO_NAME}_worktree_${TASK_NAME_SAFE}"
 
       # worktreeを作成
