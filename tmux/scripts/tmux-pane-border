@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# tmux pane border format script
+# Display current path and git branch in a shortened format
+
+current_path="$1"
+
+# ホームディレクトリを ~ に置換
+current_path="${current_path/#$HOME/\~}"
+
+# パスが長すぎる場合は短縮（最大40文字）
+max_length=40
+if [ ${#current_path} -gt $max_length ]; then
+    # 最後のディレクトリ名のみを表示
+    current_path=".../${current_path##*/}"
+fi
+
+# ブランチアイコン（代替キー記号 U+2387）
+branch_icon="⎇"
+
+# Git ブランチ名を取得
+if [ -d "$1/.git" ] || git -C "$1" rev-parse --git-dir > /dev/null 2>&1; then
+    branch=$(git -C "$1" symbolic-ref --short HEAD 2>/dev/null || git -C "$1" describe --tags --exact-match 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null)
+    if [ -n "$branch" ]; then
+        # Git の dirty 状態をチェック
+        if ! git -C "$1" diff --quiet 2>/dev/null || ! git -C "$1" diff --cached --quiet 2>/dev/null; then
+            dirty="*"
+        else
+            dirty=""
+        fi
+        echo "$current_path │ $branch_icon $branch$dirty"
+    else
+        echo "$current_path"
+    fi
+else
+    echo "$current_path"
+fi
