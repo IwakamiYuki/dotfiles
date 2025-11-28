@@ -3,19 +3,23 @@
 # Claude Code statusLine カスタムスクリプト
 #
 # 表示項目：
-# 🤖 モデル名 - 使用中のClaudeモデル（例：Sonnet 4.5）
-# 💰 セッションコスト - 現在のセッションで使用した金額（USD）
+# 🤖 モデル名 - 使用中のClaudeモデル
+# 📊 セッション使用率 - /usage の Current session 情報（%とリセット時間）
 # ⏱️ 総処理時間 - セッション開始からの経過時間（秒）
 # 🔧 API処理時間 - 実際のAPI呼び出しに費やした時間（秒）
 # ✏️ コード変更量 - 追加/削除された行数
 # 📦 バージョン - Claude Codeのバージョン番号
 
+# 環境変数でstatusLineが無効化されている場合は何も出力しない（無限ループ防止）
+if [ "$CLAUDE_DISABLE_STATUSLINE" = "1" ]; then
+    exit 0
+fi
+
 # 標準入力からClaude Codeのコンテキスト情報を取得
 input=$(cat)
 
 # Claude Code標準データを抽出
-model=$(echo "$input" | jq -r '.model.display_name')              # モデル名
-cost=$(echo "$input" | jq -r '.cost.total_cost_usd')              # セッションコスト（USD）
+model=$(echo "$input" | jq -r '.model.display_name // .model')   # モデル名（display_nameがあればそれを、なければmodelをそのまま）
 duration=$(echo "$input" | jq -r '.cost.total_duration_ms')       # 総処理時間（ミリ秒）
 api_duration=$(echo "$input" | jq -r '.cost.total_api_duration_ms') # API処理時間（ミリ秒）
 lines_added=$(echo "$input" | jq -r '.cost.total_lines_added')    # 追加された行数
@@ -26,8 +30,10 @@ version=$(echo "$input" | jq -r '.version')                       # Claude Code�
 duration_sec=$(echo "scale=1; $duration / 1000" | bc 2>/dev/null || echo "0.0")
 api_duration_sec=$(echo "scale=1; $api_duration / 1000" | bc 2>/dev/null || echo "0.0")
 
-# コストを小数点以下2桁に丸める
-cost_rounded=$(printf "%.2f" "$cost")
+# /usage からセッション使用情報を取得（JSON形式）
+session_info=$(bash ~/.claude/scripts/get-session-usage.sh 2>/dev/null)
+session_usage=$(echo "$session_info" | jq -r '.usage' 2>/dev/null || echo "N/A")
+session_reset=$(echo "$session_info" | jq -r '.resets' 2>/dev/null || echo "N/A")
 
 # 出力
-echo "🤖 $model | 💰 \$$cost_rounded | ⏱️ ${duration_sec}s | 🔧 API: ${api_duration_sec}s | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"
+echo "🤖 $model | 📊 Session: $session_usage (resets $session_reset) | ⏱️ ${duration_sec}s | 🔧 API: ${api_duration_sec}s | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"
