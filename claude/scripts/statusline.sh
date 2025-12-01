@@ -27,8 +27,28 @@ lines_removed=$(echo "$input" | jq -r '.cost.total_lines_removed') # 削除さ�
 version=$(echo "$input" | jq -r '.version')                       # Claude Codeバージョン
 
 # 秒単位に変換
-duration_sec=$(echo "scale=1; $duration / 1000" | bc 2>/dev/null || echo "0.0")
-api_duration_sec=$(echo "scale=1; $api_duration / 1000" | bc 2>/dev/null || echo "0.0")
+duration_sec=$(echo "$duration / 1000" | bc 2>/dev/null || echo "0")
+api_duration_sec=$(echo "$api_duration / 1000" | bc 2>/dev/null || echo "0")
+
+# 時間:分:秒形式に変換する関数
+format_time() {
+    local total_sec=$1
+    local hours=$((total_sec / 3600))
+    local minutes=$(((total_sec % 3600) / 60))
+    local seconds=$((total_sec % 60))
+
+    if [ $hours -gt 0 ]; then
+        printf "%dh%dm%ds" $hours $minutes $seconds
+    elif [ $minutes -gt 0 ]; then
+        printf "%dm%ds" $minutes $seconds
+    else
+        printf "%ds" $seconds
+    fi
+}
+
+# 時間形式に変換
+duration_formatted=$(format_time "$duration_sec")
+api_duration_formatted=$(format_time "$api_duration_sec")
 
 # /usage からセッション使用情報を取得（JSON形式）
 session_info=$(bash ~/.claude/scripts/get-session-usage.sh 2>/dev/null)
@@ -36,4 +56,4 @@ session_usage=$(echo "$session_info" | jq -r '.usage' 2>/dev/null || echo "N/A")
 session_reset=$(echo "$session_info" | jq -r '.resets' 2>/dev/null || echo "N/A")
 
 # 出力
-echo "🤖 $model | 📊 Session: $session_usage (resets $session_reset) | ⏱️ ${duration_sec}s | 🔧 API: ${api_duration_sec}s | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"
+echo "🤖 $model | 📊 Session: $session_usage (resets $session_reset) | ⏱️ ${duration_formatted} | 🔧 API: ${api_duration_formatted} | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"

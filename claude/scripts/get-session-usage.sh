@@ -5,7 +5,7 @@
 
 # キャッシュ設定
 CACHE_FILE="/tmp/claude-usage-cache.json"
-CACHE_DURATION=300  # キャッシュ有効期間（秒）: 300秒 = 5分
+CACHE_DURATION=180  # キャッシュ有効期間（秒）: 180秒 = 3分
 
 # タイムアウト時間（秒）
 TIMEOUT=30
