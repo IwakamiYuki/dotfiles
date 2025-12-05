@@ -105,7 +105,8 @@ customCommands:
       EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.log$"
 
       # gitignoreされているファイルをコピー（プロジェクトタイプ別に除外）
-      git ls-files --others -i --exclude-standard | \
+      # core.quotePath=false で日本語ファイル名のエスケープを無効化
+      git -c core.quotePath=false ls-files --others -i --exclude-standard | \
         grep -v -E "$EXCLUDE_PATTERN" | \
         rsync -a --files-from=- . "$DIR_NAME/"
     loadingText: 'Worktreeを作成中...'
