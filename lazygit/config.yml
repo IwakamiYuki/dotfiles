@@ -104,11 +104,13 @@ customCommands:
       ### 除外対象: .log ファイル
       EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.log$"
 
-      # gitignoreされているファイルをコピー（プロジェクトタイプ別に除外）
+      # git add されていないファイルをすべてコピー（プロジェクトタイプ別に除外）
       # core.quotePath=false で日本語ファイル名のエスケープを無効化
-      git -c core.quotePath=false ls-files --others -i --exclude-standard | \
-        grep -v -E "$EXCLUDE_PATTERN" | \
-        rsync -a --files-from=- . "$DIR_NAME/"
+      {
+        git -c core.quotePath=false ls-files --others --exclude-standard  # untracked (not ignored)
+        git -c core.quotePath=false ls-files -m                           # modified (unstaged)
+        git -c core.quotePath=false diff --cached --name-only             # staged
+      } | sort -u | grep -v -E "$EXCLUDE_PATTERN" | rsync -a --files-from=- . "$DIR_NAME/"
     loadingText: 'Worktreeを作成中...'
 # Conventional Commitsプリセット
 os:
