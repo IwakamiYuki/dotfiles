@@ -54,7 +54,8 @@
       "Bash(make app-generate:*)",
       "Bash(go build:*)"
     ],
-    "deny": []
+    "deny": [],
+    "defaultMode": "acceptEdits"
   },
   "hooks": {
     "PreToolUse": [
@@ -96,5 +97,5 @@
     "command": "~/.claude/scripts/statusline.sh",
     "padding": 0
   },
-  "alwaysThinkingEnabled": true
+  "alwaysThinkingEnabled": false
 }
