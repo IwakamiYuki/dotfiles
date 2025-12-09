@@ -2,3 +2,4 @@
 .DS_Store
 .serena
 CLAUDE.local.md
+.claude/tmp/*
