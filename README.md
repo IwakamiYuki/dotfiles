@@ -16,6 +16,8 @@ mkdir -p ~/.tmux/scripts
 ln -sf ~/dotfiles/tmux/scripts/tmux-pane-border ~/.tmux/scripts/tmux-pane-border
 mkdir -p ~/Library/Application\ Support/lazygit
 ln -sf ~/dotfiles/lazygit/config.yml ~/Library/Application\ Support/lazygit/config.yml
+mkdir -p ~/Library/Application\ Support/com.mitchellh.ghostty
+ln -sf ~/dotfiles/ghostty/config ~/Library/Application\ Support/com.mitchellh.ghostty/config
 ```
 
 ※homeディレクトリにクローンした場合の手順になる
@@ -51,4 +53,3 @@ brew install git-delta
 
 #### tmux-aiの設定（必要な場合）
 tmux-aiを使用する場合は、別途インストールが必要です。
-
