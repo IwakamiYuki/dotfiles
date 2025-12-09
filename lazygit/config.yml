@@ -104,13 +104,24 @@ customCommands:
       ### 除外対象: .log ファイル
       EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.log$"
 
-      # git add されていないファイルをすべてコピー（プロジェクトタイプ別に除外）
+      # コミットされていないすべてのファイルをコピー（プロジェクトタイプ別に除外）
       # core.quotePath=false で日本語ファイル名のエスケープを無効化
-      {
-        git -c core.quotePath=false ls-files --others --exclude-standard  # untracked (not ignored)
-        git -c core.quotePath=false ls-files -m                           # modified (unstaged)
-        git -c core.quotePath=false diff --cached --name-only             # staged
-      } | sort -u | grep -v -E "$EXCLUDE_PATTERN" | rsync -a --files-from=- . "$DIR_NAME/"
+
+      # 一時ファイルにファイルリストを作成
+      TEMP_FILE="/tmp/worktree_files_$$.txt"
+
+      git -c core.quotePath=false ls-files --others --exclude-standard > "$TEMP_FILE"   # untracked (gitignore されていない新規ファイル)
+      git -c core.quotePath=false ls-files --others -i --exclude-standard >> "$TEMP_FILE"  # gitignore されているファイル
+      git -c core.quotePath=false ls-files -m >> "$TEMP_FILE"                             # modified (unstaged)
+      git -c core.quotePath=false diff --cached --name-only >> "$TEMP_FILE"               # staged
+
+      # ファイルが存在する場合のみコピー
+      if [ -s "$TEMP_FILE" ]; then
+        cat "$TEMP_FILE" | sort -u | grep -v -E "$EXCLUDE_PATTERN" | \
+          rsync -a --files-from=- . "$DIR_NAME/" 2>/dev/null || true
+      fi
+
+      rm -f "$TEMP_FILE"
     loadingText: 'Worktreeを作成中...'
 # Conventional Commitsプリセット
 os:
