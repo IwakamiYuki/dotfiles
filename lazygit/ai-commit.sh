@@ -4,7 +4,6 @@ set -euo pipefail
 # ステージされているかチェック
 if git diff --staged --quiet; then
   echo "❌ ステージされている変更がありません。"
-  read -rp "Enter を押して終了します..." _
   exit 1
 fi
 
@@ -17,7 +16,7 @@ DIFF="$(git diff --staged 2>/dev/null | head -c 10000)"
 CANDIDATES="$(
   printf '%s\n' "$DIFF" |
     codex exec -m gpt-5.1-codex \
-      "このgit diffを分析して、適切なコミットメッセージを日本語で3つ提案してください。Conventional Commitsの形式（feat:, fix:, refactor: など）で、スコープは含めず type: description の形式で出力してください。各提案は1行ずつ、番号や説明なしで出力してください。" \
+      "以下は git diff --staged の出力です。リポジトリ全体のコンテキストを考慮しつつ、このステージされた変更のみに基づいて適切なコミットメッセージを日本語で3つ提案してください。重要：ステージされていない変更（unstaged changes）はこのコミットに含まれないため、コミットメッセージには含めないでください。Conventional Commitsの形式（feat:, fix:, refactor: など）で、スコープは含めず type: description の形式で出力してください。各提案は1行ずつ、番号や説明なしで出力してください。" \
       2>/dev/null |
     grep -E '^(feat|fix|refactor|docs|test|chore|style|perf):' |
     head -3
@@ -25,7 +24,6 @@ CANDIDATES="$(
 
 if [ -z "$CANDIDATES" ]; then
   echo "❌ Codex から有効なコミットメッセージ候補を取得できませんでした。"
-  read -rp "Enter を押して終了します..." _
   exit 1
 fi
 
@@ -46,13 +44,11 @@ base_msg="$(echo "$CANDIDATES" | fzf \
   --bind="j:down,k:up"
 )" || {
   echo "キャンセルしました。"
-  read -rp "Enter を押して終了します..." _
   exit 0
 }
 
 if [ -z "$base_msg" ]; then
   echo "キャンセルしました。"
-  read -rp "Enter を押して終了します..." _
   exit 0
 fi
 
@@ -85,7 +81,6 @@ case "$yn" in
   *)
     echo "キャンセルしました。"
     rm -f "$tmpfile"
-    read -rp "Enter を押して終了します..." _
     exit 0
     ;;
 esac
@@ -98,7 +93,6 @@ grep -vE '^\s*#' "$tmpfile" >"$cleanfile"
 if ! grep -q '[^[:space:]]' "$cleanfile"; then
   echo "❌ コミットメッセージが空のため中止します。"
   rm -f "$tmpfile" "$cleanfile"
-  read -rp "Enter を押して終了します..." _
   exit 1
 fi
 
@@ -115,5 +109,4 @@ if [ "$status" -eq 0 ]; then
 else
   echo "❌ コミット失敗（終了コード: $status）"
 fi
-read -rp "Enter を押して Lazygit に戻ります..." _
 exit "$status"
