@@ -52,38 +52,9 @@ if [ -z "$base_msg" ]; then
   exit 0
 fi
 
-# 選択したメッセージを表示
-echo
-echo "📝 選択したメッセージ:"
-echo "  $base_msg"
-echo
-
-# 編集するかどうか確認
-read -rp "このままコミットしますか？ [y=そのまま / e=編集 / その他=中止] " yn
-
+# コミットメッセージファイルを作成
 tmpfile="$(mktemp)"
-
-case "$yn" in
-  y|Y)
-    # そのまま使う
-    echo "$base_msg" > "$tmpfile"
-    ;;
-  e|E)
-    # エディタで編集
-    {
-      echo "$base_msg"
-      echo
-      echo "# ここから下に説明文などを自由に書いてください"
-      echo "# 行頭が # の行はコミットメッセージには含まれません"
-    } >"$tmpfile"
-    "${EDITOR:-vim}" "$tmpfile"
-    ;;
-  *)
-    echo "キャンセルしました。"
-    rm -f "$tmpfile"
-    exit 0
-    ;;
-esac
+echo "$base_msg" > "$tmpfile"
 
 # コメント行は落としてクリーンなメッセージファイルを作る
 cleanfile="${tmpfile}.clean"
