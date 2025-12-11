@@ -7,12 +7,12 @@ if git diff --staged --quiet; then
   exit 1
 fi
 
-echo "🤖 Codex (gpt-5.1-codex) でコミットメッセージを生成中..."
+echo "🤖 コミットメッセージを考え中..."
 echo
 
 DIFF="$(git diff --staged 2>/dev/null | head -c 10000)"
 
-# Codex で候補生成
+# AI で候補生成
 CANDIDATES="$(
   printf '%s\n' "$DIFF" |
     codex exec -m gpt-5.1-codex \
@@ -23,16 +23,16 @@ CANDIDATES="$(
 )"
 
 if [ -z "$CANDIDATES" ]; then
-  echo "❌ Codex から有効なコミットメッセージ候補を取得できませんでした。"
+  echo "❌ コミットメッセージを考えられませんでした。"
   exit 1
 fi
 
-echo "✅ 生成完了！"
+echo "✨ 🤖 候補を用意しました！"
 echo
 
 # fzf で候補を選択
 base_msg="$(echo "$CANDIDATES" | fzf \
-  --prompt="🤖 コミットメッセージを選択 (Esc でキャンセル)> " \
+  --prompt="💬 コミットメッセージを選択 (Esc でキャンセル)> " \
   --height=40% \
   --border=rounded \
   --color="fg:#ebdbb2,bg:#282828,hl:#fe8019,fg+:#fbf1c7,bg+:#3c3836,hl+:#fe8019" \
