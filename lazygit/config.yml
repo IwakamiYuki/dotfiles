@@ -46,19 +46,9 @@ gui:
 customCommands:
   - key: 'A'
     context: 'files'
-    description: 'AI生成コミットメッセージでコミット'
-    prompts:
-      - type: 'menuFromCommand'
-        title: 'Codexが生成したコミットメッセージを選択'
-        key: 'Msg'
-        command: 'sh -c "(echo \"🤖 Codex (gpt-5.1-codex) でコミットメッセージを生成中...\" >&2; git diff --staged 2>/dev/null | head -c 10000 | codex exec -m gpt-5.1-codex \"このgit diffを分析して、適切なコミットメッセージを日本語で3つ提案してください。Conventional Commitsの形式（feat:, fix:, refactor: など）で、スコープは含めず type: description の形式で出力してください。各提案は1行ずつ、番号や説明なしで出力してください。\" 2>/dev/null | grep -E \"^(feat|fix|refactor|docs|test|chore|style|perf):\" | head -3)"'
-      - type: 'input'
-        title: 'コミットメッセージ (必要に応じて編集)'
-        key: 'EditedMsg'
-        initialValue: '{{ .Form.Msg }}'
-    command: 'git commit -m "{{ .Form.EditedMsg }}"'
-    loadingText: 'コミット中...'
-    output: terminal
+    description: 'AI生成コミットメッセージでコミット (対話的)'
+    command: '/bin/bash ~/dotfiles/lazygit/ai-commit.sh'
+    output: 'terminal'
   - key: 'n'
     context: 'worktrees'
     description: '命名規則に従ってWorktreeを作成'
