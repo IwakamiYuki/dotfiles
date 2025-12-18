@@ -44,6 +44,7 @@
       "Bash(xargs:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
+      "Bash(gh run view:*)",
       "Bash(cat:*)",
       "Read(.claude/tmp/**)",
       "Write(.claude/tmp/**)",
