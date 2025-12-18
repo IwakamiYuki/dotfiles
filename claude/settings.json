@@ -54,7 +54,10 @@
       "Bash(make app-generate:*)",
       "Bash(go build:*)"
     ],
-    "deny": [],
+    "deny": [
+      "NotebookEdit",
+      "NotebookRead"
+    ],
     "defaultMode": "acceptEdits"
   },
   "hooks": {
