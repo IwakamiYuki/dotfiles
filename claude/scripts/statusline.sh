@@ -5,7 +5,7 @@
 # 表示項目：
 # 🤖 モデル名 - 使用中のClaudeモデル
 # 📊 セッション使用率 - /usage の Current session 情報（%とリセット時間）
-# 💬 コンテキスト使用量 - 現在の会話のトークン使用量（概算）
+# 💬 コンテキスト使用量 - 現在の会話のトークン使用量（v2.0.70以降は正確、それ以前は概算）
 # ⏱️ 総処理時間 - セッション開始からの経過時間（秒）
 # 🔧 API処理時間 - 実際のAPI呼び出しに費やした時間（秒）
 # ✏️ コード変更量 - 追加/削除された行数
@@ -34,6 +34,7 @@ input_tokens=$(echo "$input" | jq -r '.cost.total_input_tokens // ""')
 output_tokens=$(echo "$input" | jq -r '.cost.total_output_tokens // ""')
 cache_read_tokens=$(echo "$input" | jq -r '.cost.total_cache_read_tokens // ""')
 cache_creation_tokens=$(echo "$input" | jq -r '.cost.total_cache_creation_tokens // ""')
+current_usage=$(echo "$input" | jq -r '.current_usage // ""')  # v2.0.70で追加されたコンテキスト使用量
 
 # 秒単位に変換
 duration_sec=$(echo "$duration / 1000" | bc 2>/dev/null || echo "0")
@@ -68,65 +69,50 @@ get_context_window() {
 
 # コンテキスト使用量を計算・フォーマットする関数
 calculate_context_usage() {
-    local input_tok=$1
-    local output_tok=$2
-    local cache_read_tok=$3
-    local cache_create_tok=$4
-    local transcript=$5
-    local model_id=$6
+    local current_usage=$1
+    local transcript=$2
+    local model_id=$3
 
     local context_window=$(get_context_window "$model_id")
 
-    # トークン情報が利用可能な場合
-    if [ -n "$input_tok" ] && [ "$input_tok" != "null" ] && [ "$input_tok" != "" ]; then
-        local total_tokens=$((input_tok + output_tok))
-        # キャッシュ読み取りトークンは入力トークンの一部なので、追加しない
-        local usage_pct=$((total_tokens * 100 / context_window))
+    # v2.0.70 以降の current_usage フィールドを優先的に使用（最も正確）
+    if [ -n "$current_usage" ] && [ "$current_usage" != "null" ] && [ "$current_usage" != "" ] && [ "$current_usage" -gt 0 ] 2>/dev/null; then
+        local usage_pct=$((current_usage * 100 / context_window))
         local context_window_k=$((context_window / 1000))
+        local tokens_k=$((current_usage / 1000))
 
-        # 1K 単位で表示（可読性向上）
-        if [ $total_tokens -ge 1000 ]; then
-            local tokens_k=$((total_tokens / 1000))
-            printf "${tokens_k}K/${context_window_k}K (${usage_pct}%%)"
-        else
-            printf "${total_tokens}/${context_window} (${usage_pct}%%)"
+        # メッセージ数をカウント
+        local msg_count=0
+        if [ -n "$transcript" ] && [ "$transcript" != "null" ] && [ -f "$transcript" ]; then
+            if [[ "$transcript" == *.jsonl ]]; then
+                msg_count=$(wc -l < "$transcript" 2>/dev/null | tr -d ' ' || echo "0")
+            else
+                msg_count=$(grep -c "^##\+ Message" "$transcript" 2>/dev/null || echo "0")
+            fi
         fi
+
+        printf "${tokens_k}K/${context_window_k}K (${usage_pct}%%) ${msg_count}msg"
         return
     fi
 
-    # トランスクリプトファイルから取得
+    # フォールバック: トランスクリプトファイルから取得（後方互換性）
     if [ -n "$transcript" ] && [ "$transcript" != "null" ] && [ -f "$transcript" ]; then
-        # JSONL 形式の場合、usage 情報から正確なトークン数を取得
+        # JSONL 形式の場合
         if [[ "$transcript" == *.jsonl ]]; then
-            # 最後の assistant メッセージの cache_read_input_tokens が最も正確
-            # これは累積コンテキスト（システムプロンプト + ツール + メッセージ履歴）を表す
-            # tail -r で逆順にして最初の assistant メッセージを取得（macOS 互換）
             local last_usage=$(tail -r "$transcript" 2>/dev/null | jq -r 'select(.message.role == "assistant") | .message.usage.cache_read_input_tokens // 0' 2>/dev/null | head -1)
-
-            # メッセージ数をカウント（全体）
             local msg_count=$(wc -l < "$transcript" 2>/dev/null | tr -d ' ' || echo "0")
 
             if [ -n "$last_usage" ] && [ "$last_usage" != "null" ] && [ "$last_usage" != "0" ] && [ "$last_usage" -gt 0 ] 2>/dev/null; then
-                # assistant メッセージが存在する場合
-                # cache_read_input_tokens がコンテキストの大部分を表している
-                # 固定オーバーヘッド（約 52k: システムプロンプト + ツール定義 + メモリ + 出力）を加算
-                # /context の実測: 128k = 76k (cache_read) + 52k (固定)
+                # 固定オーバーヘッド（約 52k）を加算
                 local total_tokens=$((last_usage + 52000))
-
                 local usage_pct=$((total_tokens * 100 / context_window))
                 local context_window_k=$((context_window / 1000))
+                local tokens_k=$((total_tokens / 1000))
 
-                # 1K 単位で表示
-                if [ $total_tokens -ge 1000 ]; then
-                    local tokens_k=$((total_tokens / 1000))
-                    printf "${tokens_k}K/${context_window_k}K (${usage_pct}%%) ${msg_count}msg"
-                else
-                    printf "${total_tokens}/${context_window} (${usage_pct}%%) ${msg_count}msg"
-                fi
+                printf "${tokens_k}K/${context_window_k}K (${usage_pct}%%) ${msg_count}msg"
                 return
             else
-                # assistant メッセージがまだない場合（新しいセッション）
-                # 固定オーバーヘッドのみを表示（約 42k）
+                # 新しいセッション
                 local total_tokens=42000
                 local usage_pct=$((total_tokens * 100 / context_window))
                 local context_window_k=$((context_window / 1000))
@@ -136,7 +122,7 @@ calculate_context_usage() {
                 return
             fi
         else
-            # Markdown 形式の場合は概算（後方互換性）
+            # Markdown 形式の場合は概算
             local file_size=$(wc -c < "$transcript" 2>/dev/null || echo "0")
             local msg_count=$(grep -c "^##\+ Message" "$transcript" 2>/dev/null || echo "0")
 
@@ -144,13 +130,9 @@ calculate_context_usage() {
                 local estimated_tokens=$((file_size / 3))
                 local usage_pct=$((estimated_tokens * 100 / context_window))
                 local context_window_k=$((context_window / 1000))
+                local tokens_k=$((estimated_tokens / 1000))
 
-                if [ $estimated_tokens -ge 1000 ]; then
-                    local tokens_k=$((estimated_tokens / 1000))
-                    printf "~${tokens_k}K/${context_window_k}K (${usage_pct}%%) ${msg_count}msg"
-                else
-                    printf "~${estimated_tokens}/${context_window} (${usage_pct}%%) ${msg_count}msg"
-                fi
+                printf "~${tokens_k}K/${context_window_k}K (${usage_pct}%%) ${msg_count}msg"
                 return
             fi
         fi
@@ -170,7 +152,7 @@ session_usage=$(echo "$session_info" | jq -r '.usage' 2>/dev/null || echo "N/A")
 session_reset=$(echo "$session_info" | jq -r '.resets' 2>/dev/null || echo "N/A")
 
 # コンテキスト使用量を計算
-context_usage=$(calculate_context_usage "$input_tokens" "$output_tokens" "$cache_read_tokens" "$cache_creation_tokens" "$transcript_path" "$model_id")
+context_usage=$(calculate_context_usage "$current_usage" "$transcript_path" "$model_id")
 
 # 出力
 echo "🤖 $model | 📊 Session: $session_usage (resets $session_reset) | 💬 Context: $context_usage | ⏱️ ${duration_formatted} | 🔧 API: ${api_duration_formatted} | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"
