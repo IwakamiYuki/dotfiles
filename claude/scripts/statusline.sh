@@ -4,7 +4,8 @@
 #
 # 表示項目：
 # 🤖 モデル名 - 使用中のClaudeモデル
-# 📊 セッション使用率 - /usage の Current session 情報（%とリセット時間）
+# 📊 5h セッション使用率 - /usage の Current session 情報（%とリセット時間）
+# 📅 1w 週間使用率 - /usage の One week 情報（%とリセット時間）
 # 💬 コンテキスト使用量 - 現在の会話のトークン使用量（v2.0.70以降は正確、それ以前は概算）
 # ⏱️ 総処理時間 - セッション開始からの経過時間（秒）
 # 🔧 API処理時間 - 実際のAPI呼び出しに費やした時間（秒）
@@ -148,11 +149,19 @@ api_duration_formatted=$(format_time "$api_duration_sec")
 
 # /usage からセッション使用情報を取得（JSON形式）
 session_info=$(bash ~/.claude/scripts/get-session-usage.sh 2>/dev/null)
-session_usage=$(echo "$session_info" | jq -r '.usage' 2>/dev/null || echo "N/A")
-session_reset=$(echo "$session_info" | jq -r '.resets' 2>/dev/null || echo "N/A")
+session_usage=$(echo "$session_info" | jq -r '.session_usage' 2>/dev/null || echo "N/A")
+session_reset=$(echo "$session_info" | jq -r '.session_resets' 2>/dev/null || echo "N/A")
+week_usage=$(echo "$session_info" | jq -r '.week_usage' 2>/dev/null || echo "N/A")
+week_reset=$(echo "$session_info" | jq -r '.week_resets' 2>/dev/null || echo "N/A")
 
 # コンテキスト使用量を計算
 context_usage=$(calculate_context_usage "$current_usage" "$transcript_path" "$model_id")
 
+# resets 情報の整形（5h のみ表示、1w は省略）
+session_resets_display=""
+if [ -n "$session_reset" ] && [ "$session_reset" != "N/A" ]; then
+    session_resets_display=" ($session_reset)"
+fi
+
 # 出力
-echo "🤖 $model | 📊 Session: $session_usage (resets $session_reset) | 💬 Context: $context_usage | ⏱️ ${duration_formatted} | 🔧 API: ${api_duration_formatted} | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"
+echo "🤖 $model | 📊 5h:$session_usage$session_resets_display 1w:$week_usage | 💬 $context_usage | ⏱️ ${duration_formatted} | 🔧 ${api_duration_formatted} | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"
