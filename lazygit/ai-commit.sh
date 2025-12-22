@@ -2,7 +2,7 @@
 set -eo pipefail  # -u を削除（SIGPIPE 対策）
 
 # ステージされているかチェック
-if git diff --staged --quiet; then
+if git diff --staged --quiet 2>/dev/null; then
   echo "❌ ステージされている変更がありません。"
   exit 1
 fi
@@ -12,18 +12,25 @@ echo
 
 DIFF="$(git diff --staged 2>/dev/null | head -c 10000 || true)"
 
-# AI で候補生成
-CANDIDATES="$(
+# AI で候補生成（全レスポンスをキャプチャ）
+RAW_RESPONSE="$(
   printf '%s\n' "$DIFF" |
-    codex exec -m gpt-5.1-codex \
+    PATH=/opt/homebrew/bin:$PATH codex exec \
       "以下は git diff --staged の出力です。リポジトリ全体のコンテキストを考慮しつつ、このステージされた変更のみに基づいて適切なコミットメッセージを日本語で3つ提案してください。重要：ステージされていない変更（unstaged changes）はこのコミットに含まれないため、コミットメッセージには含めないでください。Conventional Commitsの形式（feat:, fix:, refactor: など）で、スコープは含めず type: description の形式で出力してください。各提案は1行ずつ、番号や説明なしで出力してください。" \
-      2>/dev/null | {
-        grep -E '^(feat|fix|refactor|docs|test|chore|style|perf):' || true
-      } | head -3 || true
+      2>/dev/null || true
 )"
+
+# Conventional Commits 形式でフィルタリング
+CANDIDATES="$(echo "$RAW_RESPONSE" | grep -E '^(feat|fix|refactor|docs|test|chore|style|perf):' | head -3 || true)"
+
+# フィルタリング後に候補がない場合、最初の3行を使用（形式チェックを緩和）
+if [ -z "$CANDIDATES" ]; then
+  CANDIDATES="$(echo "$RAW_RESPONSE" | grep -v '^$' | head -3 || true)"
+fi
 
 if [ -z "$CANDIDATES" ]; then
   echo "❌ コミットメッセージを考えられませんでした。"
+  echo "📋 AI の応答: $RAW_RESPONSE"
   exit 1
 fi
 
