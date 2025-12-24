@@ -68,13 +68,13 @@ tmux send-keys -t "$TEMP_SESSION" Escape 2>/dev/null
 session_pct=$(grep -A2 "Current session" "$CAPTURE_FILE" | grep -oE '[0-9]+% used' | head -1 | grep -oE '[0-9]+')
 
 # Current session のリセット時間を抽出（Current session セクション内、次のセクションの前まで）
-session_reset=$(grep -A5 "Current session" "$CAPTURE_FILE" | grep "Resets" | head -1 | sed 's/^[[:space:]]*//' | sed 's/Resets //')
+session_reset=$(grep -A5 "Current session" "$CAPTURE_FILE" | grep "Resets" | head -1 | sed 's/^[[:space:]]*//' | sed 's/Resets //' | sed 's/ ([^)]*)$//')
 
 # Current week の使用率を抽出
 week_pct=$(grep -A2 "Current week" "$CAPTURE_FILE" | grep -oE '[0-9]+% used' | head -1 | grep -oE '[0-9]+')
 
 # Current week のリセット時間を抽出（Current week のセクションにある Resets 行）
-week_reset=$(grep -A5 "Current week" "$CAPTURE_FILE" | grep "Resets" | head -1 | sed 's/^[[:space:]]*//' | sed 's/Resets //')
+week_reset=$(grep -A5 "Current week" "$CAPTURE_FILE" | grep "Resets" | head -1 | sed 's/^[[:space:]]*//' | sed 's/Resets //' | sed 's/ ([^)]*)$//')
 
 # 結果を JSON 形式で生成
 # session_pct と week_pct は必須、reset 情報は取得できない場合は空文字
