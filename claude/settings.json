@@ -9,7 +9,7 @@
   "permissions": {
     "allow": [
       "Read(**)",
-      "WebFetch(domain:docs.gs2.io)",
+      "WebFetch",
       "mcp__serena__onboarding",
       "mcp__serena__initial_instructions",
       "mcp__serena__get_current_config",
@@ -57,10 +57,21 @@
     ],
     "deny": [
       "NotebookEdit",
-      "NotebookRead"
+      "NotebookRead",
+      "Bash(rm -rf:*)",
+      "mcp__serena__execute_shell_command"
+    ],
+    "ask": [
+      "Bash(rm:*)",
+      "Bash(dd:*)",
+      "Bash(mkfs:*)",
+      "Bash(git push:*)",
+      "Bash(git reset:*)",
+      "Bash(git rebase:*)"
     ],
     "defaultMode": "acceptEdits"
   },
+  "model": "haiku",
   "hooks": {
     "PreToolUse": [
       {
