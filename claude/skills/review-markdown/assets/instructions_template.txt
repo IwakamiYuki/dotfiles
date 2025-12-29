@@ -1,0 +1,151 @@
+# Markdown Review Checklist
+
+このテンプレートは、review.request の `instructions` パラメータで使用できます。
+必要に応じてカスタマイズして、確認項目を明確にしてください。
+
+## デフォルト確認項目
+
+Please evaluate the following points:
+
+### 1. Accuracy (正確性)
+- Is the technical content correct?
+- Are there any factual errors or misconceptions?
+- Do code examples compile and run correctly?
+
+### 2. Clarity (明確性)
+- Is the text easy to understand?
+- Are definitions clear and complete?
+- Would a reader new to the topic understand this?
+
+### 3. Completeness (完全性)
+- Are all essential topics covered?
+- Are there any gaps or missing sections?
+- Is the content sufficient for the intended audience?
+
+### 4. Structure (構成)
+- Is the organization logical and easy to follow?
+- Are headings and hierarchy appropriate?
+- Does content flow naturally from section to section?
+
+### 5. Formatting (フォーマット)
+- Are code examples properly formatted and highlighted?
+- Are diagrams and visuals clear and accurate?
+- Is the layout visually appealing and readable?
+
+## Severity レベル
+
+When commenting, use these severity levels:
+
+- **🔴 Must (必須)**: Critical issues that must be fixed before publication
+- **🟡 Should (推奨)**: Important improvements that should be considered
+- **🟢 Suggestion (提案)**: Optional improvements for higher quality
+- **❓ Question (質問)**: Points that need clarification
+
+## シーン別テンプレート
+
+### API Documentation Review
+
+```
+Please review this API documentation with focus on:
+
+1. **Completeness** - All endpoints documented?
+2. **Clarity** - Request/response formats clearly explained?
+3. **Examples** - Are code examples provided for each endpoint?
+4. **Error handling** - Are error codes and messages documented?
+5. **Authentication** - Is auth mechanism clearly explained?
+
+Use severity levels:
+- must: Critical API issues
+- should: Important documentation gaps
+- suggestion: Improvements for usability
+- question: Clarifications needed
+```
+
+### Technical Design Document
+
+```
+Please evaluate this design document on:
+
+1. **Architecture clarity** - Is the system design clearly explained?
+2. **Component relationships** - Are dependencies and interactions clear?
+3. **Decision rationale** - Are design decisions justified?
+4. **Trade-offs** - Are trade-offs discussed?
+5. **Implementation feasibility** - Is the design implementable?
+
+Severity:
+- must: Unclear or impractical design
+- should: Missing important considerations
+- suggestion: Potential improvements
+- question: Points needing clarification
+```
+
+### README Documentation
+
+```
+Please check this README for:
+
+1. **Project overview** - Clear description of what the project does?
+2. **Getting started** - Is setup straightforward?
+3. **Usage examples** - Are usage examples clear and correct?
+4. **Requirements** - Are dependencies and prerequisites listed?
+5. **Contributing** - Are contribution guidelines clear?
+
+Severity:
+- must: Critical information missing
+- should: Important sections unclear
+- suggestion: Enhancement opportunities
+- question: Unclear content
+```
+
+### Generated Content Quality Check
+
+```
+Please verify this AI-generated content for:
+
+1. **Factual accuracy** - No hallucinations or false statements?
+2. **Coherence** - Does content flow logically?
+3. **Tone consistency** - Is tone appropriate and consistent?
+4. **Completeness** - Are all key points covered?
+5. **Usability** - Is content practical and actionable?
+
+Severity:
+- must: Factual errors that must be corrected
+- should: Content improvements needed
+- suggestion: Enhancement opportunities
+- question: Verify with domain expert
+```
+
+## カスタマイズ例
+
+### 最小限（シンプル）
+
+```
+Please check:
+1. Accuracy and technical correctness
+2. Clarity and readability
+3. Completeness of all sections
+```
+
+### 詳細（クライアント向け）
+
+```
+Brand and Style Check:
+
+1. Tone consistency with brand guidelines
+2. Visual hierarchy and formatting
+3. Audience appropriateness
+4. Call-to-action clarity
+5. Professional polish and polish
+```
+
+### セキュリティ重視
+
+```
+Security Documentation Review:
+
+1. Are security considerations clearly documented?
+2. Are authentication/authorization requirements clear?
+3. Are common vulnerabilities addressed?
+4. Are security best practices explained?
+5. Are security examples accurate?
+```
