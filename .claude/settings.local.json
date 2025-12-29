@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:code.claude.com)"
+      "WebFetch(domain:code.claude.com)",
+      "Skill(create-skill)",
+      "Skill(skill-creator)"
     ],
     "deny": [],
     "ask": []
