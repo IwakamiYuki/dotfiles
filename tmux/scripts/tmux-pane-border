@@ -1,9 +1,36 @@
 #!/bin/bash
 
 # tmux pane border format script
-# Display current path and git branch in a shortened format
+# Display current path with hash-based color blocks and git branch
 
+original_path="$1"
 current_path="$1"
+
+# パスが空の場合はデフォルト表示
+if [ -z "$current_path" ]; then
+  echo "N/A"
+  exit 0
+fi
+
+# パスのMD5ハッシュを計算してカラーブロックを生成
+if command -v md5 &> /dev/null; then
+  hash=$(echo -n "$original_path" | md5 | cut -c1-6)
+else
+  hash=$(echo -n "$original_path" | md5sum | cut -c1-6)
+fi
+
+# ハッシュ値を3つの16進数値に分割（各2文字）
+color1=$(echo "${hash:0:2}")
+color2=$(echo "${hash:2:2}")
+color3=$(echo "${hash:4:2}")
+
+# 16進数を10進数に変換して色番号を計算（0-255の範囲）
+dec1=$((16#${color1} % 216))
+dec2=$((16#${color2} % 216))
+dec3=$((16#${color3} % 216))
+
+# 色ブロックを生成（文字色のみ）
+color_blocks="#[fg=colour$dec1]■#[fg=colour$dec2]■#[fg=colour$dec3]■#[default]"
 
 # ホームディレクトリを ~ に置換
 current_path="${current_path/#$HOME/\~}"
@@ -28,10 +55,10 @@ if [ -d "$1/.git" ] || git -C "$1" rev-parse --git-dir > /dev/null 2>&1; then
         else
             dirty=""
         fi
-        echo "$current_path │ $branch_icon $branch$dirty"
+        echo "$color_blocks $current_path │ $branch_icon $branch$dirty"
     else
-        echo "$current_path"
+        echo "$color_blocks $current_path"
     fi
 else
-    echo "$current_path"
+    echo "$color_blocks $current_path"
 fi
