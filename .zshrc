@@ -29,3 +29,7 @@ export FZF_CTRL_R_OPTS="--reverse --exact --no-sort --height=40% --border --prom
 # export FZF_TMUX_OPTS="-p"
 
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+# zoxide
+eval "$(zoxide init zsh --hook prompt )"
+eval "$(zoxide init zsh --cmd cd)"

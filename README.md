@@ -32,6 +32,14 @@ git clone git@github.com:Shougo/neobundle.vim.git ~/.vim/bundle/neobundle.vim
 ```
 ※macの場合、クリップボードの共有をするときに、brewからインストールし直さないといけない。参考：https://qiita.com/shoma2da/items/92ea8badcd4655b6106c
 
+## zshの初期設定
+
+### zoxideのインストール
+```
+brew install zoxide
+```
+zoxide を使うことで `cd` コマンドを強力にし、複数ディレクトリへのナビゲーションが効率化されます。
+
 ## tmuxの初期設定
 
 ### 基本的な依存関係のインストール
