@@ -10,6 +10,9 @@ ln -sf ~/dotfiles/claude/agents ~/.claude/agents
 ln -sf ~/dotfiles/claude/commands ~/.claude/commands
 ln -sf ~/dotfiles/claude/scripts ~/.claude/scripts
 ln -sf ~/dotfiles/claude/skills ~/.claude/skills
+ln -sf ~/dotfiles/claude/hooks ~/.claude/hooks
+mkdir -p ~/.claude/icons
+ln -sf ~/dotfiles/claude/icons/claude-ai-icon.png ~/.claude/icons/claude-ai-icon.png
 ln -sf ~/dotfiles/claude/settings.json ~/.claude/settings.json
 ln -sf ~/dotfiles/claude/CLAUDE.md ~/.claude/CLAUDE.md
 mkdir -p ~/.tmux/scripts
@@ -61,3 +64,24 @@ brew install git-delta
 
 #### tmux-aiの設定（必要な場合）
 tmux-aiを使用する場合は、別途インストールが必要です。
+
+## Claude Codeの通知設定
+
+### terminal-notifierのインストール
+```bash
+brew install terminal-notifier
+```
+
+### 機能
+- Claude Codeがタスク完了や許可要求時にmacOS通知を送信
+- 通知クリックでGhosttyがアクティブ化し、該当のtmuxペインにフォーカス
+- カスタムマスコットアイコン表示（オレンジ色のAIロボット）
+- tmux内にもメッセージを表示
+
+### フックの仕組み
+- `claude/hooks/notify-end.sh`: タスク完了時に実行
+- `claude/hooks/notify-ask.sh`: 許可要求時に実行
+- `claude/hooks/focus-tmux-pane.sh`: 通知クリック時にペインフォーカス
+- `claude/icons/claude-ai-icon.png`: 通知アイコン
+
+通知システムはGhosttyとtmuxで自動的に動作します。
