@@ -31,5 +31,8 @@ export FZF_CTRL_R_OPTS="--reverse --exact --no-sort --height=40% --border --prom
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 
 # zoxide
-eval "$(zoxide init zsh --hook prompt )"
-eval "$(zoxide init zsh --cmd cd)"
+eval "$(zoxide init zsh --hook prompt )" 2>/dev/null || true
+
+# cd コマンド - zoxide の z コマンドを試し、成功したら戻る、失敗したら組み込み cd を使用
+alias cd='__cd_wrapper() { z "$@" 2>/dev/null && return 0; builtin cd "$@" }; __cd_wrapper'
+
