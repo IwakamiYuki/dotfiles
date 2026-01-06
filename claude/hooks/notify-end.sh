@@ -54,9 +54,6 @@ echo "$(date): SOCKET_PATH: $SOCKET_PATH" >> /tmp/notify-hook-debug.log
 # tmuxコマンドのPATHを明示的に設定
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# tmux内で通知を表示
-tmux display-message -t "$SESSION_NAME" "✅ Task completed: $MSG"
-
 # 通知を送信（クリック時に Ghostty をアクティベートしペインにフォーカス）
 FOCUS_SCRIPT="$HOME/.claude/hooks/focus-tmux-pane.sh"
 ICON_PATH="$HOME/.claude/icons/claude-ai-icon.png"
