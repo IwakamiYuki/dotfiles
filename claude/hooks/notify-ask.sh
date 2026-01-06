@@ -17,10 +17,27 @@ SESSION_DIR=$(basename "$(pwd)")
 # メッセージを抽出
 MSG=$(echo "$INPUT" | jq -r '.message')
 
+# 会話タイトルを取得（キャッシュがあれば使用）
+NOTIFICATION_TITLE="⚠️ Claude Code [$SESSION_DIR]"
+TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
+if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    # セッション ID を生成
+    SESSION_ID=$(basename "$TRANSCRIPT_PATH" .jsonl)
+    CACHE_FILE="/tmp/claude-title-${SESSION_ID}.txt"
+
+    # キャッシュを確認（既に存在するなら使用）
+    if [ -f "$CACHE_FILE" ]; then
+        TITLE=$(cat "$CACHE_FILE" 2>/dev/null)
+        if [ -n "$TITLE" ] && [ "$TITLE" != "新しい会話" ]; then
+            NOTIFICATION_TITLE="⚠️ $TITLE [$SESSION_DIR]"
+        fi
+    fi
+fi
+
 # tmux環境かどうかチェック
 if [ -z "$TMUX" ]; then
     # tmux環境でない場合は、terminal-notifier で通知
-    /opt/homebrew/bin/terminal-notifier -title "⚠️ Claude Code [$SESSION_DIR]" -message $'許可を求めています！\n'"$MSG" -sender "com.anthropic.claudefordesktop"
+    /opt/homebrew/bin/terminal-notifier -title "$NOTIFICATION_TITLE" -message $'許可を求めています！\n'"$MSG" -sender "com.anthropic.claudefordesktop"
     exit 0
 fi
 
@@ -48,7 +65,7 @@ ICON_PATH="$HOME/.claude/icons/claude-ai-icon.png"
 # アイコンが存在する場合は -contentImage オプションを追加
 if [ -f "$ICON_PATH" ]; then
   /opt/homebrew/bin/terminal-notifier \
-    -title "⚠️ Claude Code [$SESSION_DIR]" \
+    -title "$NOTIFICATION_TITLE" \
     -message $'許可を求めています！\n'"$MSG" \
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -contentImage "$ICON_PATH" \
@@ -56,7 +73,7 @@ if [ -f "$ICON_PATH" ]; then
     -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'"
 else
   /opt/homebrew/bin/terminal-notifier \
-    -title "⚠️ Claude Code [$SESSION_DIR]" \
+    -title "$NOTIFICATION_TITLE" \
     -message $'許可を求めています！\n'"$MSG" \
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -activate "com.mitchellh.ghostty" \

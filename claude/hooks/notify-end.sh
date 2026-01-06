@@ -33,17 +33,20 @@ else
     MSG="Task completed"
 fi
 
-# 会話タイトルを生成（AI 生成、非同期）
-# 通知タイトルに含める
+# 会話タイトルを取得（キャッシュがあれば使用）
 NOTIFICATION_TITLE="✅ Claude Code [$SESSION_DIR]"
 if [ -f "$TRANSCRIPT_PATH" ]; then
-    # バックグラウンドでタイトル生成を開始
-    (
-        TITLE=$(bash ~/.claude/scripts/generate-title.sh "$TRANSCRIPT_PATH" 2>/dev/null)
+    # セッション ID を生成
+    SESSION_ID=$(basename "$TRANSCRIPT_PATH" .jsonl)
+    CACHE_FILE="/tmp/claude-title-${SESSION_ID}.txt"
+
+    # キャッシュを確認（既に存在するなら使用）
+    if [ -f "$CACHE_FILE" ]; then
+        TITLE=$(cat "$CACHE_FILE" 2>/dev/null)
         if [ -n "$TITLE" ] && [ "$TITLE" != "新しい会話" ]; then
-            NOTIFICATION_TITLE="✅ Claude Code [$SESSION_DIR] - $TITLE"
+            NOTIFICATION_TITLE="✅ $TITLE [$SESSION_DIR]"
         fi
-    ) &
+    fi
 fi
 
 # tmux環境かどうかチェック
