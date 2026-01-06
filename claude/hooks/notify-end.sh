@@ -33,10 +33,23 @@ else
     MSG="Task completed"
 fi
 
+# 会話タイトルを生成（AI 生成、非同期）
+# 通知タイトルに含める
+NOTIFICATION_TITLE="✅ Claude Code [$SESSION_DIR]"
+if [ -f "$TRANSCRIPT_PATH" ]; then
+    # バックグラウンドでタイトル生成を開始
+    (
+        TITLE=$(bash ~/.claude/scripts/generate-title.sh "$TRANSCRIPT_PATH" 2>/dev/null)
+        if [ -n "$TITLE" ] && [ "$TITLE" != "新しい会話" ]; then
+            NOTIFICATION_TITLE="✅ Claude Code [$SESSION_DIR] - $TITLE"
+        fi
+    ) &
+fi
+
 # tmux環境かどうかチェック
 if [ -z "$TMUX" ]; then
     # tmux環境でない場合は、terminal-notifier で通知
-    /opt/homebrew/bin/terminal-notifier -title "✅ Claude Code [$SESSION_DIR]" -message "${MSG}" -sender "com.anthropic.claudefordesktop"
+    /opt/homebrew/bin/terminal-notifier -title "$NOTIFICATION_TITLE" -message "${MSG}" -sender "com.anthropic.claudefordesktop"
     exit 0
 fi
 
@@ -54,6 +67,9 @@ echo "$(date): SOCKET_PATH: $SOCKET_PATH" >> /tmp/notify-hook-debug.log
 # tmuxコマンドのPATHを明示的に設定
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# 通知送信前に前の通知を削除
+/opt/homebrew/bin/terminal-notifier -remove "claude-code-$SESSION_NAME-$PANE_ID" 2>/dev/null || true
+
 # 通知を送信（クリック時に Ghostty をアクティベートしペインにフォーカス）
 FOCUS_SCRIPT="$HOME/.claude/hooks/focus-tmux-pane.sh"
 ICON_PATH="$HOME/.claude/icons/claude-ai-icon.png"
@@ -61,7 +77,7 @@ ICON_PATH="$HOME/.claude/icons/claude-ai-icon.png"
 # アイコンが存在する場合は -contentImage オプションを追加
 if [ -f "$ICON_PATH" ]; then
   /opt/homebrew/bin/terminal-notifier \
-    -title "✅ Claude Code [$SESSION_DIR]" \
+    -title "$NOTIFICATION_TITLE" \
     -message "${MSG}" \
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -contentImage "$ICON_PATH" \
@@ -69,7 +85,7 @@ if [ -f "$ICON_PATH" ]; then
     -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'"
 else
   /opt/homebrew/bin/terminal-notifier \
-    -title "✅ Claude Code [$SESSION_DIR]" \
+    -title "$NOTIFICATION_TITLE" \
     -message "${MSG}" \
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -activate "com.mitchellh.ghostty" \

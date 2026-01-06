@@ -38,6 +38,9 @@ echo "$(date): SOCKET_PATH: $SOCKET_PATH" >> /tmp/notify-hook-debug.log
 # tmuxコマンドのPATHを明示的に設定
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# 通知送信前に前の通知を削除
+/opt/homebrew/bin/terminal-notifier -remove "claude-code-$SESSION_NAME-$PANE_ID" 2>/dev/null || true
+
 # クリック可能な通知を送信（クリック時に Ghostty をアクティベートしペインにフォーカス）
 FOCUS_SCRIPT="$HOME/.claude/hooks/focus-tmux-pane.sh"
 ICON_PATH="$HOME/.claude/icons/claude-ai-icon.png"
@@ -47,7 +50,7 @@ if [ -f "$ICON_PATH" ]; then
   /opt/homebrew/bin/terminal-notifier \
     -title "⚠️ Claude Code [$SESSION_DIR]" \
     -message $'許可を求めています！\n'"$MSG" \
-    -group "claude-code-ask-$SESSION_NAME-$PANE_ID" \
+    -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -contentImage "$ICON_PATH" \
     -activate "com.mitchellh.ghostty" \
     -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'"
@@ -55,7 +58,7 @@ else
   /opt/homebrew/bin/terminal-notifier \
     -title "⚠️ Claude Code [$SESSION_DIR]" \
     -message $'許可を求めています！\n'"$MSG" \
-    -group "claude-code-ask-$SESSION_NAME-$PANE_ID" \
+    -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -activate "com.mitchellh.ghostty" \
     -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'"
 fi
