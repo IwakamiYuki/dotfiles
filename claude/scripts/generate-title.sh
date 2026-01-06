@@ -72,16 +72,27 @@ if ! command -v codex &> /dev/null; then
     exit 0
 fi
 
-# 会話履歴を整形（直近 300 メッセージのみ、20000 文字まで）
+# 会話履歴を整形（最初の 100 メッセージ + 直近 100 メッセージ、20000 文字まで）
 # content が文字列の場合はそのまま、配列の場合は[0].text を使用
-CONVERSATION=$(jq -r '.message? |
-  if .content | type == "array" then
-    "\(.role): \(.content[0].text?)"
-  else
-    "\(.role): \(.content?)"
-  end' "$TRANSCRIPT_PATH" 2>/dev/null | \
-    tail -300 | \
-    head -c 20000)
+CONVERSATION=$(
+  (
+    jq -r '.message? |
+    if .content | type == "array" then
+      "\(.role): \(.content[0].text?)"
+    else
+      "\(.role): \(.content?)"
+    end' "$TRANSCRIPT_PATH" 2>/dev/null | \
+      head -100
+    echo "... [中略] ..."
+    jq -r '.message? |
+    if .content | type == "array" then
+      "\(.role): \(.content[0].text?)"
+    else
+      "\(.role): \(.content?)"
+    end' "$TRANSCRIPT_PATH" 2>/dev/null | \
+      tail -100
+  ) | head -c 20000
+)
 
 # トランスクリプトが空の場合
 if [ -z "$CONVERSATION" ]; then
