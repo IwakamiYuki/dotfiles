@@ -51,6 +51,8 @@
       "Update(.claude/tmp/**)",
       "mcp__jetbrains__find_files_by_glob",
       "mcp__jetbrains__search_in_files_by_text",
+      "mcp__md-review__session_new-id",
+      "mcp__md-review__review_request",
       "Bash(test:*)",
       "Bash(make app-generate:*)",
       "Bash(go build:*)"
@@ -71,7 +73,6 @@
     ],
     "defaultMode": "acceptEdits"
   },
-  "model": "haiku",
   "hooks": {
     "PreToolUse": [
       {
@@ -90,7 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/scripts/notify-end.sh"
+            "command": "bash ~/.claude/hooks/notify-end.sh"
           }
         ]
       }
@@ -101,7 +102,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/scripts/notify-ask.sh"
+            "command": "bash ~/.claude/hooks/notify-ask.sh"
           }
         ]
       }

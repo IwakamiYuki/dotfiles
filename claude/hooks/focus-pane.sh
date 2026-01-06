@@ -1,0 +1,1 @@
+/Users/a13445/dotfiles/claude/hooks/focus-pane.sh
