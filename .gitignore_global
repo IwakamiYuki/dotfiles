@@ -3,3 +3,4 @@
 .serena
 CLAUDE.local.md
 .claude/tmp/*
+.codex/skills/.system/
