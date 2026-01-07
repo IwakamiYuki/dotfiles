@@ -71,8 +71,8 @@ if [ -z "$TITLE" ]; then
     TITLE="新しい会話"
 fi
 
-# 「新しい会話」以外のみキャッシュに保存
-if [ "$TITLE" != "新しい会話" ]; then
+# メッセージ数が 10 以上で、かつ「新しい会話」以外のみキャッシュに保存
+if [ "$CURRENT_MSG_COUNT" -ge 10 ] && [ "$TITLE" != "新しい会話" ]; then
     echo "$TITLE" > "$CACHE_FILE" 2>/dev/null || true
     echo "$CURRENT_MSG_COUNT" > "$CACHE_META_FILE" 2>/dev/null || true
 fi
