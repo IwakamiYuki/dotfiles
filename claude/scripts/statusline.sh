@@ -168,10 +168,9 @@ conversation_title=""
 if [ -n "$transcript_path" ] && [ "$transcript_path" != "null" ]; then
     conversation_title=$(bash ~/.claude/scripts/generate-title.sh "$transcript_path" 2>/dev/null)
     if [ -n "$conversation_title" ] && [ "$conversation_title" != "新しい会話" ]; then
-        # 2行表示を試す（設計案 A）
-        echo "📝 ${conversation_title}"
+        conversation_title="📝 ${conversation_title} | "
     fi
 fi
 
 # 出力
-echo "🤖 $model | 📊 5h:$session_usage$session_resets_display 1w:$week_usage | 💬 $context_usage | ⏱️ ${duration_formatted} | 🔧 ${api_duration_formatted} | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"
+echo "${conversation_title}🤖 $model | 📊 5h:$session_usage$session_resets_display 1w:$week_usage | 💬 $context_usage | ⏱️ ${duration_formatted} | 🔧 ${api_duration_formatted} | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"
