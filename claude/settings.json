@@ -73,6 +73,7 @@
     ],
     "defaultMode": "acceptEdits"
   },
+  "model": "haiku",
   "hooks": {
     "PreToolUse": [
       {
@@ -124,5 +125,6 @@
     "command": "~/.claude/scripts/statusline.sh",
     "padding": 0
   },
-  "alwaysThinkingEnabled": false
+  "alwaysThinkingEnabled": false,
+  "language": "Japanese"
 }
