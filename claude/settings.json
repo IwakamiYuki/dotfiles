@@ -55,7 +55,8 @@
       "mcp__md-review__review_request",
       "Bash(test:*)",
       "Bash(make app-generate:*)",
-      "Bash(go build:*)"
+      "Bash(go build:*)", 
+      "Skill(review-pr)"
     ],
     "deny": [
       "NotebookEdit",
@@ -73,7 +74,6 @@
     ],
     "defaultMode": "acceptEdits"
   },
-  "model": "haiku",
   "hooks": {
     "PreToolUse": [
       {
@@ -136,6 +136,6 @@
     "command": "~/.claude/scripts/statusline.sh",
     "padding": 0
   },
-  "alwaysThinkingEnabled": false,
-  "language": "Japanese"
+  "language": "Japanese",
+  "alwaysThinkingEnabled": false
 }
