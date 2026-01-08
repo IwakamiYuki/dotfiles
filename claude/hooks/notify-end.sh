@@ -11,8 +11,8 @@ echo "$(date): Current TMUX: $TMUX" >> /tmp/notify-hook-debug.log
 echo "$(date): Current TMUX_PANE: $TMUX_PANE" >> /tmp/notify-hook-debug.log
 echo "=========================================" >> /tmp/notify-hook-debug.log
 
-# 現在のセッションディレクトリ名を取得（hooksはsessionと同じディレクトリで実行される）
-SESSION_DIR=$(basename "$(pwd)")
+# セッションディレクトリ名を取得（cwdから抽出）
+SESSION_DIR=$(echo "$INPUT" | jq -r '.cwd' | xargs basename)
 
 # transcript_pathを抽出
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path')
@@ -34,7 +34,20 @@ else
 fi
 
 # 会話タイトルを取得（キャッシュがあれば使用）
-NOTIFICATION_TITLE="✅ Claude Code [$SESSION_DIR]"
+# タイトルの長さを制限（絵文字2文字 + スペース1文字 + プロジェクト名 = 最大30文字）
+MAX_PROJECT_NAME_LENGTH=30
+if [ ${#SESSION_DIR} -gt $MAX_PROJECT_NAME_LENGTH ]; then
+    # 先頭と末尾を保持して中間を省略（先頭3/10、末尾7/10）
+    PREFIX_LEN=$((MAX_PROJECT_NAME_LENGTH * 3 / 10))
+    SUFFIX_LEN=$((MAX_PROJECT_NAME_LENGTH - PREFIX_LEN - 3))
+    PREFIX="${SESSION_DIR:0:$PREFIX_LEN}"
+    SUFFIX="${SESSION_DIR:(-$SUFFIX_LEN)}"
+    TRUNCATED_DIR="$PREFIX...$SUFFIX"
+else
+    TRUNCATED_DIR="$SESSION_DIR"
+fi
+NOTIFICATION_TITLE="✅ $TRUNCATED_DIR"
+CONV_TITLE=""
 if [ -f "$TRANSCRIPT_PATH" ]; then
     # セッション ID を生成
     SESSION_ID=$(basename "$TRANSCRIPT_PATH" .jsonl)
@@ -44,15 +57,22 @@ if [ -f "$TRANSCRIPT_PATH" ]; then
     if [ -f "$CACHE_FILE" ]; then
         TITLE=$(cat "$CACHE_FILE" 2>/dev/null)
         if [ -n "$TITLE" ] && [ "$TITLE" != "新しい会話" ]; then
-            NOTIFICATION_TITLE="✅ $TITLE [$SESSION_DIR]"
+            CONV_TITLE="$TITLE"
         fi
     fi
+fi
+
+# メッセージを組み立て（会話タイトル + 本体）
+if [ -n "$CONV_TITLE" ]; then
+    FULL_MESSAGE=" 💬 $CONV_TITLE"$'\n'"${MSG}"
+else
+    FULL_MESSAGE="${MSG}"
 fi
 
 # tmux環境かどうかチェック
 if [ -z "$TMUX" ]; then
     # tmux環境でない場合は、terminal-notifier で通知
-    /opt/homebrew/bin/terminal-notifier -title "$NOTIFICATION_TITLE" -message "${MSG}" -sender "com.anthropic.claudefordesktop"
+    /opt/homebrew/bin/terminal-notifier -title "$NOTIFICATION_TITLE" -message "$FULL_MESSAGE" -sender "com.anthropic.claudefordesktop"
     exit 0
 fi
 
@@ -81,7 +101,7 @@ ICON_PATH="$HOME/.claude/icons/claude-ai-icon.png"
 if [ -f "$ICON_PATH" ]; then
   /opt/homebrew/bin/terminal-notifier \
     -title "$NOTIFICATION_TITLE" \
-    -message "${MSG}" \
+    -message "$FULL_MESSAGE" \
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -contentImage "$ICON_PATH" \
     -activate "com.mitchellh.ghostty" \
@@ -89,7 +109,7 @@ if [ -f "$ICON_PATH" ]; then
 else
   /opt/homebrew/bin/terminal-notifier \
     -title "$NOTIFICATION_TITLE" \
-    -message "${MSG}" \
+    -message "$FULL_MESSAGE" \
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -activate "com.mitchellh.ghostty" \
     -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'"

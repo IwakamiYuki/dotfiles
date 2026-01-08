@@ -19,7 +19,7 @@
 set -e
 
 TRANSCRIPT_PATH="$1"
-MAX_LENGTH="${CLAUDE_TITLE_MAX_LENGTH:-15}"
+MAX_LENGTH="${CLAUDE_TITLE_MAX_LENGTH:-20}"
 
 # macOS での timeout コマンド（GNU timeout がない場合は gtimeout を試す）
 TIMEOUT_CMD="timeout"
