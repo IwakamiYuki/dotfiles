@@ -118,6 +118,17 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/notify-session-end.sh"
+          }
+        ]
+      }
     ]
   },
   "statusLine": {
