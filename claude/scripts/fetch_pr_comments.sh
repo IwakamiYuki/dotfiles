@@ -10,9 +10,43 @@
 
 set -euo pipefail
 
+# 直前 push 時刻を取得する関数
+get_last_push_time() {
+    local branch remote_name
+
+    # 現在のブランチ名を取得
+    branch=$(git branch --show-current 2>/dev/null)
+    if [[ -z "$branch" ]]; then
+        return 1
+    fi
+
+    # リモート名を取得（デフォルトは origin、存在しなければ最初のリモート）
+    if git remote | grep -q "^origin$"; then
+        remote_name="origin"
+    else
+        remote_name=$(git remote | head -n 1)
+    fi
+
+    if [[ -z "$remote_name" ]]; then
+        return 1
+    fi
+
+    # リモートブランチが存在するか確認
+    if ! git rev-parse "${remote_name}/${branch}" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    # リモート情報を更新（静音で実行）
+    git fetch "$remote_name" 2>/dev/null || return 1
+
+    # リモートブランチの最新コミット時刻を取得（ISO 8601 形式）
+    git log -1 --format=%aI "${remote_name}/${branch}" 2>/dev/null
+}
+
 # デフォルト設定
 SINCE=""
 PRIORITY=""
+SHOW_ALL=false
 
 # 色付き出力
 RED='\033[0;31m'
@@ -29,13 +63,15 @@ PR レビューコメント取得スクリプト
 Usage: $0 [OPTIONS]
 
 Options:
+  -a, --all                全コメントを取得（デフォルトの自動フィルタを無効化）
   -s, --since <timestamp>  特定の日時以降のコメントのみ取得
                            例: "2025-01-08T09:00:00Z"
   -p, --priority <level>   優先度フィルタ (P1, P2, etc.)
   -h, --help              このヘルプを表示
 
 Examples:
-  $0                            # 全コメント取得
+  $0                            # デフォルト: 直前 push 以降のコメント（新機能）
+  $0 -a                         # 全コメント取得
   $0 -s "2025-01-08T09:00:00Z"  # 特定日時以降のコメント
   $0 -p P1                      # P1 優先度のコメントのみ
 
@@ -46,6 +82,10 @@ EOF
 # 引数解析
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -a|--all)
+            SHOW_ALL=true
+            shift
+            ;;
         -s|--since)
             if [[ $# -lt 2 ]]; then
                 echo -e "${RED}エラー: -s オプションには引数が必要です${NC}" >&2
@@ -94,6 +134,18 @@ fi
 echo -e "${GREEN}PR 番号: $PR_NUMBER${NC}"
 echo -e "${GREEN}リポジトリ: $REPO${NC}"
 echo ""
+
+# オプション未指定時のデフォルト動作: 直前 push 時刻を自動取得
+if [[ -z "$SINCE" ]] && [[ "$SHOW_ALL" != true ]] && [[ -z "$PRIORITY" ]]; then
+    echo -e "${YELLOW}直前の push 時刻を取得中...${NC}"
+    SINCE=$(get_last_push_time)
+    if [[ -z "$SINCE" ]]; then
+        echo -e "${YELLOW}警告: push 時刻を取得できません。全コメントを表示します。${NC}"
+    else
+        echo -e "${GREEN}フィルタ: $SINCE 以降のコメントを表示${NC}"
+    fi
+    echo ""
+fi
 
 # 1. インラインコメント取得
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
