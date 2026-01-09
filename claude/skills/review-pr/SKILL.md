@@ -29,6 +29,9 @@ GitHub の Pull Request に対するレビューコメントを取得し、見�
 - PR のコメント
 - レビュー結果を確認
 - フィードバックを確認
+- レビューコメントに返信してください
+- コメントに対応してください
+- フィードバックに返信
 
 **英語**:
 - check review comments
@@ -36,6 +39,9 @@ GitHub の Pull Request に対するレビューコメントを取得し、見�
 - PR comments
 - review feedback
 - check feedback
+- reply to review comments
+- respond to comments
+- reply to feedback
 
 ## 使用方法
 
@@ -218,6 +224,50 @@ fi
 gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" \
   --jq '.[] | select(.body | contains("P1")) | "File: \(.path)\nLine: \(.line // .original_line)\nComment: \(.body)\n---"'
 ```
+
+## レビューコメントへの返信
+
+### 自動返信ワークフロー
+
+Claude がレビューコメントに対して返信を生成・投稿できます。
+
+**ステップ 1**: コメントを確認
+```bash
+~/.claude/scripts/fetch_pr_comments.sh
+```
+
+**ステップ 2**: Claude に返信を依頼
+```
+「このレビューコメントに返信してください」
+```
+
+**ステップ 3**: Claude が返信内容を生成し、確認を求める
+
+**ステップ 4**: 承認後、自動的に GitHub に返信を投稿
+
+### 手動返信
+
+特定のコメントに直接返信:
+```bash
+~/.claude/scripts/reply_pr_comments.sh \
+  -c <comment_id> \
+  -m "返信メッセージ"
+```
+
+### ドライラン
+
+実際には投稿せず、返信内容のみプレビュー:
+```bash
+~/.claude/scripts/reply_pr_comments.sh \
+  --dry-run \
+  -c <comment_id> \
+  -m "返信メッセージ"
+```
+
+### 返信機能の制限事項
+
+- **トップレベルコメントのみ対応**: REST API の制限により、返信への返信はできません
+- **手動承認が必須**: Claude が生成した返信は、ユーザーの承認後に投稿されます
 
 ## 参考資料
 
