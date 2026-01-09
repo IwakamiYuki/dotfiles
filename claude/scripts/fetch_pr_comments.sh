@@ -147,7 +147,7 @@ if [[ -z "$SINCE" ]] && [[ "$SHOW_ALL" != true ]] && [[ -z "$PRIORITY" ]]; then
     echo ""
 fi
 
-# 1. インラインコメント取得
+# 1. インラインコメント取得（REST API）
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}インラインコメント (Pull Request Review Comments)${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -161,6 +161,96 @@ elif [[ -n "$PRIORITY" ]]; then
 else
     gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" | \
       jq '.[] | "File: \(.path)\nLine: \(.line // .original_line)\nAuthor: \(.user.login)\nCreated: \(.created_at)\n\(.body)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"' -r
+fi
+
+# Review Thread コメント取得（GraphQL API - discussion_r 形式）
+echo ""
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Review Thread コメント (Discussion Comments)${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+OWNER=$(echo "$REPO" | cut -d/ -f1)
+REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
+
+if [[ -n "$SINCE" ]]; then
+    # SINCE を UTC に変換（Python を使用）
+    SINCE_UTC=$(python3 -c "from datetime import datetime; import sys; dt = datetime.fromisoformat('$SINCE'); print(dt.astimezone(__import__('datetime').timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null || echo "$SINCE")
+    gh api graphql -f query="
+query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      reviewThreads(first: 100) {
+        nodes {
+          comments(first: 10) {
+            nodes {
+              databaseId
+              author { login }
+              body
+              createdAt
+              path
+              position
+            }
+          }
+        }
+      }
+    }
+  }
+}" | jq --arg since "$SINCE_UTC" -r '
+  .data.repository.pullRequest.reviewThreads.nodes[]?.comments.nodes[]? |
+  select(.createdAt > $since) |
+  "File: \(.path)\nLine: \(.position // "N/A")\nAuthor: \(.author.login)\nCreated: \(.createdAt)\nDiscussion ID: discussion_r\(.databaseId)\n\(.body)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+'
+elif [[ -n "$PRIORITY" ]]; then
+    gh api graphql -f query="
+query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      reviewThreads(first: 100) {
+        nodes {
+          comments(first: 10) {
+            nodes {
+              databaseId
+              author { login }
+              body
+              createdAt
+              path
+              position
+            }
+          }
+        }
+      }
+    }
+  }
+}" | jq --arg priority "$PRIORITY" -r '
+  .data.repository.pullRequest.reviewThreads.nodes[]?.comments.nodes[]? |
+  select(.body | contains($priority)) |
+  "File: \(.path)\nLine: \(.position // "N/A")\nAuthor: \(.author.login)\nCreated: \(.createdAt)\nDiscussion ID: discussion_r\(.databaseId)\n\(.body)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+'
+else
+    gh api graphql -f query="
+query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      reviewThreads(first: 100) {
+        nodes {
+          comments(first: 10) {
+            nodes {
+              databaseId
+              author { login }
+              body
+              createdAt
+              path
+              position
+            }
+          }
+        }
+      }
+    }
+  }
+}" | jq -r '
+  .data.repository.pullRequest.reviewThreads.nodes[]?.comments.nodes[]? |
+  "File: \(.path)\nLine: \(.position // "N/A")\nAuthor: \(.author.login)\nCreated: \(.createdAt)\nDiscussion ID: discussion_r\(.databaseId)\n\(.body)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+'
 fi
 
 # 2. 一般コメント取得
@@ -203,13 +293,28 @@ echo -e "${GREEN}取得完了${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 INLINE_COUNT=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" | jq '. | length')
+DISCUSSION_COUNT=$(gh api graphql -f query="
+query {
+  repository(owner: \"$OWNER\", name: \"$REPO_NAME\") {
+    pullRequest(number: $PR_NUMBER) {
+      reviewThreads(first: 100) {
+        nodes {
+          comments(first: 10) {
+            totalCount
+          }
+        }
+      }
+    }
+  }
+}" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]?.comments.totalCount // 0] | add')
 ISSUE_COUNT=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" | jq '. | length')
 REVIEW_COUNT=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" | jq '[.[] | select(.body and (.body | length) > 0)] | length')
 
 echo "インラインコメント: $INLINE_COUNT 件"
+echo "Discussion コメント: $DISCUSSION_COUNT 件"
 echo "一般コメント: $ISSUE_COUNT 件"
 echo "レビューコメント: $REVIEW_COUNT 件"
-echo "合計: $((INLINE_COUNT + ISSUE_COUNT + REVIEW_COUNT)) 件"
+echo "合計: $((INLINE_COUNT + DISCUSSION_COUNT + ISSUE_COUNT + REVIEW_COUNT)) 件"
 
 if [[ -n "$SINCE" ]]; then
     echo ""
