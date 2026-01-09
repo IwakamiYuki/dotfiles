@@ -45,16 +45,16 @@ GitHub の Pull Request に対するレビューコメントを取得し、見�
 
 ```bash
 # 全コメントを取得
-$CLAUDE_SCRIPT_DIR/fetch_pr_comments.sh
+~/.claude/scripts/fetch_pr_comments.sh
 
 # 特定の日時以降のコメントのみ取得
-$CLAUDE_SCRIPT_DIR/fetch_pr_comments.sh -s "2025-01-08T09:00:00Z"
+~/.claude/scripts/fetch_pr_comments.sh -s "2025-01-08T09:00:00Z"
 
 # P1 優先度のコメントのみ取得
-$CLAUDE_SCRIPT_DIR/fetch_pr_comments.sh -p P1
+~/.claude/scripts/fetch_pr_comments.sh -p P1
 
 # ヘルプを表示
-$CLAUDE_SCRIPT_DIR/fetch_pr_comments.sh -h
+~/.claude/scripts/fetch_pr_comments.sh -h
 ```
 
 スクリプトは以下を自動で処理します：
