@@ -49,11 +49,60 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     fi
 fi
 
-# メッセージを組み立て（会話タイトル + 本体）
+# ツール情報を取得（permission_promptの場合）
+TOOL_INFO=""
+NOTIFICATION_TYPE=$(echo "$INPUT" | jq -r '.notification_type // "unknown"')
+echo "$(date): NOTIFICATION_TYPE: $NOTIFICATION_TYPE" >> /tmp/notify-hook-debug.log
+
+if [[ "$NOTIFICATION_TYPE" == "permission_prompt" && -n "$TRANSCRIPT_PATH" && -f "$TRANSCRIPT_PATH" ]]; then
+  echo "$(date): Extracting tool info from transcript..." >> /tmp/notify-hook-debug.log
+
+  # ツール情報を2段階で取得：1. ツール名、2. コマンド/パラメータ
+  TOOL_NAME=$(tail -20 "$TRANSCRIPT_PATH" | jq -r '
+    select(.message.role == "assistant" and .message.content != null) |
+    .message.content[] |
+    select(.type == "tool_use") |
+    .name
+  ' | tail -1)
+
+  TOOL_COMMAND=$(tail -20 "$TRANSCRIPT_PATH" | jq -r '
+    select(.message.role == "assistant" and .message.content != null) |
+    .message.content[] |
+    select(.type == "tool_use") |
+    if .name == "Bash" then
+      .input.command // .input.description // ""
+    else
+      .input | to_entries | map(select(.key != "description") | "\(.key): \(.value | tostring | .[0:100])") | join("\n")
+    end
+  ' | tail -1)
+
+  if [ -n "$TOOL_NAME" ] && [ -n "$TOOL_COMMAND" ]; then
+    TOOL_INFO="🔧 $TOOL_NAME: $TOOL_COMMAND"
+  else
+    TOOL_INFO=""
+  fi
+
+  echo "$(date): TOOL_INFO (raw):" >> /tmp/notify-hook-debug.log
+  printf '%s\n' "$TOOL_INFO" >> /tmp/notify-hook-debug.log
+  echo "$(date): TOOL_INFO (hex): $(printf '%s' "$TOOL_INFO" | od -An -tx1 | tr -d ' \n')" >> /tmp/notify-hook-debug.log
+fi
+
+# メッセージを組み立て（会話タイトル + ツール情報）
 if [ -n "$CONV_TITLE" ]; then
-    FULL_MESSAGE=" 💬 $CONV_TITLE"$'\n'"$MSG"
+    FULL_MESSAGE=" 💬 $CONV_TITLE"
 else
     FULL_MESSAGE="$MSG"
+fi
+
+if [ -n "$TOOL_INFO" ]; then
+    FULL_MESSAGE="$FULL_MESSAGE"$'\n'"$TOOL_INFO"
+    echo "$(date): Added TOOL_INFO to message" >> /tmp/notify-hook-debug.log
+else
+    # ツール情報がない場合は元のメッセージを追加
+    if [ -n "$CONV_TITLE" ]; then
+        FULL_MESSAGE="$FULL_MESSAGE"$'\n'"$MSG"
+    fi
+    echo "$(date): No TOOL_INFO to add" >> /tmp/notify-hook-debug.log
 fi
 
 # tmux環境かどうかチェック
@@ -86,10 +135,14 @@ ICON_PATH="$HOME/.claude/icons/claude-ai-icon.png"
 echo "$(date): NOTIFICATION_TITLE: $NOTIFICATION_TITLE" >> /tmp/notify-hook-debug.log
 echo "$(date): CONV_TITLE: $CONV_TITLE" >> /tmp/notify-hook-debug.log
 echo "$(date): FULL_MESSAGE: $FULL_MESSAGE" >> /tmp/notify-hook-debug.log
+echo "$(date): FULL_MESSAGE (hex): $(echo -n "$FULL_MESSAGE" | od -An -tx1 | tr -d ' ')" >> /tmp/notify-hook-debug.log
 
 # アイコンが存在する場合は -contentImage オプションを追加
 if [ -f "$ICON_PATH" ]; then
   echo "$(date): Sending notification with icon" >> /tmp/notify-hook-debug.log
+  echo "$(date): About to call terminal-notifier with:" >> /tmp/notify-hook-debug.log
+  echo "  -title: $NOTIFICATION_TITLE" >> /tmp/notify-hook-debug.log
+  echo "  -message length: ${#FULL_MESSAGE}" >> /tmp/notify-hook-debug.log
   /opt/homebrew/bin/terminal-notifier \
     -title "$NOTIFICATION_TITLE" \
     -message "$FULL_MESSAGE" \
@@ -97,6 +150,7 @@ if [ -f "$ICON_PATH" ]; then
     -contentImage "$ICON_PATH" \
     -activate "com.mitchellh.ghostty" \
     -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'" 2>> /tmp/notify-hook-debug.log
+  echo "$(date): terminal-notifier exit code: $?" >> /tmp/notify-hook-debug.log
 else
   echo "$(date): Sending notification without icon" >> /tmp/notify-hook-debug.log
   /opt/homebrew/bin/terminal-notifier \
