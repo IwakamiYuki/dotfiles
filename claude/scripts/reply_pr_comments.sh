@@ -9,6 +9,7 @@ set -euo pipefail
 DRY_RUN=false
 COMMENT_ID=""
 REPLY_MESSAGE=""
+NO_AI_SIGNATURE=false
 
 # 色付き出力
 RED='\033[0;31m'
@@ -28,11 +29,13 @@ Options:
   -c, --comment-id <id>    返信対象のコメント ID (必須)
   -m, --message <text>     返信メッセージ (必須)
   --dry-run                実際には投稿せず、プレビューのみ表示
+  --no-ai-signature        AI 署名を追加しない
   -h, --help              このヘルプを表示
 
 Examples:
   $0 -c 123456 -m "ご指摘ありがとうございます。修正しました。"
   $0 --dry-run -c 123456 -m "テスト返信"
+  $0 --no-ai-signature -c 123456 -m "人間が直接書いた返信"
 
 EOF
     exit 0
@@ -43,6 +46,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --dry-run)
             DRY_RUN=true
+            shift
+            ;;
+        --no-ai-signature)
+            NO_AI_SIGNATURE=true
             shift
             ;;
         -c|--comment-id)
@@ -105,6 +112,11 @@ echo -e "${GREEN}PR 番号: $PR_NUMBER${NC}"
 echo -e "${GREEN}リポジトリ: $REPO${NC}"
 echo -e "${GREEN}コメント ID: $COMMENT_ID${NC}"
 echo ""
+
+# AI 署名を追加（デフォルト）
+if [[ "$NO_AI_SIGNATURE" != true ]]; then
+    REPLY_MESSAGE="${REPLY_MESSAGE}"$'\n\n'"---"$'\n'"🤖 _This reply was generated with AI assistance_"
+fi
 
 # ドライランモード
 if [[ "$DRY_RUN" == true ]]; then
