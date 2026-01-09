@@ -56,7 +56,9 @@
       "Bash(test:*)",
       "Bash(make app-generate:*)",
       "Bash(go build:*)", 
-      "Skill(review-pr)"
+      "Skill(review-pr)", 
+      "Bash(gh api:*)",
+      "Bash(~/.claude/scripts/fetch_pr_comments.sh:*)"
     ],
     "deny": [
       "NotebookEdit",

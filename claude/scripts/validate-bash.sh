@@ -56,5 +56,28 @@ if echo "$command" | grep -qE 'perl.*-[ip]'; then
     exit 2
 fi
 
+# git add の安全性チェック
+if echo "$command" | grep -qE '^git[[:space:]]+add'; then
+    # 危険なパターンを検出: -A, --all, .
+    if echo "$command" | grep -qE 'git[[:space:]]+add[[:space:]]+(-A|--all|\.([[:space:]]|$))'; then
+        echo "ERROR: git add -A, git add ., git add --all は禁止されています。" >&2
+        echo "" >&2
+        echo "理由:" >&2
+        echo "  - 意図しないファイルのステージングリスク" >&2
+        echo "  - 機密情報の誤コミット防止" >&2
+        echo "" >&2
+        echo "代わりに以下を実行してください:" >&2
+        echo "  1. git status で変更ファイルを確認" >&2
+        echo "  2. ステージングするファイルを個別に指定" >&2
+        echo "  3. git add <file1> <file2> ..." >&2
+        exit 2
+    fi
+
+    # ワイルドカードの使用を警告（ブロックはしない）
+    if echo "$command" | grep -qE 'git[[:space:]]+add[[:space:]].*\*'; then
+        echo "WARNING: git add でのワイルドカード使用が検出されました。より具体的にファイルを指定することを推奨します。" >&2
+    fi
+fi
+
 # コマンド実行を許可
 exit 0

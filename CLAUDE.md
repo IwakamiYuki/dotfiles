@@ -126,16 +126,33 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - TodoWrite でタスク管理しながら段階的に生成
 - `ドキュメント構成.md` でカスタマイズ可能
 
+**hooks: Git add 安全性強化**
+- `validate-bash.sh` で `git add -A`、`git add .`、`git add --all` を自動的にブロック
+- PreToolUse フックで Claude Code が git add を実行する前に検証
+- 機密ファイルの誤コミットを防止
+- 補助ツール: `scripts/safe-git-add.sh` で手動実行時も同様の検証を提供
+
 **OpenAI Codex CLI 統合**:
 - `claude/commands/` は `~/.codex/prompts/` にもリンク
 - Codex CLI では `/prompts:serena`、`/prompts:wiki` で実行
 - コマンドファイルは両方の AI CLI で共有可能
 
 **scripts/**: 各種スクリプト
-- `statusline.sh`: カスタムステータスライン（コンテキスト使用量、セッション情報、処理時間、コード変更量を表示）
+- `statusline.sh`: カスタムステータスライン（会話タイトル、コンテキスト使用量、セッション情報、処理時間、コード変更量を表示）
+- `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
+- `generate-title.sh`: 会話タイトル生成（AI 生成）。codex CLI で会話全体を要約してタイトルを作成。失敗時は extract-title.sh にフォールバック
 - `get-session-usage.sh`: セッション使用率取得（キャッシュ機構付き）
-- `notify-end.sh`, `notify-ask.sh`: 通知フックスクリプト
+- `notify-end.sh`, `notify-ask.sh`: 通知フックスクリプト（notify-end.sh は AI 生成タイトルで通知タイトルを更新）
 - `debug-statusline-input.sh`: statusLine 入力データのデバッグ用
+
+**会話タイトル機能について**:
+- **statusLine での表示**: 2 行表示で最初の行に会話タイトルを表示。例: `📝 statusLine実装調査` / `🤖 Haiku | 📊 ...`
+- **通知での表示**: タスク完了時の通知タイトルに AI 生成タイトルを含める。例: `✅ Claude Code [dotfiles] - statusLine実装調査`
+- **キャッシュ**: `/tmp/claude-title-<session_id>.txt` にキャッシュされ、同じセッション内での重複生成を回避
+- **環境変数**:
+  - `CLAUDE_DISABLE_AI_TITLE=1`: AI 生成をスキップしてルールベース抽出のみを使用
+  - `CLAUDE_TITLE_MAX_LENGTH=30`: タイトルの最大文字数（デフォルト: 30）
+- **トラブルシューティング**: キャッシュをクリアする場合は `rm /tmp/claude-title-*.txt`
 
 ### Zsh (.zshrc)
 - 100 万行の履歴管理
