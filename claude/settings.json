@@ -55,8 +55,8 @@
       "mcp__md-review__review_request",
       "Bash(test:*)",
       "Bash(make app-generate:*)",
-      "Bash(go build:*)", 
-      "Skill(review-pr)", 
+      "Bash(go build:*)",
+      "Skill(review-pr)",
       "Bash(gh api:*)",
       "Bash(~/.claude/scripts/fetch_pr_comments.sh:*)"
     ],
@@ -110,6 +110,17 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/clear-notification-after-tool.sh"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "",
@@ -139,5 +150,6 @@
     "padding": 0
   },
   "language": "Japanese",
-  "alwaysThinkingEnabled": false
+  "alwaysThinkingEnabled": false,
+  "model": "haiku"
 }
