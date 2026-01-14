@@ -16,7 +16,7 @@ description: |-
   6. Post replies after user approval
 
   This is a fully automated workflow with user approval checkpoints.
-allowed-tools: Bash, Read, Edit, Write
+allowed-tools: Read, Edit, Write
 ---
 
 # PR レビューコメント確認スキル
