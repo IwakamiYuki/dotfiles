@@ -30,11 +30,8 @@
       "mcp__serena__think_about_whether_you_are_done",
       "mcp__jetbrains__find_files_by_name_keyword",
       "mcp__jetbrains__list_directory_tree",
-      "mcp__sequential-thinking__sequentialthinking",
       "WebSearch",
       "mcp__jetbrains__get_file_text_by_path",
-      "mcp__serena__read_memory",
-      "mcp__serena__list_memories",
       "Bash(git log:*)",
       "Bash(gh issue view:*)",
       "Bash(awk:*)",
@@ -64,7 +61,10 @@
       "NotebookEdit",
       "NotebookRead",
       "Bash(rm -rf:*)",
-      "mcp__serena__execute_shell_command"
+      "mcp__serena__execute_shell_command",
+      "mcp__serena__write_memory",
+      "mcp__serena__delete_memory",
+      "mcp__serena__edit_memory"
     ],
     "ask": [
       "Bash(rm:*)",
@@ -150,6 +150,5 @@
     "padding": 0
   },
   "language": "Japanese",
-  "alwaysThinkingEnabled": false,
-  "model": "haiku"
+  "alwaysThinkingEnabled": false
 }

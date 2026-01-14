@@ -110,9 +110,8 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 
 ### Claude Code (claude/)
 **settings.json**: MCP サーバーの事前承認とフック設定
-- Serena（セマンティックコード操作）、JetBrains、Context7、sequential-thinking
+- Serena（セマンティックコード操作）、JetBrains、Context7
 - タスク完了/ユーザープロンプト時に terminal-notifier で通知
-- `alwaysThinkingEnabled: true` で高度な推論を有効化
 - カスタム statusLine で使用量とコンテキスト情報を表示
 
 **commands/serena.md**: `/serena` コマンド
@@ -194,6 +193,8 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 │   ├── scripts/           # 通知フックスクリプト
 │   ├── agents/            # カスタムエージェント
 │   └── skills/            # カスタムスキル
+│       ├── sequential-thinking/  # 段階的思考スキル
+│       └── ...            # その他スキル
 ├── lazygit/config.yml     # Lazygit 設定
 ├── ghostty/config         # Ghostty 設定（Shift+Enter 対応）
 ├── CLAUDE.md              # このファイル（プロジェクト固有指示）
