@@ -47,6 +47,7 @@ get_last_push_time() {
 SINCE=""
 PRIORITY=""
 SHOW_ALL=false
+JSON_OUTPUT=false
 
 # 色付き出力
 RED='\033[0;31m'
@@ -67,6 +68,7 @@ Options:
   -s, --since <timestamp>  特定の日時以降のコメントのみ取得
                            例: "2025-01-08T09:00:00Z"
   -p, --priority <level>   優先度フィルタ (P1, P2, etc.)
+  --json                   JSON 形式で出力（自動処理用）
   -h, --help              このヘルプを表示
 
 Examples:
@@ -101,6 +103,10 @@ while [[ $# -gt 0 ]]; do
             fi
             PRIORITY="$2"
             shift 2
+            ;;
+        --json)
+            JSON_OUTPUT=true
+            shift
             ;;
         -h|--help)
             show_help

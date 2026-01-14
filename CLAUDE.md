@@ -136,6 +136,18 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - Codex CLI では `/prompts:serena`、`/prompts:wiki` で実行
 - コマンドファイルは両方の AI CLI で共有可能
 
+**skills/review-pr/**: PR レビュー自動対応スキル
+- ユーザーが「レビューコメントに対応」と依頼すると自動起動
+- 完全自動化ワークフロー:
+  1. 直前 push 以降のコメントを取得
+  2. Claude が修正案を生成（一括承認）
+  3. 修正を適用 + commit & push
+  4. 返信文を生成（一括承認）
+  5. GitHub に一括投稿
+- `auto_reply_pr_comments.sh`: メインスクリプト（JSON 形式でコメント取得）
+- `post_pr_reply.sh`: 返信投稿ヘルパー（REST/GraphQL API）
+- AI 署名を自動追加（透明性確保）
+
 **scripts/**: 各種スクリプト
 - `statusline.sh`: カスタムステータスライン（会話タイトル、コンテキスト使用量、セッション情報、処理時間、コード変更量を表示）
 - `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
@@ -143,6 +155,9 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - `get-session-usage.sh`: セッション使用率取得（キャッシュ機構付き）
 - `notify-end.sh`, `notify-ask.sh`: 通知フックスクリプト（notify-end.sh は AI 生成タイトルで通知タイトルを更新）
 - `debug-statusline-input.sh`: statusLine 入力データのデバッグ用
+- `fetch_pr_comments.sh`: PR コメント取得（表示専用）
+- `auto_reply_pr_comments.sh`: PR コメント自動対応（修正 + 返信）
+- `post_pr_reply.sh`: PR コメント返信投稿
 
 **会話タイトル機能について**:
 - **statusLine での表示**: 2 行表示で最初の行に会話タイトルを表示。例: `📝 statusLine実装調査` / `🤖 Haiku | 📊 ...`
@@ -193,6 +208,7 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 │   ├── scripts/           # 通知フックスクリプト
 │   ├── agents/            # カスタムエージェント
 │   └── skills/            # カスタムスキル
+│       ├── review-pr/     # PR レビュー自動対応スキル
 │       ├── sequential-thinking/  # 段階的思考スキル
 │       └── ...            # その他スキル
 ├── lazygit/config.yml     # Lazygit 設定

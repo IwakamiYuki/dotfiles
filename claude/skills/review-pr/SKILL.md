@@ -1,16 +1,22 @@
 ---
 name: review-pr
 description: |-
-  Fetch and display Pull Request review comments from GitHub. Use this skill when:
-  - User says "レビューコメントを確認" / "check review comments"
-  - User says "新しいコメント" / "new comments"
-  - User says "PR のコメント" / "PR comments"
-  - User mentions getting feedback on a PR
-  - After pushing commits to a PR branch
+  Automatically handle Pull Request review comments from GitHub. Use this skill when:
+  - User says "レビューコメントに対応" / "respond to review comments"
+  - User says "レビューコメントを確認して修正" / "check and fix review comments"
+  - User says "PR のフィードバックに対応" / "address PR feedback"
+  - User mentions fixing review feedback on a PR
 
-  Automatically fetches inline comments, review comments, and general comments,
-  and displays them in an organized format for easy review.
-allowed-tools: Bash, Read
+  Workflow:
+  1. Fetch review comments (inline, discussion, general)
+  2. Analyze all comments and generate fix proposals
+  3. Apply fixes after user approval
+  4. Commit and push changes
+  5. Generate reply messages for each comment
+  6. Post replies after user approval
+
+  This is a fully automated workflow with user approval checkpoints.
+allowed-tools: Bash, Read, Edit, Write
 ---
 
 # PR レビューコメント確認スキル
@@ -24,151 +30,73 @@ GitHub の Pull Request に対するレビューコメントを取得し、見�
 以下のフレーズを含む依頼があった場合、このスキルを使用：
 
 **日本語**:
-- レビューコメントを確認
-- 新しいコメントを見せて
-- PR のコメント
-- レビュー結果を確認
-- フィードバックを確認
-- レビューコメントに返信してください
+- レビューコメントに対応
+- レビューコメントを確認して修正
+- PR のフィードバックに対応
+- レビュー指摘を修正して返信
 - コメントに対応してください
-- フィードバックに返信
 
 **英語**:
-- check review comments
-- show new comments
-- PR comments
-- review feedback
-- check feedback
-- reply to review comments
-- respond to comments
-- reply to feedback
+- respond to review comments
+- address review feedback
+- fix and reply to comments
+- handle PR feedback
 
 ## 使用方法
 
-### 推奨: スクリプトを使用
+ユーザーが「レビューコメントに対応」と依頼すると、このスキルが自動的に起動します。
 
-**最も簡単な方法** は用意されたスクリプトを使用することです：
+### 自動実行フロー
 
-```bash
-# デフォルト: 直前の push 以降のコメントのみ取得（新機能）
-~/.claude/scripts/fetch_pr_comments.sh
-
-# 全コメントを取得
-~/.claude/scripts/fetch_pr_comments.sh -a
-
-# 特定の日時以降のコメントのみ取得
-~/.claude/scripts/fetch_pr_comments.sh -s "2025-01-08T09:00:00Z"
-
-# P1 優先度のコメントのみ取得
-~/.claude/scripts/fetch_pr_comments.sh -p P1
-
-# ヘルプを表示
-~/.claude/scripts/fetch_pr_comments.sh -h
-```
-
-スクリプトは以下を自動で処理します：
-- PR 番号とリポジトリの自動検出
-- 直前の push 時刻の自動取得（デフォルト動作）
-- エラーハンドリング
-- 3 種類のコメントの取得と整形
-- 色付き表示
-- フィルタリング機能
-
-### 基本的な使い方（手動実行）
+**完全自動化** で修正から返信まで一気に実行：
 
 ```bash
-# 現在のブランチの PR 番号を自動検出
-PR_NUMBER=$(gh pr view --json number --jq '.number' 2>/dev/null)
-if [[ -z "$PR_NUMBER" ]]; then
-    echo "エラー: 現在のブランチに関連付けられた PR が見つかりません"
-    exit 1
-fi
-
-# リポジトリを動的に取得
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
-if [[ -z "$REPO" ]]; then
-    echo "エラー: リポジトリ情報を取得できません"
-    exit 1
-fi
-
-# インラインコメントを取得
-gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments"
+~/.claude/scripts/auto_reply_pr_comments.sh
 ```
 
-### 出力形式
+このスクリプトは以下を自動で処理します：
 
-コメントは以下の形式で表示されます：
+1. **コメント取得**: 直前 push 以降のレビューコメントを JSON 形式で取得
+2. **Claude 連携**: コメントデータを Claude に渡す
+3. **修正案生成**: Claude がすべての指摘に対する修正案を生成
+4. **ユーザー承認**: 修正案を一覧表示し、一括承認を求める
+5. **修正適用**: 承認された修正を適用
+6. **コミット & プッシュ**: 修正をコミットして PR にプッシュ
+7. **返信生成**: 各コメントへの返信文を生成
+8. **返信承認**: 返信文を一覧表示し、一括承認を求める
+9. **一括投稿**: 承認された返信を GitHub に投稿
 
+**処理フロー**:
 ```
-File: tools/test/run_unity_tests.sh
-Line: 102
-Comment: ワイルドカードを使用したファイル削除は予期しない...
----
+fetch comments → analyze → generate fixes → [USER APPROVAL] →
+apply fixes → commit & push → generate replies → [USER APPROVAL] →
+post replies
 ```
+
+**重要な注意事項**:
+- Claude がこのスクリプトを実行すると、JSON データが出力されます
+- Claude はその JSON を読み取り、修正案と返信文を生成します
+- ユーザーは修正案と返信文を確認し、承認します
+- 承認後、Claude がコードを修正してコミット・プッシュし、返信を投稿します
+
 
 ## 機能
 
 - ✅ **自動 PR 検出**: 現在のブランチから PR 番号を自動取得
 - ✅ **動的リポジトリ検出**: 現在のリポジトリを自動取得（フォークにも対応）
-- ✅ **直前 push 以降のコメント自動抽出**: デフォルトで直前 push 時刻以降のコメントのみ表示（新機能）
-- ✅ **3 種類のコメント取得**:
+- ✅ **直前 push 以降のコメント自動抽出**: デフォルトで直前 push 時刻以降のコメントのみ表示
+- ✅ **複数種類のコメント取得**:
   - インラインコメント (Pull Request Review Comments API)
+  - Discussion コメント (GraphQL API)
   - 一般コメント (Issue Comments API)
   - レビューコメント (Pull Request Reviews API)
-- ✅ **新規コメントフィルタ**: タイムスタンプでフィルタリング可能
-- ✅ **見やすい整形**: ファイルパス、行番号、コメント本文を構造化表示
+- ✅ **コンテキスト使用率チェック**: 作業開始前にコンテキスト使用率をチェックし、70% 以上の場合は `/compact` を推奨
+- ✅ **修正案の自動生成**: Claude がすべての指摘に対する修正案を一括生成
+- ✅ **コード修正の自動適用**: ユーザー承認後、Claude が修正を適用して commit & push
+- ✅ **返信文の自動生成**: 各コメントへの返信文を Claude が生成
+- ✅ **一括返信投稿**: ユーザー承認後、すべての返信を GitHub に投稿
+- ✅ **AI 署名**: 返信に AI による生成であることを明示
 
-## 実装例
-
-### PR 番号の取得
-
-```bash
-PR_NUMBER=$(gh pr view --json number --jq '.number' 2>/dev/null)
-if [[ -z "$PR_NUMBER" ]]; then
-    echo "エラー: 現在のブランチに関連付けられた PR が見つかりません"
-    exit 1
-fi
-```
-
-### コメントの取得
-
-```bash
-# リポジトリを動的に取得
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
-if [[ -z "$REPO" ]]; then
-    echo "エラー: リポジトリ情報を取得できません"
-    exit 1
-fi
-
-# 1. インラインコメント (Pull Request Review Comments API)
-# Note: .line は現在の行番号、.original_line は元の行番号（コードが変更された場合に異なる）
-gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" \
-  --jq '.[] | "File: \(.path)\nLine: \(.line // .original_line)\nComment: \(.body)\n---"'
-
-# 2. 一般コメント (Issue Comments API)
-gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-  --jq '.[] | "Comment: \(.body)\nAuthor: \(.user.login)\n---"'
-
-# 3. レビューコメント (Pull Request Reviews API)
-gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
-  --jq '.[] | select(.body and (.body | length) > 0) | "Review by \(.user.login)\nState: \(.state)\nComment: \(.body)\n---"'
-```
-
-### 新規コメントのみ取得
-
-```bash
-# リポジトリを動的に取得
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
-if [[ -z "$REPO" ]]; then
-    echo "エラー: リポジトリ情報を取得できません"
-    exit 1
-fi
-
-# 特定の日時以降のコメントのみ取得（jq の --arg で安全に変数を渡す）
-SINCE="2025-01-08T09:57:00Z"
-gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" | \
-  jq --arg since "$SINCE" '.[] | select(.created_at > $since) | "File: \(.path)\nLine: \(.line // .original_line)\nComment: \(.body)\n---"'
-```
 
 ## トラブルシューティング
 
@@ -200,69 +128,104 @@ gh auth login
 1. ブラウザで PR を確認
 2. レート制限を確認: `gh api rate_limit`
 
-## ベストプラクティス
 
-### コミット後に自動確認
+## Claude による自動対応ワークフロー
 
-コミットを push した後、自動的にレビューコメントを確認：
+ユーザーが「レビューコメントに対応」と依頼すると、Claude が以下を自動実行します：
 
+**ステップ 0**: コンテキストチェック
+
+作業開始前に、コンテキスト使用率を自動チェック：
+- **70% 以上**: 警告を表示し、`/compact` の実行を推奨
+- **70% 未満**: そのまま作業を続行
+
+これにより、作業中のコンテキスト不足を防止します。
+
+**ステップ 1**: コメント取得
 ```bash
-git push && gh pr view --comments
+~/.claude/scripts/auto_reply_pr_comments.sh
 ```
 
-### 優先度の高いコメントを識別
+このスクリプトが JSON 形式でコメントデータを出力します。
 
-P1 や P2 などの優先度タグ付きコメントを抽出：
+**ステップ 2**: Claude がコメントを分析
 
-```bash
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)
-if [[ -z "$REPO" ]]; then
-    echo "エラー: リポジトリ情報を取得できません"
-    exit 1
-fi
+JSON データを読み取り、すべてのレビュー指摘を分析します。
 
-gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" \
-  --jq '.[] | select(.body | contains("P1")) | "File: \(.path)\nLine: \(.line // .original_line)\nComment: \(.body)\n---"'
+**ステップ 3**: 修正案を一括生成
+
+Claude がすべての指摘に対する修正案を生成し、ユーザーに一覧表示して承認を求めます。
+
+**例**:
+```
+修正案 #1: src/example.js:42
+指摘: 変数名が不明瞭
+修正内容: result → validationResult に変更
+
+修正案 #2: src/utils.js:15
+指摘: エラーハンドリングが不足
+修正内容: try-catch ブロックを追加
+
+承認しますか？ (y/n)
 ```
 
-## レビューコメントへの返信
+**ステップ 4**: 修正を適用 + commit & push
 
-### 自動返信ワークフロー
+ユーザーが承認すると、Claude が：
+- すべての修正を適用
+- `git add` でステージング
+- `git commit -m "fix: レビュー指摘事項を修正"` でコミット
+- `git push` でリモートに反映
 
-Claude がレビューコメントに対して返信を生成・投稿できます。
+**ステップ 5**: 返信文を一括生成
 
-**ステップ 1**: コメントを確認
-```bash
-~/.claude/scripts/fetch_pr_comments.sh
+Claude が各コメントへの返信文を生成し、一覧表示して承認を求めます。
+
+**例**:
+```
+返信 #1: [123456] src/example.js:42
+「ご指摘ありがとうございます。result を validationResult に変更しました。」
+
+返信 #2: [discussion_r789012] src/utils.js:15
+「エラーハンドリングを追加しました。try-catch で例外を捕捉するようにしています。」
+
+承認しますか？ (y/n)
 ```
 
-**ステップ 2**: Claude に返信を依頼
-```
-「このレビューコメントに返信してください」
-```
+**ステップ 6**: 返信を一括投稿
 
-**ステップ 3**: Claude が返信内容を生成し、確認を求める
+ユーザーが承認すると、Claude が `post_pr_reply.sh` を使ってすべての返信を GitHub に投稿します。
 
-**ステップ 4**: 承認後、自動的に GitHub に返信を投稿
+## 技術詳細
 
-### 手動返信
+### 返信投稿の実装
 
-特定のコメントに直接返信:
-```bash
-~/.claude/scripts/reply_pr_comments.sh \
-  -c <comment_id> \
-  -m "返信メッセージ"
-```
+`post_pr_reply.sh` を使用して、インラインコメントと Discussion コメントの両方に対応：
 
-### ドライラン
+**インラインコメント**: REST API または GraphQL API
+**Discussion コメント**: GraphQL API (`addPullRequestReviewThreadReply`)
+- `auto_reply_pr_comments.sh` が各コメントの `threadId` (pullRequestReviewThreadId) を取得
+- `post_pr_reply.sh` に `threadId` を渡すことで、追加の API コールなしで返信可能
+- `threadId` が指定されない場合は、自動的に GraphQL で取得（後方互換性）
 
-実際には投稿せず、返信内容のみプレビュー:
-```bash
-~/.claude/scripts/reply_pr_comments.sh \
-  --dry-run \
-  -c <comment_id> \
-  -m "返信メッセージ"
-```
+### JSON データ構造
+
+`auto_reply_pr_comments.sh` が出力する JSON には以下の情報が含まれます：
+
+**inline_comments**:
+- `id`: コメント ID
+- `path`: ファイルパス
+- `line`: 行番号
+- `user.login`: 作成者
+- `body`: コメント本文
+
+**discussion_comments**:
+- `databaseId`: コメントの database ID
+- `threadId`: pullRequestReviewThreadId（返信に必須）
+- `path`: ファイルパス
+- `position`: 行位置
+- `author.login`: 作成者
+- `body`: コメント本文
 
 ### AI 署名
 
@@ -273,19 +236,11 @@ Claude がレビューコメントに対して返信を生成・投稿できま�
 🤖 _This reply was generated with AI assistance_
 ```
 
-署名を無効化する場合は `--no-ai-signature` オプションを使用：
-```bash
-~/.claude/scripts/reply_pr_comments.sh \
-  --no-ai-signature \
-  -c <comment_id> \
-  -m "返信メッセージ"
-```
+### 制限事項
 
-### 返信機能の制限事項
-
-- **トップレベルコメントのみ対応**: REST API の制限により、返信への返信はできません
-- **手動承認が必須**: Claude が生成した返信は、ユーザーの承認後に投稿されます
+- **手動承認が必須**: Claude が生成した修正案と返信は、ユーザーの承認後に適用・投稿されます
 - **AI 署名はデフォルトで追加**: 透明性のため、AI による返信であることを明示します
+- **GraphQL API 使用**: Discussion コメントへの返信には GraphQL API が必要です
 
 ## 参考資料
 
