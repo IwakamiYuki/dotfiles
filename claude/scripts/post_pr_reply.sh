@@ -125,16 +125,16 @@ query {
 
         # 返信を投稿
         gh api graphql -f query="
-mutation {
+mutation(\$threadId: ID!, \$body: String!) {
   addPullRequestReviewThreadReply(input: {
-    pullRequestReviewThreadId: \"$COMMENT_THREAD_ID\"
-    body: \"$MESSAGE\"
+    pullRequestReviewThreadId: \$threadId
+    body: \$body
   }) {
     comment {
       id
     }
   }
-}"
+}" -f threadId="$COMMENT_THREAD_ID" -f body="$MESSAGE"
 
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}エラー: 返信の投稿に失敗しました${NC}" >&2

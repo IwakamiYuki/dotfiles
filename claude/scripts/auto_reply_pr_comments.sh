@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # PR レビューコメント自動対応スクリプト
-# Usage: ./auto_reply_pr_comments.sh
+# Usage: ./auto_reply_pr_comments.sh [--wait-for-ai-review]
 #
 # 機能:
 # 1. 直前 push 以降のレビューコメントを取得
@@ -9,6 +9,10 @@
 # 3. 修正を適用 + commit & push
 # 4. 各コメントへの返信を生成（ユーザー承認）
 # 5. 一括投稿
+# 6. (オプション) AI レビュー待機後に再実行
+#
+# Options:
+#   --wait-for-ai-review  push 後 10 分待機して AI レビューコメントに対応
 
 set -euo pipefail
 
@@ -20,6 +24,12 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+# オプション解析
+WAIT_FOR_AI_REVIEW=false
+if [[ "${1:-}" == "--wait-for-ai-review" ]]; then
+    WAIT_FOR_AI_REVIEW=true
+fi
+
 # 一時ファイル
 COMMENTS_JSON=$(mktemp)
 trap "rm -f $COMMENTS_JSON" EXIT
@@ -27,40 +37,6 @@ trap "rm -f $COMMENTS_JSON" EXIT
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}PR レビューコメント自動対応${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-# コンテキストチェック（statusLine からコンテキスト使用率を取得）
-echo -e "${YELLOW}コンテキスト使用率をチェック中...${NC}"
-CONTEXT_CHECK=$(~/.claude/scripts/get-session-usage.sh 2>/dev/null || echo "")
-
-if [[ -n "$CONTEXT_CHECK" ]]; then
-    # 使用率をパース（例: "57%" → 57）
-    USAGE_PERCENT=$(echo "$CONTEXT_CHECK" | grep -oE '[0-9]+' | head -n 1)
-
-    if [[ -n "$USAGE_PERCENT" && "$USAGE_PERCENT" -ge 70 ]]; then
-        echo ""
-        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${RED}⚠️  警告: コンテキスト使用率が高い（${USAGE_PERCENT}%）${NC}"
-        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo ""
-        echo -e "${YELLOW}この作業は多くのコンテキストを使用します。${NC}"
-        echo -e "${YELLOW}作業中にコンテキストが不足すると、途中で中断される可能性があります。${NC}"
-        echo ""
-        echo -e "${GREEN}推奨: 先に \"/compact\" コマンドを実行してコンテキストを圧縮してください。${NC}"
-        echo ""
-        read -p "このまま続行しますか？ (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo -e "${YELLOW}作業を中止しました。先に /compact を実行してください。${NC}"
-            exit 0
-        fi
-        echo ""
-    else
-        echo -e "${GREEN}コンテキスト使用率: ${USAGE_PERCENT}% - OK${NC}"
-    fi
-else
-    echo -e "${YELLOW}コンテキスト使用率を取得できませんでした。そのまま続行します。${NC}"
-fi
 echo ""
 
 # PR 番号を取得
@@ -81,6 +57,9 @@ fi
 echo -e "${GREEN}PR 番号: $PR_NUMBER${NC}"
 echo -e "${GREEN}リポジトリ: $REPO${NC}"
 echo ""
+
+# 待機完了フラグファイル（AI レビュー待機中かを判定）
+WAIT_FLAG_FILE="/tmp/review-pr-waiting-${PR_NUMBER}.flag"
 
 # 直前 push 時刻を取得
 echo -e "${YELLOW}直前の push 時刻を取得中...${NC}"
@@ -246,3 +225,25 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}JSON データが準備できました${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 cat "$COMMENTS_JSON"
+
+# AI レビュー待機モードの場合
+if [[ "$WAIT_FOR_AI_REVIEW" == true ]]; then
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}AI レビュー待機モード有効${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "${YELLOW}push 後に AI レビューが完了するまで待機します...${NC}"
+    echo -e "${YELLOW}待機時間: 10 分（30 秒 × 20 回チェック）${NC}"
+    echo ""
+
+    # 待機フラグを作成
+    touch "$WAIT_FLAG_FILE"
+
+    echo -e "${GREEN}待機情報:${NC}"
+    echo "  PR 番号: $PR_NUMBER"
+    echo "  リポジトリ: $REPO"
+    echo "  フラグファイル: $WAIT_FLAG_FILE"
+    echo ""
+    echo -e "${BLUE}Claude が修正・返信を完了した後、自動的に待機を開始します${NC}"
+fi

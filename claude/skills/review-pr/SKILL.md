@@ -16,6 +16,12 @@ description: |-
   6. Post replies after user approval
 
   This is a fully automated workflow with user approval checkpoints.
+
+  IMPORTANT: Before starting this workflow, Claude MUST:
+  - Check current context usage (you have access to this information)
+  - If usage is 70% or higher, strongly recommend user to run `/compact` first
+  - Warn that this workflow requires significant context (50K+ tokens)
+  - Ask user if they want to proceed or compact first
 allowed-tools: Read, Edit, Write
 ---
 
@@ -90,11 +96,12 @@ post replies
   - Discussion コメント (GraphQL API)
   - 一般コメント (Issue Comments API)
   - レビューコメント (Pull Request Reviews API)
-- ✅ **コンテキスト使用率チェック**: 作業開始前にコンテキスト使用率をチェックし、70% 以上の場合は `/compact` を推奨
+- ✅ **コンテキスト使用率チェック**: Claude が作業開始前に自分のコンテキスト使用率をチェックし、70% 以上の場合は `/compact` を推奨
 - ✅ **修正案の自動生成**: Claude がすべての指摘に対する修正案を一括生成
 - ✅ **コード修正の自動適用**: ユーザー承認後、Claude が修正を適用して commit & push
 - ✅ **返信文の自動生成**: 各コメントへの返信文を Claude が生成
 - ✅ **一括返信投稿**: ユーザー承認後、すべての返信を GitHub に投稿
+- ✅ **AI レビュー待機**: push 後に AI レビューを待機し、新しいコメントを自動検出（オプション）
 - ✅ **AI 署名**: 返信に AI による生成であることを明示
 
 
@@ -133,13 +140,13 @@ gh auth login
 
 ユーザーが「レビューコメントに対応」と依頼すると、Claude が以下を自動実行します：
 
-**ステップ 0**: コンテキストチェック
+**ステップ 0**: コンテキストチェック（Claude が実施）
 
-作業開始前に、コンテキスト使用率を自動チェック：
-- **70% 以上**: 警告を表示し、`/compact` の実行を推奨
+Claude は作業開始前に、自分のコンテキスト使用率を確認：
+- **70% 以上**: ユーザーに `/compact` の実行を強く推奨し、続行の可否を確認
 - **70% 未満**: そのまま作業を続行
 
-これにより、作業中のコンテキスト不足を防止します。
+**重要**: このワークフローは 50K+ トークンを使用するため、コンテキストに余裕がないと途中で中断される可能性があります。
 
 **ステップ 1**: コメント取得
 ```bash
@@ -195,6 +202,19 @@ Claude が各コメントへの返信文を生成し、一覧表示して承認�
 **ステップ 6**: 返信を一括投稿
 
 ユーザーが承認すると、Claude が `post_pr_reply.sh` を使ってすべての返信を GitHub に投稿します。
+
+**ステップ 7**: AI レビュー待機（オプション）
+
+`--wait-for-ai-review` オプションを指定した場合、push 後に AI レビューを待機：
+
+```bash
+~/.claude/scripts/wait_and_recheck_pr_comments.sh <pr_number> <repo>
+```
+
+- 30 秒 × 20 回（合計 10 分）待機
+- 各チェックで新しいコメントがあるか確認
+- 新しいコメントを検出したら通知して終了
+- ユーザーが「レビューコメントに対応」と再度依頼すると、新しいコメントに対応
 
 ## 技術詳細
 
