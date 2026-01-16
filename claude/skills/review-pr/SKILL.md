@@ -199,9 +199,13 @@ Claude が各コメントへの返信文を生成し、一覧表示して承認�
 承認しますか？ (y/n)
 ```
 
+**注意**: Claude は返信文に AI 署名を含めません。`post_pr_reply.sh` が自動的に追加します。
+
 **ステップ 6**: 返信を一括投稿
 
 ユーザーが承認すると、Claude が `post_pr_reply.sh` を使ってすべての返信を GitHub に投稿します。
+
+**重要**: 返信文に AI 署名を含めないでください。`post_pr_reply.sh` が自動的に AI 署名を追加します。
 
 **ステップ 7**: AI レビュー待機（オプション）
 
@@ -220,13 +224,30 @@ Claude が各コメントへの返信文を生成し、一覧表示して承認�
 
 ### 返信投稿の実装
 
-`post_pr_reply.sh` を使用して、インラインコメントと Discussion コメントの両方に対応：
+`post_pr_reply.sh` の使い方：
 
-**インラインコメント**: REST API または GraphQL API
-**Discussion コメント**: GraphQL API (`addPullRequestReviewThreadReply`)
-- `auto_reply_pr_comments.sh` が各コメントの `threadId` (pullRequestReviewThreadId) を取得
-- `post_pr_reply.sh` に `threadId` を渡すことで、追加の API コールなしで返信可能
-- `threadId` が指定されない場合は、自動的に GraphQL で取得（後方互換性）
+```bash
+post_pr_reply.sh <comment_type> <comment_id> <message> [thread_id]
+```
+
+**引数**:
+- `comment_type`: "inline" または "discussion"
+- `comment_id`: コメント ID (inline) または databaseId (discussion)
+- `message`: 返信メッセージ（AI 署名を含めないこと）
+- `thread_id`: (オプション) discussion の場合、pullRequestReviewThreadId
+
+**重要**: `message` に AI 署名を含めないでください。スクリプトが自動的に以下の署名を追加します：
+```
+---
+🤖 _This reply was generated with AI assistance_
+```
+
+**対応コメントタイプ**:
+- **インラインコメント**: REST API または GraphQL API
+- **Discussion コメント**: GraphQL API (`addPullRequestReviewThreadReply`)
+  - `auto_reply_pr_comments.sh` が各コメントの `threadId` (pullRequestReviewThreadId) を取得
+  - `post_pr_reply.sh` に `threadId` を渡すことで、追加の API コールなしで返信可能
+  - `threadId` が指定されない場合は、自動的に GraphQL で取得（後方互換性）
 
 ### JSON データ構造
 
