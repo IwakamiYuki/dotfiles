@@ -76,6 +76,7 @@
     ],
     "defaultMode": "acceptEdits"
   },
+  "model": "haiku",
   "hooks": {
     "PreToolUse": [
       {
@@ -150,5 +151,6 @@
     "padding": 0
   },
   "language": "Japanese",
-  "alwaysThinkingEnabled": false
+  "alwaysThinkingEnabled": false,
+  "plansDirectory": "./.claude/tmp"
 }
