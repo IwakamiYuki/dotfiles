@@ -23,6 +23,7 @@ description: |-
   - Warn that this workflow requires significant context (50K+ tokens)
   - Ask user if they want to proceed or compact first
 allowed-tools: Read, Edit, Write
+model: opus
 ---
 
 # PR レビューコメント確認スキル
