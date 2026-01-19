@@ -105,12 +105,12 @@ if [ -f "$ICON_PATH" ]; then
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -contentImage "$ICON_PATH" \
     -activate "com.mitchellh.ghostty" \
-    -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'"
+    -execute "bash -c '$FOCUS_SCRIPT \"$SESSION_NAME\" \"$PANE_ID\" \"$SOCKET_PATH\"'"
 else
   /opt/homebrew/bin/terminal-notifier \
     -title "$NOTIFICATION_TITLE" \
     -message "$FULL_MESSAGE" \
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -activate "com.mitchellh.ghostty" \
-    -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'"
+    -execute "bash -c '$FOCUS_SCRIPT \"$SESSION_NAME\" \"$PANE_ID\" \"$SOCKET_PATH\"'"
 fi

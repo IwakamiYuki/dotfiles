@@ -149,7 +149,7 @@ if [ -f "$ICON_PATH" ]; then
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -contentImage "$ICON_PATH" \
     -activate "com.mitchellh.ghostty" \
-    -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'" 2>> /tmp/notify-hook-debug.log
+    -execute "bash -c '$FOCUS_SCRIPT \"$SESSION_NAME\" \"$PANE_ID\" \"$SOCKET_PATH\"'" 2>> /tmp/notify-hook-debug.log
   echo "$(date): terminal-notifier exit code: $?" >> /tmp/notify-hook-debug.log
 else
   echo "$(date): Sending notification without icon" >> /tmp/notify-hook-debug.log
@@ -158,5 +158,5 @@ else
     -message "$FULL_MESSAGE" \
     -group "claude-code-$SESSION_NAME-$PANE_ID" \
     -activate "com.mitchellh.ghostty" \
-    -execute "$FOCUS_SCRIPT '$SESSION_NAME' '$PANE_ID' '$SOCKET_PATH'" 2>> /tmp/notify-hook-debug.log
+    -execute "bash -c '$FOCUS_SCRIPT \"$SESSION_NAME\" \"$PANE_ID\" \"$SOCKET_PATH\"'" 2>> /tmp/notify-hook-debug.log
 fi
