@@ -154,5 +154,6 @@
   },
   "language": "Japanese",
   "alwaysThinkingEnabled": false,
-  "plansDirectory": "./.claude/tmp"
+  "plansDirectory": "./.claude/tmp",
+  "notificationStyle": "hook"
 }
