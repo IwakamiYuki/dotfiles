@@ -126,13 +126,14 @@ echo "$(date): SOCKET_PATH: $SOCKET_PATH" >> /tmp/notify-hook-debug.log
 # tmuxコマンドのPATHを明示的に設定
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# 通知送信前に前の通知を削除
-/opt/homebrew/bin/terminal-notifier -remove "claude-code-$SESSION_NAME-$PANE_ID" 2>/dev/null || true
+# 通知送信前に前の通知を削除（同じペインの全グループ通知を削除）
+GROUP_ID="claude-code-${SESSION_NAME}-${PANE_ID}"
+/opt/homebrew/bin/terminal-notifier -remove "$GROUP_ID" 2>/dev/null || true
+echo "$(date): Removed old notification with GROUP_ID=$GROUP_ID" >> /tmp/notify-hook-debug.log
 
 # クリック可能な通知を送信（クリック時に Ghostty をアクティベートしペインにフォーカス）
 FOCUS_SCRIPT="$HOME/.claude/hooks/focus-tmux-pane.sh"
 ICON_PATH="$HOME/.claude/icons/claude-ai-icon.png"
-GROUP_ID="claude-code-${SESSION_NAME}-${PANE_ID}"
 echo "$(date): NOTIFICATION_TITLE: $NOTIFICATION_TITLE" >> /tmp/notify-hook-debug.log
 echo "$(date): CONV_TITLE: $CONV_TITLE" >> /tmp/notify-hook-debug.log
 echo "$(date): FULL_MESSAGE: $FULL_MESSAGE" >> /tmp/notify-hook-debug.log
