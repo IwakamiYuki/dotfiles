@@ -58,8 +58,8 @@ cursor-style-blink = false
 # タイピング中はマウスカーソルを非表示にする
 mouse-hide-while-typing
 
-# はじめにtmuxを起動する
-command = /opt/homebrew/bin/tmux
+# はじめにtmuxを起動する（既存セッションがあれば再開）
+command = /bin/zsh -c "/opt/homebrew/bin/tmux attach-session -t default || /opt/homebrew/bin/tmux new-session -s default"
 
 # コマンドが終了したら表示内容を確認しておきたい
 wait-after-command = true
