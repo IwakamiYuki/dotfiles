@@ -18,8 +18,11 @@ if [ -n "$PANE_ID" ]; then
   SESSION_NAME=$(tmux display-message -p -t "$PANE_ID" '#{session_name}' 2>/dev/null)
 
   if [ -n "$SESSION_NAME" ]; then
+    # GROUP ID を安全に構築（特殊文字をエスケープ）
+    GROUP_ID="claude-code-${SESSION_NAME}-${PANE_ID}"
+
     # 前の通知を削除
-    /opt/homebrew/bin/terminal-notifier -remove "claude-code-$SESSION_NAME-$PANE_ID" 2>/dev/null || true
+    /opt/homebrew/bin/terminal-notifier -remove "$GROUP_ID" 2>/dev/null || true
   fi
 fi
 

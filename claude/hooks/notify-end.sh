@@ -96,13 +96,14 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 # 通知を送信（クリック時に Ghostty をアクティベートしペインにフォーカス）
 FOCUS_SCRIPT="$HOME/.claude/hooks/focus-tmux-pane.sh"
 ICON_PATH="$HOME/.claude/icons/claude-ai-icon.png"
+GROUP_ID="claude-code-${SESSION_NAME}-${PANE_ID}"
 
 # アイコンが存在する場合は -contentImage オプションを追加
 if [ -f "$ICON_PATH" ]; then
   /opt/homebrew/bin/terminal-notifier \
     -title "$NOTIFICATION_TITLE" \
     -message "$FULL_MESSAGE" \
-    -group "claude-code-$SESSION_NAME-$PANE_ID" \
+    -group "$GROUP_ID" \
     -contentImage "$ICON_PATH" \
     -activate "com.mitchellh.ghostty" \
     -execute "env FOCUS_SESSION_NAME='$SESSION_NAME' FOCUS_PANE_ID='$PANE_ID' FOCUS_SOCKET_PATH='$SOCKET_PATH' $FOCUS_SCRIPT"
@@ -110,7 +111,7 @@ else
   /opt/homebrew/bin/terminal-notifier \
     -title "$NOTIFICATION_TITLE" \
     -message "$FULL_MESSAGE" \
-    -group "claude-code-$SESSION_NAME-$PANE_ID" \
+    -group "$GROUP_ID" \
     -activate "com.mitchellh.ghostty" \
     -execute "env FOCUS_SESSION_NAME='$SESSION_NAME' FOCUS_PANE_ID='$PANE_ID' FOCUS_SOCKET_PATH='$SOCKET_PATH' $FOCUS_SCRIPT"
 fi

@@ -26,9 +26,12 @@ if [ -n "$PANE_ID" ]; then
     SESSION_NAME=$(tmux display-message -p -t "$PANE_ID" '#{session_name}' 2>/dev/null)
 
     if [ -n "$SESSION_NAME" ]; then
+        # GROUP ID を安全に構築
+        GROUP_ID="claude-code-${SESSION_NAME}-${PANE_ID}"
+
         # セッション終了時に前の通知を削除
-        /opt/homebrew/bin/terminal-notifier -remove "claude-code-$SESSION_NAME-$PANE_ID" 2>/dev/null || true
-        echo "$(date): Removed notification for $SESSION_NAME-$PANE_ID" >> /tmp/notify-hook-debug.log
+        /opt/homebrew/bin/terminal-notifier -remove "$GROUP_ID" 2>/dev/null || true
+        echo "$(date): Removed notification for $GROUP_ID" >> /tmp/notify-hook-debug.log
     fi
 fi
 

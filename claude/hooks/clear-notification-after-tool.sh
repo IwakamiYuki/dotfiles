@@ -11,8 +11,11 @@ if [ -n "$TMUX" ] && [ -n "$TMUX_PANE" ]; then
     SESSION_NAME=$(tmux display-message -p -t "$PANE_ID" '#{session_name}' 2>/dev/null)
 
     if [ -n "$SESSION_NAME" ]; then
-        # notify-end.sh と同じ group ID を使用して通知を削除
-        /opt/homebrew/bin/terminal-notifier -remove "claude-code-$SESSION_NAME-$PANE_ID" >/dev/null 2>&1
+        # GROUP ID を安全に構築
+        GROUP_ID="claude-code-${SESSION_NAME}-${PANE_ID}"
+
+        # notify-ask.sh で設定した group ID を使用して通知を削除
+        /opt/homebrew/bin/terminal-notifier -remove "$GROUP_ID" >/dev/null 2>&1
     fi
 fi
 
