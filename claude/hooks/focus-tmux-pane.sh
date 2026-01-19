@@ -7,9 +7,10 @@
 # Set PATH to ensure tmux is found
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$PATH"
 
-SESSION_NAME="$1"
-PANE_ID="$2"
-TMUX_SOCKET="$3"
+# 環境変数または引数から値を取得
+SESSION_NAME="${FOCUS_SESSION_NAME:-$1}"
+PANE_ID="${FOCUS_PANE_ID:-$2}"
+TMUX_SOCKET="${FOCUS_SOCKET_PATH:-$3}"
 
 LOG="/tmp/focus-pane-debug.log"
 
