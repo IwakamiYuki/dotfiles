@@ -62,9 +62,7 @@
       "NotebookRead",
       "Bash(rm -rf:*)",
       "mcp__serena__execute_shell_command",
-      "mcp__serena__write_memory",
-      "mcp__serena__delete_memory",
-      "mcp__serena__edit_memory"
+      "mcp__serena__*memor*"
     ],
     "ask": [
       "Bash(rm:*)",
