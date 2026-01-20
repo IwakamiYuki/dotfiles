@@ -36,6 +36,26 @@ cleanup() {
     fi
     # 一時ファイルを削除
     rm -f "$CAPTURE_FILE"
+
+    # 古い claude-usage セッション（2分以上経過）を削除
+    for old_session in $(tmux list-sessions 2>/dev/null | grep 'claude-usage-' | cut -d: -f1); do
+        # 現在のセッションはスキップ
+        if [ "$old_session" = "$TEMP_SESSION" ]; then
+            continue
+        fi
+
+        # セッション作成時刻を取得
+        session_created=$(tmux list-sessions -F "#{session_name} #{session_created}" 2>/dev/null | grep "^${old_session} " | awk '{print $2}')
+        current=$(date +%s)
+
+        if [ -n "$session_created" ]; then
+            elapsed=$((current - session_created))
+            # 2分以上経過したセッションを削除
+            if [ "$elapsed" -gt 120 ]; then
+                tmux kill-session -t "$old_session" 2>/dev/null
+            fi
+        fi
+    done
 }
 
 # スクリプト終了時（正常終了/異常終了問わず）に必ずクリーンアップを実行
@@ -44,8 +64,9 @@ trap cleanup EXIT INT TERM
 # 新しいバックグラウンドセッションを作成して claude を起動（環境変数でstatusLineを無効化）
 # CLAUDE_DISABLE_STATUSLINE=1 を設定することで、このインスタンスではstatusLineが呼ばれない
 # 完全に独立したセッションなので、ユーザーの画面には一切表示されない
-# バックグラウンドでタイムアウト後に自身のセッションを強制終了
-tmux new-session -d -s "$TEMP_SESSION" "(sleep $TIMEOUT; tmux kill-session -t '$TEMP_SESSION') & CLAUDE_DISABLE_STATUSLINE=1 claude" 2>/dev/null
+# gtimeout で確実に claude プロセスをタイムアウト後に kill する
+GTIMEOUT=$(which gtimeout 2>/dev/null || echo "/opt/homebrew/bin/gtimeout")
+tmux new-session -d -s "$TEMP_SESSION" "CLAUDE_DISABLE_STATUSLINE=1 $GTIMEOUT $TIMEOUT claude" 2>/dev/null
 
 # 少し待ってから /usage コマンドを送信
 sleep 2
