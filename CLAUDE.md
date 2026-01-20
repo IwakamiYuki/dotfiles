@@ -185,7 +185,7 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - Dracula テーマ + 透過背景（opacity 0.70）
 - フォント: Osaka（太字化有効）
 - **Shift+Enter で改行入力**（Claude Code 対応）
-- 起動時に tmux を自動実行
+- 起動時に tmux の `default` セッションを自動再開（存在しなければ新規作成）
 - 全画面モード（非ネイティブ、透過メニューバー）
 - カスタムアイコン（オレンジゴースト）
 
