@@ -75,6 +75,7 @@ chmod +x ~/.tmux/plugins/tmux-battery/scripts/*.sh
 
 ### 依存関係インストール
 ```bash
+brew install coreutils                    # GNU coreutils（gtimeout で使用）
 brew install reattach-to-user-namespace  # tmux クリップボード連携
 brew install lazygit                      # Git UI（Ctrl-t g で起動）
 brew install terminal-notifier            # Claude Code 通知（フック用）
