@@ -78,7 +78,6 @@
     ],
     "defaultMode": "acceptEdits"
   },
-  "model": "haiku",
   "hooks": {
     "PreToolUse": [
       {
@@ -155,5 +154,6 @@
   "language": "Japanese",
   "alwaysThinkingEnabled": false,
   "plansDirectory": "./.claude/tmp",
-  "notificationStyle": "hook"
+  "notificationStyle": "hook",
+  "model": "haiku"
 }

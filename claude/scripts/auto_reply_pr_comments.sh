@@ -105,9 +105,11 @@ OWNER=$(echo "$REPO" | cut -d/ -f1)
 REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
 
 # 1. インラインコメント取得
-INLINE_COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments")
+INLINE_COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate)
 if [[ -n "$SINCE" ]]; then
-    INLINE_COMMENTS=$(echo "$INLINE_COMMENTS" | jq --arg since "$SINCE" '[.[] | select(.created_at > $since)]')
+    # SINCE を UTC に変換してから比較（created_at は UTC "Z" 形式）
+    SINCE_UTC=$(python3 -c "from datetime import datetime; dt = datetime.fromisoformat('$SINCE'); print(dt.astimezone(__import__('datetime').timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null || echo "$SINCE")
+    INLINE_COMMENTS=$(echo "$INLINE_COMMENTS" | jq --arg since "$SINCE_UTC" '[.[] | select(.created_at > $since)]')
 fi
 
 # 2. Review Thread コメント取得（GraphQL）
@@ -161,6 +163,16 @@ query {
 }" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | .id as $threadId | .comments.nodes[]? | . + {threadId: $threadId}]')
 fi
 
+# 3. Issue コメント取得（PR に付いた一般コメント）
+ISSUE_COMMENTS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate)
+if [[ -n "$SINCE" ]]; then
+    # SINCE を UTC に変換してから比較（created_at は UTC "Z" 形式）
+    SINCE_UTC=$(python3 -c "from datetime import datetime; dt = datetime.fromisoformat('$SINCE'); print(dt.astimezone(__import__('datetime').timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null || echo "$SINCE")
+    ISSUE_COMMENTS=$(echo "$ISSUE_COMMENTS" | jq --arg since "$SINCE_UTC" '[.[] | select(.created_at > $since) | {id, user: .user.login, body, created_at}]')
+else
+    ISSUE_COMMENTS=$(echo "$ISSUE_COMMENTS" | jq '[.[] | {id, user: .user.login, body, created_at}]')
+fi
+
 # 統合 JSON の作成
 cat > "$COMMENTS_JSON" <<EOF
 {
@@ -168,19 +180,22 @@ cat > "$COMMENTS_JSON" <<EOF
   "repository": "$REPO",
   "since": "$SINCE",
   "inline_comments": $INLINE_COMMENTS,
-  "discussion_comments": $DISCUSSION_COMMENTS
+  "discussion_comments": $DISCUSSION_COMMENTS,
+  "issue_comments": $ISSUE_COMMENTS
 }
 EOF
 
 # コメント数を確認
 INLINE_COUNT=$(echo "$INLINE_COMMENTS" | jq 'length')
 DISCUSSION_COUNT=$(echo "$DISCUSSION_COMMENTS" | jq 'length')
-TOTAL_COUNT=$((INLINE_COUNT + DISCUSSION_COUNT))
+ISSUE_COUNT=$(echo "$ISSUE_COMMENTS" | jq 'length')
+TOTAL_COUNT=$((INLINE_COUNT + DISCUSSION_COUNT + ISSUE_COUNT))
 
 echo ""
 echo -e "${GREEN}取得完了:${NC}"
 echo "  インラインコメント: $INLINE_COUNT 件"
 echo "  Discussion コメント: $DISCUSSION_COUNT 件"
+echo "  Issue コメント: $ISSUE_COUNT 件"
 echo "  合計: $TOTAL_COUNT 件"
 echo ""
 
@@ -202,6 +217,11 @@ fi
 # Discussion コメント表示
 if [[ $DISCUSSION_COUNT -gt 0 ]]; then
     echo "$DISCUSSION_COMMENTS" | jq -r '.[] | "[discussion_r\(.databaseId)] \(.path // "N/A"):\(.position // "N/A") (threadId: \(.threadId))\n  \(.author.login): \(.body)\n"'
+fi
+
+# Issue コメント表示
+if [[ $ISSUE_COUNT -gt 0 ]]; then
+    echo "$ISSUE_COMMENTS" | jq -r '.[] | "[issue_c\(.id)] (General comment)\n  \(.user): \(.body)\n"'
 fi
 
 echo ""
