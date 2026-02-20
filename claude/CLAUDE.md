@@ -146,6 +146,7 @@ review-markdown スキルで Electron UI を開いて、コメントを追加し
 
 - Conventional Commits: `type: description`（`feat`, `fix`, `refactor`, `docs`, `test`, `chore`）
 - 1 行目 50 文字以内
+- **ブランチ名**: `feature/xxx`、`fix/xxx`、`refactor/xxx` 形式を使用
 
 ## 注意事項
 
