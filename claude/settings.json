@@ -54,6 +54,9 @@
       "Bash(make app-generate:*)",
       "Bash(go build:*)",
       "Skill(review-pr)",
+      "Skill(review-diff)",
+      "mcp__codex__codex",
+      "mcp__codex__codex-reply",
       "Bash(gh api:*)",
       "Bash(~/.claude/scripts/fetch_pr_comments.sh:*)"
     ],
@@ -119,6 +122,15 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/clear-notification-after-tool.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/suggest-review-after-commit.sh"
           }
         ]
       }
