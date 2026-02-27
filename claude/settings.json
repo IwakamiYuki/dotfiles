@@ -17,11 +17,9 @@
       "mcp__serena__search_for_pattern",
       "mcp__serena__find_file",
       "mcp__serena__get_symbols_overview",
-      "mcp__serena__insert_after_symbol",
       "mcp__serena__think_about_task_adherence",
       "Bash(grep:*)",
       "mcp__serena__list_dir",
-      "mcp__serena__replace_symbol_body",
       "mcp__serena__find_referencing_symbols",
       "mcp__serena__activate_project",
       "Bash(find:*)",
@@ -58,7 +56,8 @@
       "mcp__codex__codex",
       "mcp__codex__codex-reply",
       "Bash(gh api:*)",
-      "Bash(~/.claude/scripts/fetch_pr_comments.sh:*)"
+      "Bash(~/.claude/scripts/fetch_pr_comments.sh:*)",
+      "Bash(git add:*)"
     ],
     "deny": [
       "NotebookEdit",
@@ -69,7 +68,11 @@
       "mcp__serena__read_memory",
       "mcp__serena__list_memories",
       "mcp__serena__delete_memory",
-      "mcp__serena__edit_memory"
+      "mcp__serena__edit_memory",
+      "mcp__serena__replace_symbol_body",
+      "mcp__serena__insert_after_symbol",
+      "mcp__serena__insert_before_symbol",
+      "mcp__serena__rename_symbol"
     ],
     "ask": [
       "Bash(rm:*)",
