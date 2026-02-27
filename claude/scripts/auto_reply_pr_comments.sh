@@ -163,6 +163,11 @@ query {
 }" | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | .id as $threadId | .comments.nodes[]? | . + {threadId: $threadId}]')
 fi
 
+# discussion_comments から inline_comments と重複するものを除外
+# （REST API と GraphQL が同じインラインコメントを二重取得するため）
+INLINE_IDS=$(echo "$INLINE_COMMENTS" | jq '[.[].id]')
+DISCUSSION_COMMENTS=$(echo "$DISCUSSION_COMMENTS" | jq --argjson inline_ids "$INLINE_IDS" '[.[] | select(.databaseId | IN($inline_ids[]) | not)]')
+
 # 3. Issue コメント取得（PR に付いた一般コメント）
 ISSUE_COMMENTS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate)
 if [[ -n "$SINCE" ]]; then
