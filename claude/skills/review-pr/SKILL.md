@@ -24,7 +24,7 @@ description: |-
   - If usage is 70% or higher, strongly recommend user to run `/compact` first
   - Warn that this workflow requires significant context (50K+ tokens)
   - Ask user if they want to proceed or compact first
-allowed-tools: Bash, Read, Edit, Write
+allowed-tools: Read, Edit, Write
 model: opus
 ---
 
