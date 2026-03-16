@@ -56,18 +56,16 @@ git clone git@github.com:Shougo/neobundle.vim.git ~/.vim/bundle/neobundle.vim
 ```
 
 ### Tmux プラグインセットアップ
-⚠️ **重要**: TPM 自動初期化は無効化済み。手動でプラグインをクローン：
+TPM（Tmux Plugin Manager）で管理。初回のみ手動でクローン：
 ```bash
-mkdir -p ~/.tmux/plugins && cd ~/.tmux/plugins
-git clone https://github.com/tmux-plugins/tpm
-git clone https://github.com/tmux-plugins/tmux-sensible
-git clone https://github.com/tmux-plugins/tmux-resurrect
-git clone https://github.com/tmux-plugins/tmux-continuum
-git clone https://github.com/tmux-plugins/tmux-cpu
-git clone https://github.com/tmux-plugins/tmux-battery
-chmod +x ~/.tmux/plugins/tmux-cpu/scripts/*.sh
-chmod +x ~/.tmux/plugins/tmux-battery/scripts/*.sh
+git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 ```
+その後 tmux 内で `Ctrl-t I`（大文字 I）でプラグインをインストール。
+
+**主要キー**:
+- `Ctrl-t I` → プラグインインストール
+- `Ctrl-t U` → プラグインアップデート
+- `Ctrl-t Alt-u` → 不要プラグイン削除
 
 ### 依存関係インストール
 ```bash
