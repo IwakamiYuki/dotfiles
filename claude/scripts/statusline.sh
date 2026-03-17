@@ -60,11 +60,22 @@ format_time() {
 # コンテキストウィンドウサイズを判定する関数
 get_context_window() {
     local model_id=$1
-    # Claude 3.5 Sonnet と Claude Sonnet 4/4.5 は 200K トークン
-    if [[ "$model_id" == *"sonnet"* ]]; then
-        echo "200000"
+    # [1m] サフィックスがあれば 1M コンテキスト
+    if [[ "$model_id" == *"[1m]"* ]]; then
+        echo "1000000"
     else
         echo "200000"  # デフォルト
+    fi
+}
+
+# トークン数を人間が読みやすい形式にフォーマットする関数（例: 1000K → 1M）
+format_tokens() {
+    local tokens=$1
+    local k=$((tokens / 1000))
+    if [ $((k % 1000)) -eq 0 ] && [ $k -ge 1000 ]; then
+        echo "$((k / 1000))M"
+    else
+        echo "${k}K"
     fi
 }
 
@@ -79,8 +90,8 @@ calculate_context_usage() {
     # v2.0.70 以降の current_usage フィールドを優先的に使用（最も正確）
     if [ -n "$current_usage" ] && [ "$current_usage" != "null" ] && [ "$current_usage" != "" ] && [ "$current_usage" -gt 0 ] 2>/dev/null; then
         local usage_pct=$((current_usage * 100 / context_window))
-        local context_window_k=$((context_window / 1000))
-        local tokens_k=$((current_usage / 1000))
+        local tokens_display=$(format_tokens "$current_usage")
+        local window_display=$(format_tokens "$context_window")
 
         # メッセージ数をカウント
         local msg_count=0
@@ -92,7 +103,7 @@ calculate_context_usage() {
             fi
         fi
 
-        printf "${tokens_k}K/${context_window_k}K (${usage_pct}%%) ${msg_count}msg"
+        printf "${tokens_display}/${window_display} (${usage_pct}%%) ${msg_count}msg"
         return
     fi
 
@@ -107,19 +118,19 @@ calculate_context_usage() {
                 # 固定オーバーヘッド（約 52k）を加算
                 local total_tokens=$((last_usage + 52000))
                 local usage_pct=$((total_tokens * 100 / context_window))
-                local context_window_k=$((context_window / 1000))
-                local tokens_k=$((total_tokens / 1000))
+                local tokens_display=$(format_tokens "$total_tokens")
+                local window_display=$(format_tokens "$context_window")
 
-                printf "${tokens_k}K/${context_window_k}K (${usage_pct}%%) ${msg_count}msg"
+                printf "${tokens_display}/${window_display} (${usage_pct}%%) ${msg_count}msg"
                 return
             else
                 # 新しいセッション
                 local total_tokens=42000
                 local usage_pct=$((total_tokens * 100 / context_window))
-                local context_window_k=$((context_window / 1000))
-                local tokens_k=$((total_tokens / 1000))
+                local tokens_display=$(format_tokens "$total_tokens")
+                local window_display=$(format_tokens "$context_window")
 
-                printf "${tokens_k}K/${context_window_k}K (${usage_pct}%%) ${msg_count}msg"
+                printf "${tokens_display}/${window_display} (${usage_pct}%%) ${msg_count}msg"
                 return
             fi
         else
@@ -130,10 +141,10 @@ calculate_context_usage() {
             if [ "$file_size" -gt 0 ]; then
                 local estimated_tokens=$((file_size / 3))
                 local usage_pct=$((estimated_tokens * 100 / context_window))
-                local context_window_k=$((context_window / 1000))
-                local tokens_k=$((estimated_tokens / 1000))
+                local tokens_display=$(format_tokens "$estimated_tokens")
+                local window_display=$(format_tokens "$context_window")
 
-                printf "~${tokens_k}K/${context_window_k}K (${usage_pct}%%) ${msg_count}msg"
+                printf "~${tokens_display}/${window_display} (${usage_pct}%%) ${msg_count}msg"
                 return
             fi
         fi
