@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# tmux-window-name: ウィンドウ内の全ペインのカレントディレクトリから
+# 共通パスの最後のディレクトリ名をウィンドウ名として設定する
+#
+# 例:
+#   ペイン1: /Users/a13445/work/project/src
+#   ペイン2: /Users/a13445/work/project/tests
+#   → 共通パス: /Users/a13445/work/project → 表示名: "project"
+#
+#   ペイン1つのみ:
+#   /Users/a13445/dotfiles → 表示名: "dotfiles"
+
+window_id="$1"
+
+if [ -z "$window_id" ]; then
+  exit 0
+fi
+
+# ウィンドウ内の全ペインのカレントディレクトリを取得
+paths=()
+while IFS= read -r p; do
+  [ -n "$p" ] && paths+=("$p")
+done < <(tmux list-panes -t "$window_id" -F '#{pane_current_path}' 2>/dev/null)
+
+if [ ${#paths[@]} -eq 0 ]; then
+  exit 0
+fi
+
+if [ ${#paths[@]} -eq 1 ]; then
+  # ペインが1つなら、そのディレクトリ名
+  name=$(basename "${paths[0]}")
+else
+  # 複数ペインの場合、共通パスを求める
+  # 最初のパスを基準にする
+  common="${paths[0]}"
+
+  for p in "${paths[@]:1}"; do
+    new_common=""
+    # 共通プレフィックスを1文字ずつ比較
+    len=${#common}
+    [ ${#p} -lt "$len" ] && len=${#p}
+    for ((i = 0; i < len; i++)); do
+      if [ "${common:$i:1}" = "${p:$i:1}" ]; then
+        new_common="${new_common}${common:$i:1}"
+      else
+        break
+      fi
+    done
+    common="$new_common"
+  done
+
+  # 共通プレフィックスをディレクトリ境界で切る
+  # 全ペインが完全に同じパスの場合はそのまま使う
+  all_same=true
+  for p in "${paths[@]:1}"; do
+    if [ "$p" != "${paths[0]}" ]; then
+      all_same=false
+      break
+    fi
+  done
+
+  if $all_same; then
+    common="${paths[0]}"
+  elif [[ "$common" == */ ]]; then
+    # 末尾が / で終わっていればディレクトリ境界で切れている
+    common="${common%/}"
+  else
+    # 不完全なディレクトリ名を除去（最後の / まで切り詰め）
+    common="${common%/*}"
+  fi
+
+  if [ -z "$common" ] || [ "$common" = "" ]; then
+    name="/"
+  else
+    name=$(basename "$common")
+  fi
+fi
+
+# ホームディレクトリそのものなら ~ を表示
+for p in "${paths[@]}"; do
+  if [ "$p" != "$HOME" ]; then
+    # 少なくとも1つがホームディレクトリ以外
+    break
+  fi
+  # 全部ホームディレクトリの場合
+  if [ "$p" = "${paths[-1]}" ]; then
+    name="~"
+  fi
+done
+
+# ウィンドウ名を設定
+tmux rename-window -t "$window_id" "$name"
