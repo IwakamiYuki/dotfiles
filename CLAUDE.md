@@ -149,7 +149,6 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - `statusline.sh`: カスタムステータスライン（会話タイトル、コンテキスト使用量、セッション情報、処理時間、コード変更量を表示）
 - `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
 - `generate-title.sh`: 会話タイトル生成（AI 生成）。codex CLI で会話全体を要約してタイトルを作成。失敗時は extract-title.sh にフォールバック
-- `get-session-usage.sh`: セッション使用率取得（キャッシュ機構付き）
 - `notify-end.sh`, `notify-ask.sh`: 通知フックスクリプト（notify-end.sh は AI 生成タイトルで通知タイトルを更新）
 - `debug-statusline-input.sh`: statusLine 入力データのデバッグ用
 - `fetch_pr_comments.sh`: PR コメント取得（表示専用）

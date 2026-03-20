@@ -4,8 +4,8 @@
 #
 # 表示項目：
 # 🤖 モデル名 - 使用中のClaudeモデル
-# 📊 5h セッション使用率 - /usage の Current session 情報（%とリセット時間）
-# 📅 1w 週間使用率 - /usage の One week 情報（%とリセット時間）
+# 📊 5h セッション使用率 - rate_limits.five_hour から取得（v2.1.80+）
+# 📅 1w 週間使用率 - rate_limits.seven_day から取得（v2.1.80+）
 # 💬 コンテキスト使用量 - 現在の会話のトークン使用量（v2.0.70以降は正確、それ以前は概算）
 # ⏱️ 総処理時間 - セッション開始からの経過時間（秒）
 # 🔧 API処理時間 - 実際のAPI呼び出しに費やした時間（秒）
@@ -37,6 +37,13 @@ cache_read_tokens=$(echo "$input" | jq -r '.cost.total_cache_read_tokens // ""')
 cache_creation_tokens=$(echo "$input" | jq -r '.cost.total_cache_creation_tokens // ""')
 current_usage=$(echo "$input" | jq -r '.current_usage // ""')  # v2.0.70で追加されたコンテキスト使用量
 
+# レートリミット情報の取得（v2.1.80+ で追加）
+five_hour_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // ""')
+five_hour_resets=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // ""')
+seven_day_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // ""')
+seven_day_resets=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // ""')
+context_pct=$(echo "$input" | jq -r '.context_window.used_percentage // ""')
+
 # 秒単位に変換
 duration_sec=$(echo "$duration / 1000" | bc 2>/dev/null || echo "0")
 api_duration_sec=$(echo "$api_duration / 1000" | bc 2>/dev/null || echo "0")
@@ -54,6 +61,42 @@ format_time() {
         printf "%dm%ds" $minutes $seconds
     else
         printf "%ds" $seconds
+    fi
+}
+
+# リセット時刻を相対時間に変換する関数（例: "2h30m"）
+# 入力: epoch 秒（数値）または ISO 8601 文字列（UTC）
+format_resets_at() {
+    local resets_at=$1
+    local reset_epoch=""
+
+    # 数値（epoch 秒）の場合はそのまま使用
+    if [[ "$resets_at" =~ ^[0-9]+$ ]]; then
+        reset_epoch="$resets_at"
+    else
+        # ISO 8601 文字列: "Z" や ".000Z" を除去して UTC としてパース
+        local clean="${resets_at%%.*}"
+        clean="${clean%Z}"
+        reset_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$clean" "+%s" 2>/dev/null)
+    fi
+
+    if [ -z "$reset_epoch" ] || [ "$reset_epoch" = "0" ]; then
+        echo "$resets_at"
+        return
+    fi
+    local now=$(date +%s)
+    local diff=$((reset_epoch - now))
+    if [ $diff -le 0 ]; then
+        echo "now"
+        return
+    fi
+    # 時間と分のみ表示（秒は省略）
+    local hours=$((diff / 3600))
+    local minutes=$(((diff % 3600) / 60))
+    if [ $hours -gt 0 ]; then
+        printf "%dh%dm" $hours $minutes
+    else
+        printf "%dm" $minutes
     fi
 }
 
@@ -158,12 +201,25 @@ calculate_context_usage() {
 duration_formatted=$(format_time "$duration_sec")
 api_duration_formatted=$(format_time "$api_duration_sec")
 
-# /usage からセッション使用情報を取得（JSON形式）
-session_info=$(bash ~/.claude/scripts/get-session-usage.sh 2>/dev/null)
-session_usage=$(echo "$session_info" | jq -r '.session_usage' 2>/dev/null || echo "N/A")
-session_reset=$(echo "$session_info" | jq -r '.session_resets' 2>/dev/null || echo "N/A")
-week_usage=$(echo "$session_info" | jq -r '.week_usage' 2>/dev/null || echo "N/A")
-week_reset=$(echo "$session_info" | jq -r '.week_resets' 2>/dev/null || echo "N/A")
+# レートリミット情報の整形（rate_limits フィールドから直接取得、v2.1.80+）
+if [ -n "$five_hour_pct" ] && [ "$five_hour_pct" != "null" ] && [ "$five_hour_pct" != "" ]; then
+    session_usage="${five_hour_pct}%"
+else
+    session_usage="N/A"
+fi
+
+if [ -n "$five_hour_resets" ] && [ "$five_hour_resets" != "null" ] && [ "$five_hour_resets" != "" ]; then
+    # ISO 8601 → 相対時間表示（例: "2h30m"）
+    session_reset=$(format_resets_at "$five_hour_resets")
+else
+    session_reset="N/A"
+fi
+
+if [ -n "$seven_day_pct" ] && [ "$seven_day_pct" != "null" ] && [ "$seven_day_pct" != "" ]; then
+    week_usage="${seven_day_pct}%"
+else
+    week_usage="N/A"
+fi
 
 # コンテキスト使用量を計算
 context_usage=$(calculate_context_usage "$current_usage" "$transcript_path" "$model_id")
