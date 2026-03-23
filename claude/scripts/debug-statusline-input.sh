@@ -12,9 +12,9 @@ fi
 # 標準入力からClaude Codeのコンテキスト情報を取得
 input=$(cat)
 
-# デバッグ: 入力 JSON を保存
+# デバッグ: 入力 JSON を保存（タイムスタンプ付き）
 echo "$input" | jq '.' > /tmp/statusline-input.json 2>/dev/null
+echo "$input" | jq '.' >> /tmp/statusline-input-history.json 2>/dev/null
 
-# 簡易出力
-model=$(echo "$input" | jq -r '.model.display_name // .model' 2>/dev/null)
-echo "🐛 Debug mode | Model: $model | Input saved to /tmp/statusline-input.json"
+# 通常の statusline を実行しつつデバッグ情報も残す
+echo "$input" | bash ~/.claude/scripts/statusline.sh
