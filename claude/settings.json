@@ -57,7 +57,8 @@
       "mcp__codex__codex-reply",
       "Bash(gh api:*)",
       "Bash(~/.claude/scripts/fetch_pr_comments.sh:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(wc:*)"
     ],
     "deny": [
       "NotebookEdit",
