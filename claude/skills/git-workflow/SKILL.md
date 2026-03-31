@@ -109,3 +109,12 @@ gh issue view 123
 ```bash
 git checkout -b feature/add-user-auth
 ```
+
+### ベースブランチの取り込み
+
+main/master の最新を取り込むときは **通常のマージ**（`git merge`）を使う。`git rebase` は使わない。
+
+```bash
+git fetch origin
+git merge origin/main
+```
