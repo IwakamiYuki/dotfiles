@@ -131,7 +131,6 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git add*)",
             "command": "bash ~/.claude/scripts/validate-bash.sh"
           }
         ]
