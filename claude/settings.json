@@ -21,7 +21,7 @@
       "Bash(rg:*)",
       "Bash(find:*)",
       "Bash(awk:*)",
-      "Bash(ls -la:*)",
+      "Bash(ls:*)",
       "Bash(tree:*)",
       "Bash(wc:*)",
       "Bash(file:*)",
@@ -32,6 +32,14 @@
       "Bash(type:*)",
       "Bash(env:*)",
       "Bash(printenv:*)",
+      "Bash(sed:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(cut:*)",
+      "Bash(diff:*)",
+      "Bash(dirname:*)",
+      "Bash(basename:*)",
+      "Bash(realpath:*)",
 
       "Bash(git status:*)",
       "Bash(git diff:*)",
@@ -40,6 +48,7 @@
       "Bash(git blame:*)",
       "Bash(git branch:*)",
       "Bash(git add:*)",
+      "Bash(git stash:*)",
 
       "Bash(gh api:*)",
       "Bash(gh issue view:*)",
@@ -89,6 +98,10 @@
       "NotebookEdit",
       "NotebookRead",
       "Bash(rm -rf:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push origin main:*)",
+      "Bash(git push origin master:*)",
+      "Bash(git checkout --:*)",
       "mcp__serena__execute_shell_command",
       "mcp__serena__write_memory",
       "mcp__serena__read_memory",
@@ -104,6 +117,7 @@
       "Bash(rm:*)",
       "Bash(dd:*)",
       "Bash(mkfs:*)",
+      "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(git reset:*)",
       "Bash(git rebase:*)"
@@ -117,6 +131,7 @@
         "hooks": [
           {
             "type": "command",
+            "if": "Bash(git add*)",
             "command": "bash ~/.claude/scripts/validate-bash.sh"
           }
         ]
