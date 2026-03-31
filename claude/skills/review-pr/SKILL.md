@@ -184,6 +184,18 @@ Claude は作業開始前に、自分のコンテキスト使用率を確認：
 
 このスクリプトが JSON 形式でコメントデータを出力します。
 
+**CRITICAL: スクリプト出力の完全取得ルール**
+
+Bash ツールの出力は途中で切れる（truncated）ことがあります。**出力が切れた場合、切れた状態のまま次のステップに進むことは禁止**です。
+
+**対処方法**: 出力が truncated された場合は、`--output` オプションでファイルに出力し、Read ツールで全文を取得してください：
+```bash
+~/.claude/scripts/auto_reply_pr_comments.sh --output .claude/tmp/pr-comments-output.txt
+```
+その後、Read ツールでファイルを読み取ります。出力が大きい場合は offset/limit で分割読み込みしてください。
+
+**通常時**: 出力が完全に取得できた場合（truncated でない場合）は、そのまま使用して問題ありません。リダイレクトは不要です。
+
 **ステップ 2**: Claude がコメント内容を検証
 
 JSON データを読み取り、各コメントについて以下を確認：
@@ -410,6 +422,19 @@ post_pr_reply.sh <comment_type> <comment_id> <message> [thread_id]
 - **手動承認が必須**: Claude が生成した修正案と返信は、ユーザーの承認後に適用・投稿されます
 - **AI 署名はデフォルトで追加**: 透明性のため、AI による返信であることを明示します
 - **GraphQL API 使用**: Discussion コメントへの返信には GraphQL API が必要です
+
+### スクリプト出力の完全取得（全ステップ共通）
+
+**すべてのスクリプト実行**において、Bash ツールの出力が途中で切れる（truncated）リスクがあります。
+
+**出力が truncated された場合の対処**:
+1. `--output` オプション付きでスクリプトを再実行し、ファイルに出力を保存する
+   ```bash
+   ~/.claude/scripts/auto_reply_pr_comments.sh --output .claude/tmp/pr-comments-output.txt
+   ```
+2. Read ツールでファイル全体を読み取る（offset/limit で分割読み込み可能）
+
+**禁止事項**: 出力の一部だけ見て判断しない。特に JSON データは完全な形でパースする必要がある
 
 ### 検証時の注意事項
 

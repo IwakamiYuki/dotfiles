@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # PR レビューコメント自動対応スクリプト
-# Usage: ./auto_reply_pr_comments.sh [--wait-for-ai-review]
+# Usage: ./auto_reply_pr_comments.sh [--wait-for-ai-review] [--output <file>]
 #
 # 機能:
 # 1. 直前 push 以降のレビューコメントを取得
@@ -13,6 +13,7 @@
 #
 # Options:
 #   --wait-for-ai-review  push 後 10 分待機して AI レビューコメントに対応
+#   --output <file>       出力をファイルにも書き込む（stdout と同時出力）
 
 set -euo pipefail
 
@@ -26,8 +27,27 @@ NC='\033[0m' # No Color
 
 # オプション解析
 WAIT_FOR_AI_REVIEW=false
-if [[ "${1:-}" == "--wait-for-ai-review" ]]; then
-    WAIT_FOR_AI_REVIEW=true
+OUTPUT_FILE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --wait-for-ai-review)
+            WAIT_FOR_AI_REVIEW=true
+            shift
+            ;;
+        --output)
+            OUTPUT_FILE="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# --output 指定時は tee でファイルにも出力
+if [[ -n "$OUTPUT_FILE" ]]; then
+    mkdir -p "$(dirname "$OUTPUT_FILE")"
+    exec > >(tee "$OUTPUT_FILE") 2>&1
 fi
 
 # 一時ファイル

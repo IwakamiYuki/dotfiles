@@ -59,9 +59,13 @@
       "Bash(make app-generate:*)",
       "Bash(go build:*)",
       "Bash(~/.claude/scripts/fetch_pr_comments.sh:*)",
+      "Bash(~/.claude/scripts/auto_reply_pr_comments.sh:*)",
+      "Bash(~/.claude/scripts/post_pr_reply.sh:*)",
+      "Bash(~/.claude/scripts/wait_and_recheck_pr_comments.sh:*)",
 
       "Read(.claude/tmp/**)",
       "Write(.claude/tmp/**)",
+      "Edit(.claude/tmp/**)",
       "Update(.claude/tmp/**)",
 
       "Skill(review-pr)",
