@@ -237,5 +237,9 @@ if [ -n "$context_pct" ] && [ "$context_pct" != "null" ] && [ "$context_pct" != 
     context_bar=$(make_bar "$local_context_pct" 10)
 fi
 
-# 出力（echo -e で ANSI エスケープを有効化）
-echo -e "${conversation_title}🤖 $model | 📊 5h:${session_bar} ${session_usage}${session_resets_display} 1w:${week_bar} ${week_usage} | 💬 ${context_bar} $context_usage | ⏱️ ${duration_formatted} | 🔧 ${api_duration_formatted} | ✏️ +${lines_added}/-${lines_removed} | 📦 $version"
+# 出力（2行表示、echo -e で ANSI エスケープを有効化）
+# 1行目: タイトル + モデル + 数値情報（テキストのみ、コンパクト）
+# 2行目: 進捗バー 3 本をまとめて表示（視覚的インジケーター）
+line1="${conversation_title}🤖 ${model} | ⏱️ ${duration_formatted} 🔧 ${api_duration_formatted} | ✏️ +${lines_added}/-${lines_removed} | 📦 ${version}"
+line2="📊 5h:${session_bar} ${session_usage}${session_resets_display}  1w:${week_bar} ${week_usage}  💬 ${context_bar} ${context_usage}"
+echo -e "${line1}\n${line2}"
