@@ -240,6 +240,7 @@ fi
 # 出力（2行表示、echo -e で ANSI エスケープを有効化）
 # 1行目: タイトル + モデル + 数値情報（テキストのみ、コンパクト）
 # 2行目: 進捗バー 3 本をまとめて表示（視覚的インジケーター）
-line1="${conversation_title}🤖 ${model} | ⏱️ ${duration_formatted} 🔧 ${api_duration_formatted} | ✏️ +${lines_added}/-${lines_removed} | 📦 ${version}"
+lines_display="\033[38;5;82m+${lines_added}\033[0m/\033[38;5;196m-${lines_removed}\033[0m"
+line1="${conversation_title}🤖 ${model} | ⏱️ ${duration_formatted} 🔧 ${api_duration_formatted} | ✏️ ${lines_display} | 📦 ${version}"
 line2="📊 5h:${session_bar} ${session_usage}${session_resets_display}  1w:${week_bar} ${week_usage}  💬 ${context_bar} ${context_usage}"
 echo -e "${line1}\n${line2}"
