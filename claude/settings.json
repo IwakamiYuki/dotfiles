@@ -218,5 +218,6 @@
   "plansDirectory": "./.claude/tmp",
   "notificationStyle": "hook",
   "model": "opus[1m]",
-  "theme": "dark"
+  "theme": "dark",
+  "tui": "fullscreen"
 }
