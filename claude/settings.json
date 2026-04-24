@@ -217,5 +217,6 @@
   "alwaysThinkingEnabled": false,
   "plansDirectory": "./.claude/tmp",
   "notificationStyle": "hook",
-  "model": "opus[1m]"
+  "model": "opus[1m]",
+  "theme": "dark"
 }
