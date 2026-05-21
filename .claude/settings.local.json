@@ -3,7 +3,9 @@
     "allow": [
       "WebFetch(domain:code.claude.com)",
       "Skill(create-skill)",
-      "Skill(skill-creator)"
+      "Skill(skill-creator)",
+      "mcp__codex__codex-reply",
+      "Bash(bash ~/.claude/scripts/statusline.sh)"
     ],
     "deny": [],
     "ask": []
