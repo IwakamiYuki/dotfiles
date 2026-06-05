@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Claude Code PreToolUse hook: Bash コマンド検証
-# ファイルリダイレクトと heredoc 操作をブロック
+# ファイルリダイレクトと sed/perl インライン編集をブロック
 
 # 標準入力から JSON を読み込み
 input=$(cat)
@@ -39,11 +39,6 @@ if echo "$command" | grep -qE '(cat|echo|printf)'; then
         echo "ERROR: cat/echo/printf でのファイルリダイレクトは禁止されています。Edit または Write ツールを使用してください。" >&2
         exit 2
     fi
-fi
-
-if echo "$command" | grep -qE '(cat|echo|printf).*<<'; then
-    echo "ERROR: cat/echo/printf での heredoc は禁止されています。Edit または Write ツールを使用してください。" >&2
-    exit 2
 fi
 
 if echo "$command" | grep -qE 'sed.*-[ie]'; then
