@@ -198,6 +198,16 @@ else
     ISSUE_COMMENTS=$(echo "$ISSUE_COMMENTS" | jq '[.[] | {id, user: .user.login, body, created_at}]')
 fi
 
+# 4. レビュー全体コメント取得（/pulls/{pr}/reviews の body）
+# codex/greptile 等が「レビュー全体コメント」として投稿するケースをカバー
+# body が空のレビュー（APPROVED/CHANGES_REQUESTED のみ）は除外
+REVIEW_COMMENTS_RAW=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate)
+if [[ -n "$SINCE" ]]; then
+    REVIEW_COMMENTS=$(echo "$REVIEW_COMMENTS_RAW" | jq --arg since "$SINCE_UTC" '[.[] | select(.submitted_at > $since) | select(.body != null and .body != "") | {id, user: .user.login, body, created_at: .submitted_at, state}]')
+else
+    REVIEW_COMMENTS=$(echo "$REVIEW_COMMENTS_RAW" | jq '[.[] | select(.body != null and .body != "") | {id, user: .user.login, body, created_at: .submitted_at, state}]')
+fi
+
 # 統合 JSON の作成
 cat > "$COMMENTS_JSON" <<EOF
 {
@@ -206,7 +216,8 @@ cat > "$COMMENTS_JSON" <<EOF
   "since": "$SINCE",
   "inline_comments": $INLINE_COMMENTS,
   "discussion_comments": $DISCUSSION_COMMENTS,
-  "issue_comments": $ISSUE_COMMENTS
+  "issue_comments": $ISSUE_COMMENTS,
+  "review_comments": $REVIEW_COMMENTS
 }
 EOF
 
@@ -214,13 +225,15 @@ EOF
 INLINE_COUNT=$(echo "$INLINE_COMMENTS" | jq 'length')
 DISCUSSION_COUNT=$(echo "$DISCUSSION_COMMENTS" | jq 'length')
 ISSUE_COUNT=$(echo "$ISSUE_COMMENTS" | jq 'length')
-TOTAL_COUNT=$((INLINE_COUNT + DISCUSSION_COUNT + ISSUE_COUNT))
+REVIEW_COUNT=$(echo "$REVIEW_COMMENTS" | jq 'length')
+TOTAL_COUNT=$((INLINE_COUNT + DISCUSSION_COUNT + ISSUE_COUNT + REVIEW_COUNT))
 
 echo ""
 echo -e "${GREEN}取得完了:${NC}"
 echo "  インラインコメント: $INLINE_COUNT 件"
 echo "  Discussion コメント: $DISCUSSION_COUNT 件"
 echo "  Issue コメント: $ISSUE_COUNT 件"
+echo "  レビュー全体コメント: $REVIEW_COUNT 件"
 echo "  合計: $TOTAL_COUNT 件"
 echo ""
 
