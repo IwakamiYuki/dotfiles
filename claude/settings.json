@@ -220,5 +220,5 @@
   "notificationStyle": "hook",
   "model": "opus[1m]",
   "theme": "dark",
-  "tui": "fullscreen"
+  "tui": "default"
 }
