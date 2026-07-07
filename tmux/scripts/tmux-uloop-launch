@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# tmux-uloop-launch: 現在の pane のディレクトリから git リポジトリルートを特定し、
+# その配下にある Unity プロジェクトを uloop で起動する（起動中ならウィンドウをフォーカス）。
+#
+# git リポジトリでない場合は pane のディレクトリをそのまま起点にする。
+
+set -euo pipefail
+
+pane_dir="$1"
+
+if [ -z "$pane_dir" ]; then
+  exit 0
+fi
+
+root_dir="$(cd "$pane_dir" && git rev-parse --show-toplevel 2>/dev/null || echo "$pane_dir")"
+
+log_file="/tmp/tmux-uloop-launch.log"
+
+# project-path を明示すると uloop はそれ自体を Unity プロジェクトとして厳密に検証するため、
+# 配下を再帰探索させるには project-path を省略して cd してから呼ぶ必要がある。
+# uloop launch は Unity の起動完了までブロックするので、呼び出し元（tmux run-shell -b）は
+# バックグラウンド実行にして tmux が固まらないようにする。ログはファイルに残す。
+{
+  echo "=== $(date) ==="
+  cd "$root_dir" && uloop launch
+} >> "$log_file" 2>&1
