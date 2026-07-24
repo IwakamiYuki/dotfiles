@@ -14,7 +14,6 @@
       "Grep",
       "WebFetch",
       "WebSearch",
-
       "Bash(cat:*)",
       "Bash(head:*)",
       "Bash(tail:*)",
@@ -41,7 +40,6 @@
       "Bash(dirname:*)",
       "Bash(basename:*)",
       "Bash(realpath:*)",
-
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
@@ -50,7 +48,8 @@
       "Bash(git branch:*)",
       "Bash(git add:*)",
       "Bash(git stash:*)",
-
+      "Bash(git fetch:*)",
+      "Bash(git remote:*)",
       "Bash(gh api:*)",
       "Bash(gh issue view:*)",
       "Bash(gh pr view:*)",
@@ -58,22 +57,18 @@
       "Bash(gh pr checks:*)",
       "Bash(gh run view:*)",
       "Bash(gh run list:*)",
-
       "Bash(make app-generate:*)",
       "Bash(go build:*)",
       "Bash(~/.claude/scripts/fetch_pr_comments.sh:*)",
       "Bash(~/.claude/scripts/auto_reply_pr_comments.sh:*)",
       "Bash(~/.claude/scripts/post_pr_reply.sh:*)",
       "Bash(~/.claude/scripts/wait_and_recheck_pr_comments.sh:*)",
-
       "Read(.claude/tmp/**)",
       "Write(.claude/tmp/**)",
       "Edit(.claude/tmp/**)",
       "Update(.claude/tmp/**)",
-
       "Skill(review-pr)",
       "Skill(review-diff)",
-
       "mcp__serena__activate_project",
       "mcp__serena__onboarding",
       "mcp__serena__initial_instructions",
@@ -88,16 +83,13 @@
       "mcp__serena__think_about_task_adherence",
       "mcp__serena__think_about_collected_information",
       "mcp__serena__think_about_whether_you_are_done",
-
       "mcp__jetbrains__find_files_by_name_keyword",
       "mcp__jetbrains__find_files_by_glob",
       "mcp__jetbrains__list_directory_tree",
       "mcp__jetbrains__get_file_text_by_path",
       "mcp__jetbrains__search_in_files_by_text",
-
       "mcp__codex__codex",
       "mcp__codex__codex-reply",
-
       "mcp__md-review__session_new-id",
       "mcp__md-review__review_request"
     ],
@@ -131,6 +123,7 @@
     ],
     "defaultMode": "acceptEdits"
   },
+  "model": "sonnet",
   "hooks": {
     "PreToolUse": [
       {
@@ -216,9 +209,10 @@
   },
   "language": "Japanese",
   "alwaysThinkingEnabled": false,
+  "effortLevel": "xhigh",
   "plansDirectory": "./.claude/tmp",
-  "notificationStyle": "hook",
-  "model": "opus[1m]",
+  "tui": "default",
+  "skipWorkflowUsageWarning": true,
   "theme": "dark",
-  "tui": "default"
+  "notificationStyle": "hook"
 }
