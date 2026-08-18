@@ -1,0 +1,137 @@
+#!/bin/bash
+
+# tmux-claude-agents-jump: `claude agents --json` の一覧を fzf で表示し、
+# 選択したセッションが動いている tmux ペインへジャンプする。
+#
+# 紐付け方法: `claude agents --json` の各エージェントの pid の親プロセス(ppid)は
+# そのエージェントを起動した tmux ペインの pane_pid と一致する。
+
+set -euo pipefail
+
+agents_json=$(claude agents --json 2>/dev/null || echo '[]')
+
+if [ "$(echo "$agents_json" | jq 'length')" -eq 0 ]; then
+  tmux display-message "Claude セッションが見つかりません"
+  exit 0
+fi
+
+# 絵文字はソース中に生バイトで置かず \xHH エスケープで組み立てる
+# (macOS 標準 bash 3.2 は絵文字リテラル直後の記号でパースが壊れることがあるため)
+ICON_WAITING=$'\xf0\x9f\x94\xb4'  # 🔴
+ICON_BUSY=$'\xf0\x9f\x9f\xa1'     # 🟡
+ICON_IDLE=$'\xe2\x9a\xaa'         # ⚪
+ICON_ALERT=$'\xf0\x9f\x94\x94'    # 🔔（tmux-claude-agents-status の未読フラグと連動）
+
+# ステータスバー用の未読(alerting)状態を共有する。ppid をキーに 1/0 を引く
+ALERT_STATE_FILE="/tmp/tmux-claude-agents-state"
+alert_state=""
+[ -f "$ALERT_STATE_FILE" ] && alert_state=$(cat "$ALERT_STATE_FILE")
+
+# waitingFor は空文字列になりうるが、IFS=タブでの read は連続する区切り文字(=空フィールド)を
+# 詰めてしまうため、空文字列を "-" に置き換えてフィールドを必ず埋める
+list=$(echo "$agents_json" | jq -r '
+  .[] | "\(.pid)\t\(.status)\t\(.cwd | split("/")[-1])\t\(.waitingFor // "-")\t\(.sessionId)"
+')
+
+# pane_pid をキーに、セッション名・ウィンドウ番号・ペイン番号を引けるようにしておく
+# (tmux の -F フォーマット文字列内では \t はタブに展開されないため区切りに | を使う)
+panes=$(tmux list-panes -a -F '#{pane_pid}|#{session_name}|#{window_index}|#{window_name}|#{pane_index}')
+
+# ウィンドウ番号 → ステータス → ペイン番号の優先度でソートするためのソートキーを
+# 各行の先頭に付与する（表示前に取り除く）。ステータスの優先度: waiting(0) > busy(1) > idle(2)
+sortable=$(echo "$list" | while IFS=$'\t' read -r pid status name waiting session_id; do
+  ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+
+  win_key=""
+  win_label=""
+  pane_idx=""
+  pane_info=$(echo "$panes" | awk -F'|' -v p="$ppid" '$1 == p { print $2"|"$3"|"$4"|"$5; exit }')
+  if [ -n "$pane_info" ]; then
+    IFS='|' read -r sess_name win_idx win_name pane_idx <<< "$pane_info"
+    win_key="${sess_name}:${win_idx}"
+    win_label="${sess_name}:${win_idx} (${win_name})"
+  fi
+  # 対応ペインが見つからない場合は最後尾に回す
+  [ -z "$win_key" ] && win_key="~"
+  [ -z "$win_label" ] && win_label="(不明)"
+  [ -z "$pane_idx" ] && pane_idx=9999
+
+  status_rank=2
+  [ "$status" = "busy" ] && status_rank=1
+  [ "$status" = "waiting" ] && status_rank=0
+
+  icon="$ICON_IDLE"
+  [ "$status" = "busy" ] && icon="$ICON_BUSY"
+  [ "$status" = "waiting" ] && icon="$ICON_WAITING"
+
+  # tmux-claude-agents-status と同じ未読(alerting)状態を参照し、未読なら🔔を添えて最優先表示にする。
+  # 🔔は表示幅2カラムの絵文字なので、無い行は全角スペース(同じく2カラム)で埋めてインデントを揃える。
+  alert_line=$(echo "$alert_state" | awk -F':' -v p="$ppid" '$1 == p { print $3; exit }')
+  alert_mark='　'
+  if [ "$alert_line" = "1" ]; then
+    alert_mark="$ICON_ALERT"
+    status_rank=-1
+  fi
+
+  # 会話タイトルのキャッシュがあれば「タイトル (ディレクトリ名)」、無ければディレクトリ名のみ
+  title_cache="/tmp/claude-title-${session_id}.txt"
+  label="$name"
+  if [ -f "$title_cache" ]; then
+    title=$(cat "$title_cache")
+    [ -n "$title" ] && [ "$title" != "新しい会話" ] && label="${title} (${name})"
+  fi
+
+  [ "$waiting" = "-" ] && waiting=""
+  printf '%s\t%s\t%s\t%s\t%s\t%s %s %-8s %-50s %s\n' "$win_key" "$status_rank" "$pane_idx" "$ppid" "$win_label" "$alert_mark" "$icon" "$status" "$label" "$waiting"
+done)
+
+# ウィンドウ番号 → ステータス → ペイン番号でソートした後、ウィンドウが変わる境目に
+# 選択不可の見出し行（ppid を空にした行）を挿入する
+grouped=$(echo "$sortable" \
+  | sort -t $'\t' -k1,1 -k2,2n -k3,3n \
+  | awk -F'\t' '
+      BEGIN { prev = "" }
+      {
+        if ($1 != prev) {
+          printf "\t\xe2\x94\x80\xe2\x94\x80 %s \xe2\x94\x80\xe2\x94\x80\n", $5
+          prev = $1
+        }
+        print $4"\t"$6
+      }
+    ')
+
+# --no-input 時は input セクション自体が無効化されるため、
+# change-query ではなく search アクションでクエリを反映させる必要がある。
+# f で絞り込んだ結果が0件のとき「バグって消えた」と紛らわしいため、
+# change-header でフィルタ中である旨を表示し、--info=inline で常に件数を見せる。
+selected=$(echo "$grouped" \
+  | fzf --with-nth=2.. --delimiter='\t' --height=100% --layout=reverse \
+      --no-input --info=inline \
+      --bind="j:down,k:up,q:abort" \
+      --bind="f:search(${ICON_ALERT})+change-header(Claude Agents [未読のみ表示中] (F: 解除, Enter: jump, q: close))" \
+      --bind="F:search()+change-header(Claude Agents (j/k: move, f: 未読のみ, F: 解除, Enter: jump, q: close))" \
+      --header='Claude Agents (j/k: move, f: 未読のみ, F: 解除, Enter: jump, q: close)' || true)
+
+if [ -z "$selected" ]; then
+  exit 0
+fi
+
+selected_ppid=$(echo "$selected" | cut -f1)
+
+# 見出し行（ppid が空）を選んだ場合は何もせず終了する
+if [ -z "$selected_ppid" ]; then
+  exit 0
+fi
+
+target=$(tmux list-panes -a -F '#{pane_pid}|#{session_name}:#{window_index}.#{pane_index}' \
+  | awk -F'|' -v ppid="$selected_ppid" '$1 == ppid { print $2; exit }')
+
+if [ -z "$target" ]; then
+  tmux display-message "対応する tmux ペインが見つかりませんでした"
+  exit 0
+fi
+
+session="${target%%:*}"
+tmux switch-client -t "$session"
+tmux select-window -t "$target"
+tmux select-pane -t "$target"

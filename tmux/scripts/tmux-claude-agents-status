@@ -1,0 +1,138 @@
+#!/bin/bash
+
+# tmux-claude-agents-status: 各 Claude セッションを ● 1つで表示し、色だけで状態を表す。
+#
+#   busy    : 黄色固定（発生自体が目立つので既読/未読の区別は不要）
+#   waiting : 赤色固定（同上）
+#   idle    : 既読=薄いオレンジ（背景の colour208 と同系統だがわずかに明るく、
+#             かすかに見える程度に留める）
+#             未読=緑（busy→idle で完了した直後で、まだそのペインを
+#             select-pane していない場合）
+#
+# `claude agents --json` は約0.2秒かかるため、status-interval(1秒)で毎回呼ぶと重い。
+# キャッシュファイルを使い、STATE_TTL 秒に一度だけ実際に叩く。
+#
+# 状態ファイルの各行は "ppid:lastStatus:alerting" 形式。
+# 連想配列(declare -A)は bash 4+ 限定で macOS 標準の bash 3.2 では使えないため、
+# 前回状態の参照は awk で1行ずつ引く方式にしている。
+
+set -euo pipefail
+
+STATE_FILE="/tmp/tmux-claude-agents-state"
+STATE_TTL=5
+
+SYMBOL='●'
+
+BG_NORMAL='colour208'
+FG_BUSY='colour226'
+FG_WAITING='colour196'
+FG_IDLE_READ='colour216'
+FG_IDLE_ALERT='colour46'
+
+now=$(date +%s)
+
+# --- 状態ファイルの更新（STATE_TTL 秒に一度だけ） ---
+state_age=999999
+if [ -f "$STATE_FILE" ]; then
+  state_age=$(( now - $(stat -f %m "$STATE_FILE" 2>/dev/null || echo 0) ))
+fi
+
+if [ "$state_age" -ge "$STATE_TTL" ]; then
+  agents_json=$(claude agents --json 2>/dev/null || echo '[]')
+  # 別プロセス（複数 tmux client の同時評価等）との競合を避けるため、
+  # 旧状態は一時ファイルではなくシェル変数に保持する
+  old_state=""
+  [ -f "$STATE_FILE" ] && old_state=$(cat "$STATE_FILE")
+
+  new_state=""
+  while IFS=$'\t' read -r pid status; do
+    [ -z "$pid" ] && continue
+    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -z "$ppid" ] && continue
+
+    prev_line=$(echo "$old_state" | awk -F':' -v p="$ppid" '$1 == p { print $2":"$3; exit }')
+    prev_status=""
+    alerting=0
+    if [ -n "$prev_line" ]; then
+      prev_status="${prev_line%%:*}"
+      alerting="${prev_line##*:}"
+    fi
+
+    # waiting になった、または busy→idle で完了した瞬間に未読フラグを立てる。
+    # 逆に、未読が確認されないまま新しい作業(busy)が始まった場合は、
+    # 「完了した」というアピール自体の意味が失われるので自動で解除する。
+    if [ "$status" = "waiting" ] && [ "$prev_status" != "waiting" ]; then
+      alerting=1
+    elif [ "$status" = "idle" ] && [ "$prev_status" = "busy" ]; then
+      alerting=1
+    elif [ "$status" = "busy" ] && [ "$prev_status" != "busy" ]; then
+      alerting=0
+    fi
+
+    new_state="${new_state}${ppid}:${status}:${alerting}"$'\n'
+  done < <(echo "$agents_json" | jq -r '.[] | "\(.pid)\t\(.status)"')
+
+  printf '%s' "$new_state" > "$STATE_FILE"
+fi
+
+# --- 表示文字列の生成（毎秒実行） ---
+# ppid をキーに、セッション名・ウィンドウ番号・ペイン番号・pane_id を引いてウィンドウ順に並べる。
+# pane_id は #[range=pane|<pane_id>] でクリック範囲としてマークし、
+# 各 ● をクリックしたら対応ペインへジャンプできるようにするために使う。
+# (tmux の -F フォーマット文字列内では \t はタブに展開されないため区切りに | を使う)
+panes=$(tmux list-panes -a -F '#{pane_pid}|#{session_name}|#{window_index}|#{pane_index}|#{pane_id}')
+
+sortable=""
+while IFS=':' read -r ppid status alerting; do
+  [ -z "$ppid" ] && continue
+
+  pane_info=$(echo "$panes" | awk -F'|' -v p="$ppid" '$1 == p { print $2"|"$3"|"$4"|"$5; exit }')
+  win_key="~"
+  pane_idx=9999
+  pane_id=""
+  if [ -n "$pane_info" ]; then
+    IFS='|' read -r sess_name win_idx p_idx p_id <<< "$pane_info"
+    win_key="${sess_name}:${win_idx}"
+    pane_idx="$p_idx"
+    pane_id="$p_id"
+  fi
+
+  if [ "$status" = "busy" ]; then
+    fg="$FG_BUSY"
+  elif [ "$status" = "waiting" ]; then
+    fg="$FG_WAITING"
+  else
+    fg="$FG_IDLE_READ"
+    [ "$alerting" = "1" ] && fg="$FG_IDLE_ALERT"
+  fi
+
+  sortable="${sortable}${win_key}"$'\t'"${pane_idx}"$'\t'"${fg}"$'\t'"${pane_id}"$'\n'
+done < "$STATE_FILE"
+
+SEPARATOR='┃'
+
+result=""
+prev_win_key=""
+while IFS=$'\t' read -r win_key pane_idx fg pane_id; do
+  [ -z "$fg" ] && continue
+
+  if [ -n "$prev_win_key" ] && [ "$win_key" != "$prev_win_key" ]; then
+    result="${result}#[bg=${BG_NORMAL}]#[fg=colour232]${SEPARATOR} "
+  fi
+  prev_win_key="$win_key"
+
+  if [ -n "$pane_id" ]; then
+    # range=pane|X は = ターゲットの解決が不安定なため、range=user|X を使い
+    # mouse_status_range に pane_id を渡す方式にする。
+    # ただし X に "%" を含めると tmux 側で剥がされてしまう(実測で確認済み)ため、
+    # "%" を除いた数字部分だけを渡し、クリック側で "%" を付け直す。
+    pane_id_num="${pane_id#%}"
+    result="${result}#[bg=${BG_NORMAL}]#[fg=${fg}]#[range=user|${pane_id_num}]${SYMBOL}#[norange]#[fg=default] "
+  else
+    result="${result}#[bg=${BG_NORMAL}]#[fg=${fg}]${SYMBOL}#[fg=default] "
+  fi
+done < <(echo "$sortable" | sort -t $'\t' -k1,1 -k2,2n)
+
+[ -n "$result" ] && result="🤖 #[bg=${BG_NORMAL}]#[fg=colour232]${SEPARATOR} #[default]${result}#[default]"
+
+printf '%s' "$result"

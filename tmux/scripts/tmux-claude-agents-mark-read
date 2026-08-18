@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# tmux-claude-agents-mark-read: tmux の pane-focus-in フックから呼ばれ、
+# フォーカスされたペインで動いている Claude セッションの未読(alerting)フラグを解除する。
+#
+# 引数: フォーカスされたペインの pane_pid (#{pane_pid})
+
+set -euo pipefail
+
+STATE_FILE="/tmp/tmux-claude-agents-state"
+focused_pid="$1"
+
+[ -z "$focused_pid" ] && exit 0
+[ -f "$STATE_FILE" ] || exit 0
+
+awk -F':' -v p="$focused_pid" 'BEGIN{OFS=":"} { if ($1 == p) $3 = 0; print }' "$STATE_FILE" > "${STATE_FILE}.tmp"
+mv "${STATE_FILE}.tmp" "$STATE_FILE"
