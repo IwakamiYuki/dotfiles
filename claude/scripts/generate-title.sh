@@ -48,28 +48,39 @@ LOCK_FILE="/tmp/claude-title-${SESSION_ID}.lock"
 # 現在のメッセージ数を取得
 CURRENT_MSG_COUNT=$(wc -l < "$TRANSCRIPT_PATH" 2>/dev/null || echo 0)
 
-# キャッシュとメタデータを確認
+# Why: 古いキャッシュを即座に削除すると、バックグラウンド再生成が完了するまでの間
+# タイトルが空白になり、tmux-claude-agents-jump 等の参照元でフォールバック表示になってしまう。
+# そのため、AI 生成をスキップ/待機する場合も、ルールベースの抽出結果より
+# 「古くても AI が生成した既存のタイトル」を優先して返す。
+fallback_title() {
+    if [ -f "$CACHE_FILE" ]; then
+        cat "$CACHE_FILE"
+    else
+        bash ~/.claude/scripts/extract-title.sh "$TRANSCRIPT_PATH"
+    fi
+}
+
+# キャッシュとメタデータを確認。メッセージ数が増えて再生成が必要な場合も、
+# 新しいタイトルが生成できるまでは古いキャッシュを表示し続け、
+# 上書きは生成成功時のみ行う（CACHE_FILE 自体はここでは削除しない）。
 if [ -f "$CACHE_FILE" ] && [ -f "$CACHE_META_FILE" ]; then
     CACHED_MSG_COUNT=$(cat "$CACHE_META_FILE" 2>/dev/null || echo 0)
-    # メッセージ数の差が 100 未満ならキャッシュを使用
     if [ $((CURRENT_MSG_COUNT - CACHED_MSG_COUNT)) -lt 100 ]; then
         cat "$CACHE_FILE"
         exit 0
     fi
-    # メッセージ数が 100 以上増えた場合は古いキャッシュを削除
-    rm -f "$CACHE_FILE" "$CACHE_META_FILE"
 fi
 
 # 環境変数で無効化されている場合はルールベースにフォールバック
 if [ "$CLAUDE_DISABLE_AI_TITLE" = "1" ]; then
-    bash ~/.claude/scripts/extract-title.sh "$TRANSCRIPT_PATH"
+    fallback_title
     exit 0
 fi
 
 # codex exec が利用可能か確認
 if ! command -v codex &> /dev/null; then
     # codex がない場合はルールベースにフォールバック
-    bash ~/.claude/scripts/extract-title.sh "$TRANSCRIPT_PATH"
+    fallback_title
     exit 0
 fi
 
@@ -84,15 +95,15 @@ if [ -f "$LOCK_FILE" ]; then
     if [ "$(find "$LOCK_FILE" -mmin +1 2>/dev/null)" ]; then
         rm -f "$LOCK_FILE"
     else
-        # バックグラウンド生成中 → ルールベースタイトルを返す
-        bash ~/.claude/scripts/extract-title.sh "$TRANSCRIPT_PATH"
+        # バックグラウンド生成中 → 古いキャッシュ、なければルールベースタイトルを返す
+        fallback_title
         exit 0
     fi
 fi
 
 # メッセージ数が少ない場合は AI 生成せずルールベースのみ
 if [ "$CURRENT_MSG_COUNT" -lt 10 ]; then
-    bash ~/.claude/scripts/extract-title.sh "$TRANSCRIPT_PATH"
+    fallback_title
     exit 0
 fi
 
@@ -155,5 +166,5 @@ $CONVERSATION
     rm -f "$LOCK_FILE"
 ) &
 
-# 即座にルールベースタイトルを返す（statusLine をブロックしない）
-bash ~/.claude/scripts/extract-title.sh "$TRANSCRIPT_PATH"
+# 即座に古いキャッシュ、なければルールベースタイトルを返す（statusLine をブロックしない）
+fallback_title
