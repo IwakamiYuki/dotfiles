@@ -37,8 +37,8 @@ list=$(echo "$agents_json" | jq -r '
 # (tmux の -F フォーマット文字列内では \t はタブに展開されないため区切りに | を使う)
 panes=$(tmux list-panes -a -F '#{pane_pid}|#{session_name}|#{window_index}|#{window_name}|#{pane_index}')
 
-# ウィンドウ番号 → ステータス → ペイン番号の優先度でソートするためのソートキーを
-# 各行の先頭に付与する（表示前に取り除く）。ステータスの優先度: waiting(0) > busy(1) > idle(2)
+# ウィンドウ番号 → ペイン番号の順でソートするためのソートキーを
+# 各行の先頭に付与する（表示前に取り除く）。ステータスによる並び替えは行わない。
 sortable=$(echo "$list" | while IFS=$'\t' read -r pid status name waiting session_id; do
   ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
 
@@ -56,22 +56,15 @@ sortable=$(echo "$list" | while IFS=$'\t' read -r pid status name waiting sessio
   [ -z "$win_label" ] && win_label="(不明)"
   [ -z "$pane_idx" ] && pane_idx=9999
 
-  status_rank=2
-  [ "$status" = "busy" ] && status_rank=1
-  [ "$status" = "waiting" ] && status_rank=0
-
   icon="$ICON_IDLE"
   [ "$status" = "busy" ] && icon="$ICON_BUSY"
   [ "$status" = "waiting" ] && icon="$ICON_WAITING"
 
-  # tmux-claude-agents-status と同じ未読(alerting)状態を参照し、未読なら🔔を添えて最優先表示にする。
+  # tmux-claude-agents-status と同じ未読(alerting)状態を参照し、未読なら🔔を添える（並び順には影響させない）。
   # 🔔は表示幅2カラムの絵文字なので、無い行は全角スペース(同じく2カラム)で埋めてインデントを揃える。
   alert_line=$(echo "$alert_state" | awk -F':' -v p="$ppid" '$1 == p { print $3; exit }')
   alert_mark='　'
-  if [ "$alert_line" = "1" ]; then
-    alert_mark="$ICON_ALERT"
-    status_rank=-1
-  fi
+  [ "$alert_line" = "1" ] && alert_mark="$ICON_ALERT"
 
   # 会話タイトルのキャッシュがあれば「タイトル (ディレクトリ名)」、無ければディレクトリ名のみ
   title_cache="/tmp/claude-title-${session_id}.txt"
@@ -82,35 +75,35 @@ sortable=$(echo "$list" | while IFS=$'\t' read -r pid status name waiting sessio
   fi
 
   [ "$waiting" = "-" ] && waiting=""
-  printf '%s\t%s\t%s\t%s\t%s\t%s %s %-8s %-50s %s\n' "$win_key" "$status_rank" "$pane_idx" "$ppid" "$win_label" "$alert_mark" "$icon" "$status" "$label" "$waiting"
+  printf '%s\t%s\t%s\t%s\t%s %s %-8s %-50s %s\n' "$win_key" "$pane_idx" "$ppid" "$win_label" "$alert_mark" "$icon" "$status" "$label" "$waiting"
 done)
 
-# ウィンドウ番号 → ステータス → ペイン番号でソートした後、ウィンドウが変わる境目に
+# ウィンドウ番号 → ペイン番号でソートした後、ウィンドウが変わる境目に
 # 選択不可の見出し行（ppid を空にした行）を挿入する
 grouped=$(echo "$sortable" \
-  | sort -t $'\t' -k1,1 -k2,2n -k3,3n \
+  | sort -t $'\t' -k1,1 -k2,2n \
   | awk -F'\t' '
       BEGIN { prev = "" }
       {
         if ($1 != prev) {
-          printf "\t\xe2\x94\x80\xe2\x94\x80 %s \xe2\x94\x80\xe2\x94\x80\n", $5
+          printf "\t\xe2\x94\x80\xe2\x94\x80 %s \xe2\x94\x80\xe2\x94\x80\n", $4
           prev = $1
         }
-        print $4"\t"$6
+        print $3"\t"$5
       }
     ')
 
 # --no-input 時は input セクション自体が無効化されるため、
 # change-query ではなく search アクションでクエリを反映させる必要がある。
-# f で絞り込んだ結果が0件のとき「バグって消えた」と紛らわしいため、
+# a で絞り込んだ結果が0件のとき「バグって消えた」と紛らわしいため、
 # change-header でフィルタ中である旨を表示し、--info=inline で常に件数を見せる。
 selected=$(echo "$grouped" \
   | fzf --with-nth=2.. --delimiter='\t' --height=100% --layout=reverse \
       --no-input --info=inline \
       --bind="j:down,k:up,q:abort" \
-      --bind="f:search(${ICON_ALERT})+change-header(Claude Agents [未読のみ表示中] (F: 解除, Enter: jump, q: close))" \
-      --bind="F:search()+change-header(Claude Agents (j/k: move, f: 未読のみ, F: 解除, Enter: jump, q: close))" \
-      --header='Claude Agents (j/k: move, f: 未読のみ, F: 解除, Enter: jump, q: close)' || true)
+      --bind="a:search(${ICON_ALERT})+change-header(Claude Agents [未読のみ表示中] (A: 解除, Enter: jump, q: close))" \
+      --bind="A:search()+change-header(Claude Agents (j/k: move, a: 未読のみ, A: 解除, Enter: jump, q: close))" \
+      --header='Claude Agents (j/k: move, a: 未読のみ, A: 解除, Enter: jump, q: close)' || true)
 
 if [ -z "$selected" ]; then
   exit 0
