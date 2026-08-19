@@ -4,13 +4,15 @@
 #
 # 表示項目：
 # 🤖 モデル名 - 使用中のClaudeモデル
-# 📊 5h セッション使用率 - rate_limits.five_hour から取得（v2.1.80+）
-# 📅 1w 週間使用率 - rate_limits.seven_day から取得（v2.1.80+）
 # 💬 コンテキスト使用量 - 現在の会話のトークン使用量（v2.0.70以降は正確、それ以前は概算）
 # ⏱️ 総処理時間 - セッション開始からの経過時間（秒）
 # 🔧 API処理時間 - 実際のAPI呼び出しに費やした時間（秒）
 # ✏️ コード変更量 - 追加/削除された行数
 # 📦 バージョン - Claude Codeのバージョン番号
+#
+# 5h/1w のレートリミット（rate_limits, v2.1.80+）はアカウント単位で全セッション共通のため、
+# ここでは表示せず /tmp/claude-rate-limits.json に書き出すのみ。
+# 表示は tmux ヘッダー側の tmux-rate-limits スクリプトが担当する。
 
 # 環境変数でstatusLineが無効化されている場合は何も出力しない（無限ループ防止）
 if [ "$CLAUDE_DISABLE_STATUSLINE" = "1" ]; then
@@ -66,42 +68,6 @@ format_time() {
     fi
 }
 
-# リセット時刻を相対時間に変換する関数（例: "2h30m"）
-# 入力: epoch 秒（数値）または ISO 8601 文字列（UTC）
-format_resets_at() {
-    local resets_at=$1
-    local reset_epoch=""
-
-    # 数値（epoch 秒）の場合はそのまま使用
-    if [[ "$resets_at" =~ ^[0-9]+$ ]]; then
-        reset_epoch="$resets_at"
-    else
-        # ISO 8601 文字列: "Z" や ".000Z" を除去して UTC としてパース
-        local clean="${resets_at%%.*}"
-        clean="${clean%Z}"
-        reset_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$clean" "+%s" 2>/dev/null)
-    fi
-
-    if [ -z "$reset_epoch" ] || [ "$reset_epoch" = "0" ]; then
-        echo "$resets_at"
-        return
-    fi
-    local now=$(date +%s)
-    local diff=$((reset_epoch - now))
-    if [ $diff -le 0 ]; then
-        echo "now"
-        return
-    fi
-    # 時間と分のみ表示（秒は省略）
-    local hours=$((diff / 3600))
-    local minutes=$(((diff % 3600) / 60))
-    if [ $hours -gt 0 ]; then
-        printf "%dh%dm" $hours $minutes
-    else
-        printf "%dm" $minutes
-    fi
-}
-
 # トークン数を人間が読みやすい形式にフォーマットする関数（例: 1000K → 1M）
 format_tokens() {
     local tokens=$1
@@ -150,35 +116,21 @@ round_pct() {
     printf "%.0f" "$1" 2>/dev/null || echo "0"
 }
 
-# レートリミット情報の整形（rate_limits フィールドから直接取得、v2.1.80+）
+# レートリミット情報はアカウント単位で全セッション共通のため、statusLine には表示せず
+# tmux ヘッダー（tmux-rate-limits）用にキャッシュファイルへ書き出すだけにする
+RATE_LIMITS_CACHE="/tmp/claude-rate-limits.json"
 if [ -n "$five_hour_pct" ] && [ "$five_hour_pct" != "null" ] && [ "$five_hour_pct" != "" ]; then
-    five_hour_pct=$(round_pct "$five_hour_pct")
-    session_usage="${five_hour_pct}%"
-else
-    session_usage="N/A"
-fi
-
-if [ -n "$five_hour_resets" ] && [ "$five_hour_resets" != "null" ] && [ "$five_hour_resets" != "" ]; then
-    session_reset=$(format_resets_at "$five_hour_resets")
-else
-    session_reset="N/A"
-fi
-
-if [ -n "$seven_day_pct" ] && [ "$seven_day_pct" != "null" ] && [ "$seven_day_pct" != "" ]; then
-    seven_day_pct=$(round_pct "$seven_day_pct")
-    week_usage="${seven_day_pct}%"
-else
-    week_usage="N/A"
+    jq -n \
+        --arg five_hour_pct "$five_hour_pct" \
+        --arg five_hour_resets "$five_hour_resets" \
+        --arg seven_day_pct "$seven_day_pct" \
+        --arg seven_day_resets "$seven_day_resets" \
+        '{five_hour_pct: ($five_hour_pct | tonumber), five_hour_resets: $five_hour_resets, seven_day_pct: (if $seven_day_pct == "" or $seven_day_pct == "null" then null else ($seven_day_pct | tonumber) end), seven_day_resets: $seven_day_resets}' \
+        > "$RATE_LIMITS_CACHE" 2>/dev/null
 fi
 
 # コンテキスト使用量を計算
 context_usage=$(calculate_context_usage "$context_tokens" "$context_pct" "$context_window_size")
-
-# resets 情報の整形（5h のみ表示、1w は省略）
-session_resets_display=""
-if [ -n "$session_reset" ] && [ "$session_reset" != "N/A" ]; then
-    session_resets_display=" ($session_reset)"
-fi
 
 # 会話タイトルを取得（AI生成、キャッシュあればそれを使用）
 conversation_title=""
@@ -223,24 +175,13 @@ make_bar() {
 }
 
 # 進捗バーを生成（数値が取得できた場合のみ）
-session_bar=""
-if [ -n "$five_hour_pct" ] && [ "$five_hour_pct" != "null" ] && [ "$five_hour_pct" != "" ]; then
-    session_bar=$(make_bar "$five_hour_pct" 10)
-fi
-week_bar=""
-if [ -n "$seven_day_pct" ] && [ "$seven_day_pct" != "null" ] && [ "$seven_day_pct" != "" ]; then
-    week_bar=$(make_bar "$seven_day_pct" 10)
-fi
 context_bar=""
 if [ -n "$context_pct" ] && [ "$context_pct" != "null" ] && [ "$context_pct" != "" ]; then
     local_context_pct=$(round_pct "$context_pct")
     context_bar=$(make_bar "$local_context_pct" 10)
 fi
 
-# 出力（2行表示、echo -e で ANSI エスケープを有効化）
-# 1行目: タイトル + モデル + 数値情報（テキストのみ、コンパクト）
-# 2行目: 進捗バー 3 本をまとめて表示（視覚的インジケーター）
+# 出力（1行表示、echo -e で ANSI エスケープを有効化）
+# 5h/1w のレートリミットは tmux ヘッダーに集約したため、statusLine は1行に収まる
 lines_display="\033[38;5;82m+${lines_added}\033[0m/\033[38;5;196m-${lines_removed}\033[0m"
-line1="${conversation_title}🤖 ${model} | ⏱️ ${duration_formatted} 🔧 ${api_duration_formatted} | ✏️ ${lines_display} | 📦 ${version}"
-line2="📊 5h:${session_bar} ${session_usage}${session_resets_display}  1w:${week_bar} ${week_usage}  💬 ${context_bar} ${context_usage}"
-echo -e "${line1}\n${line2}"
+echo -e "${conversation_title}🤖 ${model} | ⏱️ ${duration_formatted} 🔧 ${api_duration_formatted} | ✏️ ${lines_display} | 💬 ${context_bar} ${context_usage} | 📦 ${version}"

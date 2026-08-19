@@ -1,0 +1,138 @@
+#!/bin/bash
+
+# tmux-rate-limits: Claude Code の 5h/1w レートリミット使用率を tmux ヘッダーに表示する。
+#
+# レートリミットは Anthropic アカウント単位の値であり、全 Claude セッションで共通のため、
+# 各セッションの statusLine で重複表示せず、ここ 1 箇所にまとめる。
+#
+# 値の出どころ: Claude Code 本体が statusLine 呼び出し時に stdin 経由で渡す
+# rate_limits フィールドのみが取得源であり、tmux 側から独立して問い合わせる
+# 公式 API/CLI は存在しない。そのため statusline.sh が実行されるたびに
+# /tmp/claude-rate-limits.json へ書き出し、本スクリプトはそれを読むだけにする。
+# （いずれかのセッションが動いていれば数秒に一度は更新される。1つも動いていない
+# 間は前回値が残るが、実用上問題ない）
+
+set -euo pipefail
+
+CACHE_FILE="/tmp/claude-rate-limits.json"
+
+[ -f "$CACHE_FILE" ] || exit 0
+
+json=$(cat "$CACHE_FILE" 2>/dev/null) || exit 0
+[ -n "$json" ] || exit 0
+
+five_hour_pct=$(echo "$json" | jq -r '.five_hour_pct // empty' 2>/dev/null)
+five_hour_resets=$(echo "$json" | jq -r '.five_hour_resets // empty' 2>/dev/null)
+seven_day_pct=$(echo "$json" | jq -r '.seven_day_pct // empty' 2>/dev/null)
+seven_day_resets=$(echo "$json" | jq -r '.seven_day_resets // empty' 2>/dev/null)
+
+[ -n "$five_hour_pct" ] || exit 0
+
+# リセット時刻を相対時間に変換する関数（1日以上は "2d" 、1日未満は "2h30m" 形式）
+# 入力: epoch 秒（数値）または ISO 8601 文字列（UTC）
+format_resets_at() {
+    local resets_at=$1
+    local reset_epoch=""
+
+    if [[ "$resets_at" =~ ^[0-9]+$ ]]; then
+        reset_epoch="$resets_at"
+    else
+        local clean="${resets_at%%.*}"
+        clean="${clean%Z}"
+        reset_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$clean" "+%s" 2>/dev/null)
+    fi
+
+    if [ -z "$reset_epoch" ] || [ "$reset_epoch" = "0" ]; then
+        return
+    fi
+    local now
+    now=$(date +%s)
+    local diff=$((reset_epoch - now))
+    if [ $diff -le 0 ]; then
+        echo "now"
+        return
+    fi
+    local days=$((diff / 86400))
+    if [ $days -gt 0 ]; then
+        local hours=$(((diff % 86400) / 3600))
+        printf "%dd%dh" $days $hours
+        return
+    fi
+    local hours=$((diff / 3600))
+    local minutes=$(((diff % 3600) / 60))
+    if [ $hours -gt 0 ]; then
+        printf "%dh%dm" $hours $minutes
+    else
+        printf "%dm" $minutes
+    fi
+}
+
+# パーセンテージに応じた tmux カラー名
+# 低使用率はオレンジ/アンバー系（dotfiles 全体のカラースキーム、ANSI 172-215）で
+# 段階的に明るくし、80% 以上は危険域として赤で警告する。
+# colour208 はヘッダー背景色そのものなので、埋もれないよう避けている。
+pct_color() {
+    local pct=$1
+    if [ "$pct" -lt 30 ]; then
+        echo "colour214"
+    elif [ "$pct" -lt 60 ]; then
+        echo "colour220"
+    elif [ "$pct" -lt 80 ]; then
+        echo "colour226"
+    else
+        echo "colour196"
+    fi
+}
+
+# パーセンテージから tmux フォーマット文字列のバーを生成する
+# 引数: パーセンテージ（整数）、バー幅
+make_bar() {
+    local pct=$1
+    local width=$2
+    local filled=$((pct * width / 100))
+    if [ "$pct" -gt 0 ] && [ "$filled" -eq 0 ]; then
+        filled=1
+    fi
+    local empty=$((width - filled))
+    local color
+    color=$(pct_color "$pct")
+
+    local bar="#[fg=${color}]"
+    for ((i = 0; i < filled; i++)); do bar+="█"; done
+    bar+="#[fg=colour240]"
+    for ((i = 0; i < empty; i++)); do bar+="░"; done
+    bar+="#[fg=colour232]"
+
+    printf '%s' "$bar"
+}
+
+round_pct() {
+    printf "%.0f" "$1" 2>/dev/null || echo "0"
+}
+
+BAR_WIDTH=6
+five_hour_pct=$(round_pct "$five_hour_pct")
+five_hour_bar=$(make_bar "$five_hour_pct" "$BAR_WIDTH")
+
+five_hour_reset_display=""
+if [ -n "$five_hour_resets" ] && [ "$five_hour_resets" != "null" ]; then
+    reset_relative=$(format_resets_at "$five_hour_resets")
+    [ -n "$reset_relative" ] && five_hour_reset_display="(${reset_relative})"
+fi
+
+result="📊 5h:${five_hour_bar} ${five_hour_pct}%${five_hour_reset_display}"
+
+if [ -n "$seven_day_pct" ] && [ "$seven_day_pct" != "null" ]; then
+    seven_day_pct=$(round_pct "$seven_day_pct")
+    seven_day_bar=$(make_bar "$seven_day_pct" "$BAR_WIDTH")
+
+    seven_day_reset_display=""
+    if [ -n "$seven_day_resets" ] && [ "$seven_day_resets" != "null" ]; then
+        reset_relative=$(format_resets_at "$seven_day_resets")
+        [ -n "$reset_relative" ] && seven_day_reset_display="(${reset_relative})"
+    fi
+
+    result="${result}  1w:${seven_day_bar} ${seven_day_pct}%${seven_day_reset_display}"
+fi
+
+printf '%s' "$result"
