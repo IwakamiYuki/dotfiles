@@ -67,17 +67,19 @@ customCommands:
 
       # worktreeを作成
       # -b で入力した作業名と同じ名前のブランチも同時に作成します
-      git worktree add -b "{{ .Form.TaskName }}" "$DIR_NAME"
+      # 失敗時に続行すると rsync が git 管理外のディレクトリを作ってしまうため中断する
+      git worktree add -b "{{ .Form.TaskName }}" "$DIR_NAME" || exit 1
 
       # プロジェクトタイプを判定して除外パターンを構築（追記型、モノリポ対応）
+      # ls-files のパスは先頭に / が付かないため、ディレクトリは (^|/) で始めてルート直下にもマッチさせる
       EXCLUDE_PATTERN='\.DS_Store$'  # デフォルト除外
 
       ## Unityプロジェクト判定（サブディレクトリも検索）
       ### 除外対象: Library/（ビルドキャッシュ）, Temp/, Logs/, .csproj, .sln
       if find . -maxdepth 3 -type d \( -name "Assets" -o -name "ProjectSettings" \) 2>/dev/null | grep -q .; then
-        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/Library/"
-        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/Temp/"
-        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/Logs/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)Library/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)Temp/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)Logs/"
         EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.csproj$"
         EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.sln$"
       fi
@@ -85,21 +87,21 @@ customCommands:
       ## Node.jsプロジェクト判定
       ### 除外対象: node_modules/, dist/, build/
       if find . -maxdepth 3 -name "package.json" 2>/dev/null | grep -q .; then
-        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/node_modules/"
-        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/dist/"
-        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/build/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)node_modules/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)dist/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)build/"
       fi
 
       ## Goプロジェクト判定
       ### 除外対象: vendor/
       if find . -maxdepth 3 -name "go.mod" 2>/dev/null | grep -q .; then
-        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/vendor/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)vendor/"
       fi
 
       ## Rustプロジェクト判定
       ### 除外対象: target/
       if find . -maxdepth 3 -name "Cargo.toml" 2>/dev/null | grep -q .; then
-        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|/target/"
+        EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)target/"
       fi
 
       ## 共通除外（全プロジェクト）
