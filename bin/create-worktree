@@ -1,6 +1,10 @@
 #!/bin/bash
 # 命名規則に従って worktree を作成し、コミットされていないファイルをコピーする
 # Usage: create-worktree <branch>
+#
+# stdout: 作成した worktree の絶対パスのみ（呼び出し側が cd や EnterWorktree に渡せるように）
+# stderr: 進捗・エラーメッセージ
+# exit:   0 = 成功、それ以外 = 失敗
 
 if [ -z "$1" ]; then
   echo "Usage: create-worktree <branch>" >&2
@@ -8,8 +12,13 @@ if [ -z "$1" ]; then
 fi
 BRANCH="$1"
 
+# 相対パスの出力先・プロジェクト判定・ファイルコピーはすべてルート基準のため、
+# サブディレクトリから呼ばれても同じ結果になるようルートへ移動する
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 1
+cd "$REPO_ROOT" || exit 1
+
 # 現在のリポジトリ名（フォルダ名）を取得
-REPO_NAME=$(basename $(git rev-parse --show-toplevel))
+REPO_NAME=$(basename "$REPO_ROOT")
 
 # ブランチ名のスラッシュをアンダースコアに置換
 TASK_NAME_SAFE="${BRANCH//\//_}"
@@ -21,7 +30,8 @@ DIR_NAME="../${REPO_NAME}_worktree_${TASK_NAME_SAFE}"
 # worktreeを作成
 # -b で入力した作業名と同じ名前のブランチも同時に作成します
 # 失敗時に続行すると rsync が git 管理外のディレクトリを作ってしまうため中断する
-git worktree add -b "$BRANCH" "$DIR_NAME" || exit 1
+# stdout はパス出力専用にするため、git の出力は stderr へ流す
+git worktree add -b "$BRANCH" "$DIR_NAME" >&2 || exit 1
 
 # プロジェクトタイプを判定して除外パターンを構築（追記型、モノリポ対応）
 # ls-files のパスは先頭に / が付かないため、ディレクトリは (^|/) で始めてルート直下にもマッチさせる
@@ -79,3 +89,5 @@ if [ -s "$TEMP_FILE" ]; then
 fi
 
 rm -f "$TEMP_FILE"
+
+(cd "$DIR_NAME" && pwd)
