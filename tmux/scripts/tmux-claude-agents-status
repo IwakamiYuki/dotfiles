@@ -21,7 +21,9 @@ set -euo pipefail
 STATE_FILE="/tmp/tmux-claude-agents-state"
 STATE_TTL=5
 
-SYMBOL='●'
+# ⬤ (U+2B24) を使う。● (U+25CF) は HackGen Console NF だと半角幅に潰れて小さい。
+# ghostty/config の font-codepoint-map で STIX Two Math に割り当てている。
+SYMBOL='⬤'
 
 BG_NORMAL='colour208'
 FG_BUSY='colour226'

@@ -43,7 +43,11 @@
 # resize-overlay-duration = 4s 200ms
 theme = Dracula
 
-font-family = Osaka
+# Hack + 源柔ゴシックの合成等幅フォント。
+# 全角は半角の正確に 2 倍幅で tmux の罫線がズレない。
+# Console 版は全角記号（■ ● → ─ 等）を半角幅で扱う。
+# 英数は下部の font-codepoint-map で別フォントに差し替えている。
+font-family = HackGen Console NF
 # フォントを読みやすくする
 font-thicken
 
@@ -72,7 +76,7 @@ window-padding-y = 5
 window-padding-balance = true
 
 # 全画面表示させる
-fullscreen
+fullscreen = true
 # ネイティブの全画面は使いたくない
 macos-non-native-fullscreen = visible-menu
 # メニューバーをできれば透過しておきたいな
@@ -90,3 +94,15 @@ quick-terminal-screen = mouse
 keybind = shift+enter=text:\n
 keybind = alt+enter=text:\n
 keybind = ctrl+enter=text:\n
+
+# 英数のみ別フォントに差し替える（日本語は HackGen のまま）
+font-codepoint-map = U+0000-U+00FF=JetBrains Mono
+
+# ⬤ (U+2B24) を STIX Two Math で描画する。
+# tmux ステータスバーの Claude Code 状態表示（tmux-claude-agents-status）用。
+#
+# 元は ● (U+25CF) だったが HackGen Console NF は全角記号を半角幅で扱うため
+# 小さく潰れていた（グリフ幅 em 比 52.4%）。
+# 大きい順: STIX の ⬤ 109.3% > Osaka の ● 89.8% > Iosevka の ⬤ 75.6%
+# ⬤ は既定だと Iosevka にフォールバックして逆に小さくなるため、明示的に指定する。
+font-codepoint-map = U+2B24=STIX Two Math
