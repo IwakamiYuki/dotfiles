@@ -121,7 +121,7 @@ make_bar() {
     printf "%b" "$bar"
 }
 
-# 会話タイトル: session_name を優先し、他スクリプト（notify-ask.sh、tmux-claude-agents-jump）が
+# 会話タイトル: session_name を優先し、他スクリプト（hooks/notify-*.sh、tmux-claude-agents-jump）が
 # 読むキャッシュファイルにも書き出す。session_name が無い間は従来の AI 生成にフォールバック
 build_title() {
     local title="$session_name"
