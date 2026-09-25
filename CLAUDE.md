@@ -102,6 +102,13 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - 15 分ごとにセッション自動保存
 - tmux 起動時に自動復元
 - CPU/バッテリー情報をステータスバーに表示
+- Claude Code の各セッション状態を `⬤` で表示（`tmux/scripts/tmux-claude-agents-status`）
+  - 色で状態を表す（黄=busy、赤=waiting、薄橙=idle 既読、緑=idle 未読）
+  - クリックで該当ペインへジャンプ
+  - ⚠️ 記号は `⬤`（U+2B24）。`●`（U+25CF）は HackGen Console NF だと
+    半角幅に潰れて小さくなる。`⬤` もフォント指定なしだと Iosevka に
+    フォールバックして小さくなるため、`ghostty/config` の
+    `font-codepoint-map` による STIX Two Math 指定とセットで機能する
 
 ### Claude Code (claude/)
 **settings.json**: MCP サーバーの事前承認とフック設定
@@ -186,7 +193,11 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 
 ### Ghostty (ghostty/config)
 - Dracula テーマ + 透過背景（opacity 0.70）
-- フォント: Osaka（太字化有効）
+- フォント: HackGen Console NF（太字化有効）
+  - 全角が半角の正確に 2 倍幅で tmux の罫線がズレない
+  - `font-codepoint-map` で英数のみ JetBrains Mono に差し替え
+  - 同じく `⬤`（U+2B24）のみ STIX Two Math に差し替え
+    （tmux のセッション状態表示用。詳細は Tmux の項を参照）
 - **Shift+Enter で改行入力**（Claude Code 対応）
 - 起動時に tmux の `default` セッションを自動再開（存在しなければ新規作成）
 - 全画面モード（非ネイティブ、透過メニューバー）
@@ -217,6 +228,11 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 │       ├── review-pr/     # PR レビュー自動対応スキル
 │       ├── sequential-thinking/  # 段階的思考スキル
 │       └── ...            # その他スキル
+├── tmux/scripts/          # Tmux ステータスバー用スクリプト
+│   ├── tmux-claude-agents-status  # Claude セッション状態を ⬤ で表示
+│   ├── tmux-claude-agents-jump    # ⬤ クリックで該当ペインへジャンプ
+│   ├── tmux-rate-limits   # レートリミット使用率表示
+│   └── ...                # その他スクリプト
 ├── lazygit/config.yml     # Lazygit 設定
 ├── ghostty/config         # Ghostty 設定（Shift+Enter 対応）
 ├── CLAUDE.md              # このファイル（プロジェクト固有指示）
