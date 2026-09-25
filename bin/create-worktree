@@ -1,0 +1,81 @@
+#!/bin/bash
+# 命名規則に従って worktree を作成し、コミットされていないファイルをコピーする
+# Usage: create-worktree <branch>
+
+if [ -z "$1" ]; then
+  echo "Usage: create-worktree <branch>" >&2
+  exit 1
+fi
+BRANCH="$1"
+
+# 現在のリポジトリ名（フォルダ名）を取得
+REPO_NAME=$(basename $(git rev-parse --show-toplevel))
+
+# ブランチ名のスラッシュをアンダースコアに置換
+TASK_NAME_SAFE="${BRANCH//\//_}"
+
+# ディレクトリ名を構築: ../[repo]_worktree_[task]
+# 例: feature/test → project_repository_worktree_feature_test
+DIR_NAME="../${REPO_NAME}_worktree_${TASK_NAME_SAFE}"
+
+# worktreeを作成
+# -b で入力した作業名と同じ名前のブランチも同時に作成します
+# 失敗時に続行すると rsync が git 管理外のディレクトリを作ってしまうため中断する
+git worktree add -b "$BRANCH" "$DIR_NAME" || exit 1
+
+# プロジェクトタイプを判定して除外パターンを構築（追記型、モノリポ対応）
+# ls-files のパスは先頭に / が付かないため、ディレクトリは (^|/) で始めてルート直下にもマッチさせる
+EXCLUDE_PATTERN='\.DS_Store$'  # デフォルト除外
+
+## Unityプロジェクト判定（サブディレクトリも検索）
+### 除外対象: Library/（ビルドキャッシュ）, Temp/, Logs/, .csproj, .sln
+if find . -maxdepth 3 -type d \( -name "Assets" -o -name "ProjectSettings" \) 2>/dev/null | grep -q .; then
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)Library/"
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)Temp/"
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)Logs/"
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.csproj$"
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.sln$"
+fi
+
+## Node.jsプロジェクト判定
+### 除外対象: node_modules/, dist/, build/
+if find . -maxdepth 3 -name "package.json" 2>/dev/null | grep -q .; then
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)node_modules/"
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)dist/"
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)build/"
+fi
+
+## Goプロジェクト判定
+### 除外対象: vendor/
+if find . -maxdepth 3 -name "go.mod" 2>/dev/null | grep -q .; then
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)vendor/"
+fi
+
+## Rustプロジェクト判定
+### 除外対象: target/
+if find . -maxdepth 3 -name "Cargo.toml" 2>/dev/null | grep -q .; then
+  EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|(^|/)target/"
+fi
+
+## 共通除外（全プロジェクト）
+### 除外対象: .log ファイル
+EXCLUDE_PATTERN="${EXCLUDE_PATTERN}|\.log$"
+
+# コミットされていないすべてのファイルをコピー（プロジェクトタイプ別に除外）
+# core.quotePath=false で日本語ファイル名のエスケープを無効化
+
+# 一時ファイルにファイルリストを作成
+TEMP_FILE="/tmp/worktree_files_$$.txt"
+
+git -c core.quotePath=false ls-files --others --exclude-standard > "$TEMP_FILE"   # untracked (gitignore されていない新規ファイル)
+git -c core.quotePath=false ls-files --others -i --exclude-standard >> "$TEMP_FILE"  # gitignore されているファイル
+git -c core.quotePath=false ls-files -m >> "$TEMP_FILE"                             # modified (unstaged)
+git -c core.quotePath=false diff --cached --name-only >> "$TEMP_FILE"               # staged
+
+# ファイルが存在する場合のみコピー
+if [ -s "$TEMP_FILE" ]; then
+  cat "$TEMP_FILE" | sort -u | grep -v -E "$EXCLUDE_PATTERN" | \
+    rsync -a --files-from=- . "$DIR_NAME/" 2>/dev/null || true
+fi
+
+rm -f "$TEMP_FILE"
