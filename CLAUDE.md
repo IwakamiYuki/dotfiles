@@ -145,6 +145,10 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - `wait_and_recheck_pr_comments.sh`: AI レビュー待機スクリプト（30 秒 × 20 回チェック）
 - AI 署名を自動追加（透明性確保）
 
+**skills/start-worktree/**: worktree 作業開始スキル
+- `/start-worktree <作業内容>` で、作業内容からブランチ名を決めて worktree を作成
+- `bin/create-worktree` で作成 → `EnterWorktree(path)` でセッション移動 → プランモード開始
+
 **scripts/**: 各種スクリプト
 - `statusline.sh`: カスタムステータスライン（会話タイトル、コンテキスト使用量、セッション情報、処理時間、コード変更量を表示）
 - `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
@@ -174,6 +178,11 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 ### Lazygit (lazygit/config.yml)
 - オレンジ系カラースキーム
 - カスタムコマンド定義
+- Worktrees パネルで `n` → `bin/create-worktree` で worktree 作成
+
+### bin/create-worktree
+- `create-worktree <branch>` で `../<repo>_worktree_<branch>` に worktree を作成し、未コミット・gitignore 対象のファイルをコピー
+- stdout は作成したパスのみ（lazygit と start-worktree スキルで共用）
 
 ### Ghostty (ghostty/config)
 - Dracula テーマ + 透過背景（opacity 0.70）
