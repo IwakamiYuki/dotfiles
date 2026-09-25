@@ -3,54 +3,63 @@
 # Claude Code statusLine カスタムスクリプト
 #
 # 表示項目：
-# 🤖 モデル名 - 使用中のClaudeモデル
-# 💬 コンテキスト使用量 - 現在の会話のトークン使用量（v2.0.70以降は正確、それ以前は概算）
-# ⏱️ 総処理時間 - セッション開始からの経過時間（秒）
-# 🔧 API処理時間 - 実際のAPI呼び出しに費やした時間（秒）
+# 📝 会話タイトル - session_name（/rename の名前か AI 生成タイトル）。無ければ generate-title.sh で生成
+# 🤖 モデル名 + effort - 使用中のモデルと reasoning effort（fast mode 時は ⚡）
+# 💬 コンテキスト使用量 - 入力トークン数 / ウィンドウサイズ と使用率
+# 🧊 プロンプトキャッシュ - warm なら失効時刻、切れていれば cold。miss があれば件数
 # ✏️ コード変更量 - 追加/削除された行数
-# 📦 バージョン - Claude Codeのバージョン番号
+# ⏱️ 総処理時間 - セッション開始からの経過時間
+# ⚠️ レートリミット警告 - 5h/1w のどちらかが閾値以上のときだけ表示
 #
-# 5h/1w のレートリミット（rate_limits, v2.1.80+）はアカウント単位で全セッション共通のため、
-# ここでは表示せず /tmp/claude-rate-limits.json に書き出すのみ。
-# 表示は tmux ヘッダー側の tmux-rate-limits スクリプトが担当する。
+# 5h/1w のレートリミット（rate_limits）はアカウント単位で全セッション共通のため、
+# 常時表示は tmux ヘッダー側の tmux-rate-limits スクリプトが担当し、
+# ここでは /tmp/claude-rate-limits.json に書き出す。
 
 # 環境変数でstatusLineが無効化されている場合は何も出力しない（無限ループ防止）
 if [ "$CLAUDE_DISABLE_STATUSLINE" = "1" ]; then
     exit 0
 fi
 
+# レートリミットをセッション内でも警告表示する使用率（%）
+RATE_LIMIT_WARN_PCT=80
+
 # 標準入力からClaude Codeのコンテキスト情報を取得
 input=$(cat)
 
-# Claude Code標準データを抽出
-model=$(echo "$input" | jq -r '.model.display_name // .model')   # モデル名（display_nameがあればそれを、なければmodelをそのまま）
-model_id=$(echo "$input" | jq -r '.model.id // ""')               # モデルID（コンテキストウィンドウサイズ判定用）
-duration=$(echo "$input" | jq -r '.cost.total_duration_ms')       # 総処理時間（ミリ秒）
-api_duration=$(echo "$input" | jq -r '.cost.total_api_duration_ms') # API処理時間（ミリ秒）
-lines_added=$(echo "$input" | jq -r '.cost.total_lines_added')    # 追加された行数
-lines_removed=$(echo "$input" | jq -r '.cost.total_lines_removed') # 削除された行数
-version=$(echo "$input" | jq -r '.version')                       # Claude Codeバージョン
-transcript_path=$(echo "$input" | jq -r '.transcript_path // ""') # トランスクリプトパス
+# jq の呼び出しを 1 回にまとめる（statusLine は頻繁に実行されるため）
+# 空値は "" で揃え、US（\x1f）区切りで受け取る（タブは IFS の空白扱いで空欄が詰まるため）
+IFS=$'\x1f' read -r model session_id session_name transcript_path effort fast_mode \
+    duration lines_added lines_removed \
+    context_tokens context_pct context_window_size \
+    cache_observed cache_warm cache_expires_at cache_misses \
+    five_hour_pct five_hour_resets seven_day_pct seven_day_resets \
+    < <(echo "$input" | jq -r '[
+        (.model.display_name // .model // ""),
+        (.session_id // ""),
+        (.session_name // ""),
+        (.transcript_path // ""),
+        (.effort.level // ""),
+        (.fast_mode // false),
+        (.cost.total_duration_ms // 0),
+        (.cost.total_lines_added // 0),
+        (.cost.total_lines_removed // 0),
+        (.context_window.total_input_tokens // ""),
+        (.context_window.used_percentage // ""),
+        (.context_window.context_window_size // ""),
+        (.prompt_cache.caching_observed // false),
+        (.prompt_cache.warm // false),
+        (.prompt_cache.expires_at // ""),
+        (.prompt_cache.misses // 0),
+        (.rate_limits.five_hour.used_percentage // ""),
+        (.rate_limits.five_hour.resets_at // ""),
+        (.rate_limits.seven_day.used_percentage // ""),
+        (.rate_limits.seven_day.resets_at // "")
+    ] | map(tostring) | join("\u001f")')
 
-# コンテキストウィンドウ情報の取得（v2.1.80+）
-context_pct=$(echo "$input" | jq -r '.context_window.used_percentage // ""')
-context_window_size=$(echo "$input" | jq -r '.context_window.context_window_size // ""')
-# 使用トークン数: cache_read + cache_creation + input + output
-context_tokens=$(echo "$input" | jq -r '
-    .context_window.current_usage
-    | if . then
-        ((.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.input_tokens // 0) + (.output_tokens // 0))
-      else "" end' 2>/dev/null)
-
-# レートリミット情報の取得（v2.1.80+）
-five_hour_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // ""')
-five_hour_resets=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // ""')
-seven_day_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // ""')
-seven_day_resets=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // ""')
-
-# 秒単位に変換
-duration_sec=$(echo "$duration / 1000" | bc 2>/dev/null || echo "0")
-api_duration_sec=$(echo "$api_duration / 1000" | bc 2>/dev/null || echo "0")
+# 浮動小数点を整数に丸める関数（四捨五入）
+round_pct() {
+    printf "%.0f" "$1" 2>/dev/null || echo "0"
+}
 
 # 時間:分:秒形式に変換する関数
 format_time() {
@@ -78,68 +87,6 @@ format_tokens() {
         echo "${k}K"
     fi
 }
-
-# コンテキスト使用量をフォーマットする関数
-# 引数: context_tokens, context_pct, context_window_size
-calculate_context_usage() {
-    local tokens=$1
-    local pct=$2
-    local window=$3
-
-    if [ -n "$pct" ] && [ "$pct" != "null" ] && [ "$pct" != "" ]; then
-        pct=$(round_pct "$pct")
-        local window_display=""
-        if [ -n "$window" ] && [ "$window" != "null" ] && [ "$window" != "" ]; then
-            window_display="/$(format_tokens "$window")"
-        fi
-        local tokens_display=""
-        if [ -n "$tokens" ] && [ "$tokens" != "null" ] && [ "$tokens" != "0" ] && [ "$tokens" -gt 0 ] 2>/dev/null; then
-            tokens_display="$(format_tokens "$tokens")${window_display} "
-        elif [ -n "$window" ] && [ "$window" != "null" ] && [ "$window" != "" ]; then
-            # トークン数が取れない場合はパーセンテージから逆算
-            local estimated=$((pct * window / 100))
-            tokens_display="$(format_tokens "$estimated")${window_display} "
-        fi
-        printf "${tokens_display}${pct}%%"
-        return
-    fi
-
-    printf "N/A"
-}
-
-# 時間形式に変換
-duration_formatted=$(format_time "$duration_sec")
-api_duration_formatted=$(format_time "$api_duration_sec")
-
-# 浮動小数点を整数に丸める関数（四捨五入）
-round_pct() {
-    printf "%.0f" "$1" 2>/dev/null || echo "0"
-}
-
-# レートリミット情報はアカウント単位で全セッション共通のため、statusLine には表示せず
-# tmux ヘッダー（tmux-rate-limits）用にキャッシュファイルへ書き出すだけにする
-RATE_LIMITS_CACHE="/tmp/claude-rate-limits.json"
-if [ -n "$five_hour_pct" ] && [ "$five_hour_pct" != "null" ] && [ "$five_hour_pct" != "" ]; then
-    jq -n \
-        --arg five_hour_pct "$five_hour_pct" \
-        --arg five_hour_resets "$five_hour_resets" \
-        --arg seven_day_pct "$seven_day_pct" \
-        --arg seven_day_resets "$seven_day_resets" \
-        '{five_hour_pct: ($five_hour_pct | tonumber), five_hour_resets: $five_hour_resets, seven_day_pct: (if $seven_day_pct == "" or $seven_day_pct == "null" then null else ($seven_day_pct | tonumber) end), seven_day_resets: $seven_day_resets}' \
-        > "$RATE_LIMITS_CACHE" 2>/dev/null
-fi
-
-# コンテキスト使用量を計算
-context_usage=$(calculate_context_usage "$context_tokens" "$context_pct" "$context_window_size")
-
-# 会話タイトルを取得（AI生成、キャッシュあればそれを使用）
-conversation_title=""
-if [ -n "$transcript_path" ] && [ "$transcript_path" != "null" ]; then
-    conversation_title=$(bash ~/.claude/scripts/generate-title.sh "$transcript_path" 2>/dev/null)
-    if [ -n "$conversation_title" ] && [ "$conversation_title" != "新しい会話" ]; then
-        conversation_title="📝 ${conversation_title} | "
-    fi
-fi
 
 # パーセンテージから ANSI カラー付き進捗バーを生成する関数
 # 引数: パーセンテージ（数値）、バー幅（デフォルト10）
@@ -174,14 +121,105 @@ make_bar() {
     printf "%b" "$bar"
 }
 
-# 進捗バーを生成（数値が取得できた場合のみ）
-context_bar=""
-if [ -n "$context_pct" ] && [ "$context_pct" != "null" ] && [ "$context_pct" != "" ]; then
-    local_context_pct=$(round_pct "$context_pct")
-    context_bar=$(make_bar "$local_context_pct" 10)
+# 会話タイトル: session_name を優先し、他スクリプト（notify-ask.sh、tmux-claude-agents-jump）が
+# 読むキャッシュファイルにも書き出す。session_name が無い間は従来の AI 生成にフォールバック
+build_title() {
+    local title="$session_name"
+    if [ -n "$title" ] && [ -n "$session_id" ]; then
+        local cache_file="/tmp/claude-title-${session_id}.txt"
+        if [ "$(cat "$cache_file" 2>/dev/null)" != "$title" ]; then
+            echo "$title" > "$cache_file" 2>/dev/null
+        fi
+    elif [ -n "$transcript_path" ]; then
+        title=$(bash ~/.claude/scripts/generate-title.sh "$transcript_path" 2>/dev/null)
+    fi
+
+    if [ -n "$title" ] && [ "$title" != "新しい会話" ]; then
+        printf "📝 %s | " "$title"
+    fi
+}
+
+# モデル名 + effort（例: "Opus 5.5 xhigh⚡"）
+build_model() {
+    local display="🤖 ${model}"
+    [ -n "$effort" ] && display+=" ${effort}"
+    [ "$fast_mode" = "true" ] && display+="⚡"
+    printf "%s" "$display"
+}
+
+# コンテキスト使用量（used_percentage と同じく入力トークンのみで数える）
+build_context() {
+    if [ -z "$context_pct" ]; then
+        printf "💬 N/A"
+        return
+    fi
+
+    local pct
+    pct=$(round_pct "$context_pct")
+    local tokens_display=""
+    if [ -n "$context_window_size" ]; then
+        local tokens=${context_tokens:-0}
+        # 数値が取れない場合はパーセンテージから逆算
+        if [ "$tokens" -eq 0 ] 2>/dev/null; then
+            tokens=$((pct * context_window_size / 100))
+        fi
+        tokens_display="$(format_tokens "$tokens")/$(format_tokens "$context_window_size") "
+    fi
+    printf "💬 %s %s%s%%" "$(make_bar "$pct" 10)" "$tokens_display" "$pct"
+}
+
+# プロンプトキャッシュ: 残り時間ではなく失効時刻を出す（イベント駆動の再描画でも古くならないため）
+build_cache() {
+    [ "$cache_observed" != "true" ] && return
+
+    local display
+    if [ "$cache_warm" = "true" ] && [ -n "$cache_expires_at" ]; then
+        display="🧊 ~$(date -r "$cache_expires_at" +%H:%M 2>/dev/null)"
+    else
+        display="\033[38;5;240m🧊 cold\033[0m"
+    fi
+    if [ "$cache_misses" -gt 0 ] 2>/dev/null; then
+        display+=" \033[38;5;208mmiss ${cache_misses}\033[0m"
+    fi
+    printf " | %b" "$display"
+}
+
+# レートリミット: 閾値以上のウィンドウだけ警告表示
+build_rate_limit_warning() {
+    local warnings=""
+    local pct
+    if [ -n "$five_hour_pct" ]; then
+        pct=$(round_pct "$five_hour_pct")
+        [ "$pct" -ge "$RATE_LIMIT_WARN_PCT" ] && warnings+=" 5h ${pct}%"
+    fi
+    if [ -n "$seven_day_pct" ]; then
+        pct=$(round_pct "$seven_day_pct")
+        [ "$pct" -ge "$RATE_LIMIT_WARN_PCT" ] && warnings+=" 1w ${pct}%"
+    fi
+    [ -n "$warnings" ] && printf " | \033[38;5;196m⚠️%s\033[0m" "$warnings"
+}
+
+# tmux ヘッダー（tmux-rate-limits）用にレートリミット情報をキャッシュファイルへ書き出す
+RATE_LIMITS_CACHE="/tmp/claude-rate-limits.json"
+if [ -n "$five_hour_pct" ]; then
+    jq -n \
+        --arg five_hour_pct "$five_hour_pct" \
+        --arg five_hour_resets "$five_hour_resets" \
+        --arg seven_day_pct "$seven_day_pct" \
+        --arg seven_day_resets "$seven_day_resets" \
+        '{five_hour_pct: ($five_hour_pct | tonumber), five_hour_resets: $five_hour_resets, seven_day_pct: (if $seven_day_pct == "" then null else ($seven_day_pct | tonumber) end), seven_day_resets: $seven_day_resets}' \
+        > "$RATE_LIMITS_CACHE" 2>/dev/null
 fi
 
-# 出力（1行表示、echo -e で ANSI エスケープを有効化）
-# 5h/1w のレートリミットは tmux ヘッダーに集約したため、statusLine は1行に収まる
+duration_formatted=$(format_time $((${duration%.*} / 1000)))
 lines_display="\033[38;5;82m+${lines_added}\033[0m/\033[38;5;196m-${lines_removed}\033[0m"
-echo -e "${conversation_title}🤖 ${model} | ⏱️ ${duration_formatted} 🔧 ${api_duration_formatted} | ✏️ ${lines_display} | 💬 ${context_bar} ${context_usage} | 📦 ${version}"
+
+# 出力（1行表示）
+printf "%s%s | %s%s | ✏️ %b | ⏱️ %s%s\n" \
+    "$(build_title)" \
+    "$(build_model)" \
+    "$(build_context)" \
+    "$(build_cache)" \
+    "$lines_display" \
+    "$duration_formatted" \
+    "$(build_rate_limit_warning)"

@@ -150,7 +150,7 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - `bin/create-worktree` で作成 → `EnterWorktree(path)` でセッション移動 → プランモード開始
 
 **scripts/**: 各種スクリプト
-- `statusline.sh`: カスタムステータスライン（会話タイトル、コンテキスト使用量、セッション情報、処理時間、コード変更量を表示）
+- `statusline.sh`: カスタムステータスライン（会話タイトル、モデル + effort、コンテキスト使用量、プロンプトキャッシュ状態、コード変更量、処理時間、レートリミット警告を表示）
 - `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
 - `generate-title.sh`: 会話タイトル生成（AI 生成）。codex CLI で会話全体を要約してタイトルを作成。失敗時は extract-title.sh にフォールバック
 - `notify-end.sh`, `notify-ask.sh`: 通知フックスクリプト（notify-end.sh は AI 生成タイトルで通知タイトルを更新）
@@ -161,7 +161,8 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - `wait_and_recheck_pr_comments.sh`: AI レビュー待機＆再チェック
 
 **会話タイトル機能について**:
-- **statusLine での表示**: 2 行表示で最初の行に会話タイトルを表示。例: `📝 statusLine実装調査` / `🤖 Haiku | 📊 ...`
+- **statusLine での表示**: 1 行表示の先頭に会話タイトルを表示。例: `📝 statusLine見直し | 🤖 Opus 5.5 xhigh | 💬 ... | 🧊 ~14:38 | ...`
+- **タイトルの取得元**: Claude Code が渡す `session_name`（`/rename` の名前か AI 生成タイトル）を優先し、キャッシュファイルにも書き出す。`session_name` が無い間のみ `generate-title.sh` で生成
 - **通知での表示**: タスク完了時の通知タイトルに AI 生成タイトルを含める。例: `✅ Claude Code [dotfiles] - statusLine実装調査`
 - **キャッシュ**: `/tmp/claude-title-<session_id>.txt` にキャッシュされ、同じセッション内での重複生成を回避
 - **環境変数**:

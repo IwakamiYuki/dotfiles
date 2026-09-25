@@ -203,8 +203,7 @@
   "statusLine": {
     "type": "command",
     "command": "~/.claude/scripts/statusline.sh",
-    "padding": 0,
-    "refreshInterval": 180
+    "padding": 0
   },
   "language": "Japanese",
   "alwaysThinkingEnabled": false,
