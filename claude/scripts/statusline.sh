@@ -7,6 +7,7 @@
 # 🤖 モデル名 + effort - 使用中のモデルと reasoning effort（fast mode 時は ⚡）
 # 💬 コンテキスト使用量 - 入力トークン数 / ウィンドウサイズ と使用率
 # 🧊 プロンプトキャッシュ - warm なら失効時刻、切れていれば cold。miss があれば件数
+# 💰 推定コスト - セッションの推定金額（USD、定価ベース。閾値以上で警告色）
 # ✏️ コード変更量 - 追加/削除された行数
 # ⏱️ 総処理時間 - セッション開始からの経過時間
 # ⚠️ レートリミット警告 - 5h/1w のどちらかが閾値以上のときだけ表示
@@ -22,6 +23,9 @@ fi
 
 # レートリミットをセッション内でも警告表示する使用率（%）
 RATE_LIMIT_WARN_PCT=80
+# セッションの推定コストを警告色（オレンジ / 赤）で表示する金額（USD）
+COST_WARN_USD=5
+COST_ALERT_USD=20
 
 # 標準入力からClaude Codeのコンテキスト情報を取得
 input=$(cat)
@@ -29,7 +33,7 @@ input=$(cat)
 # jq の呼び出しを 1 回にまとめる（statusLine は頻繁に実行されるため）
 # 空値は "" で揃え、US（\x1f）区切りで受け取る（タブは IFS の空白扱いで空欄が詰まるため）
 IFS=$'\x1f' read -r model session_id session_name transcript_path effort fast_mode \
-    duration lines_added lines_removed \
+    duration cost_usd lines_added lines_removed \
     context_tokens context_pct context_window_size \
     cache_observed cache_warm cache_expires_at cache_misses \
     five_hour_pct five_hour_resets seven_day_pct seven_day_resets \
@@ -41,6 +45,7 @@ IFS=$'\x1f' read -r model session_id session_name transcript_path effort fast_mo
         (.effort.level // ""),
         (.fast_mode // false),
         (.cost.total_duration_ms // 0),
+        (.cost.total_cost_usd // 0),
         (.cost.total_lines_added // 0),
         (.cost.total_lines_removed // 0),
         (.context_window.total_input_tokens // ""),
@@ -184,6 +189,24 @@ build_cache() {
     printf " | %b" "$display"
 }
 
+# 推定コスト: Claude Code がクライアント側で定価計算した値のため、実請求額とは一致しない
+build_cost() {
+    local color=""
+    if awk -v c="$cost_usd" -v t="$COST_ALERT_USD" 'BEGIN { exit !(c >= t) }'; then
+        color="38;5;196"
+    elif awk -v c="$cost_usd" -v t="$COST_WARN_USD" 'BEGIN { exit !(c >= t) }'; then
+        color="38;5;208"
+    fi
+
+    local amount
+    amount=$(printf '$%.2f' "$cost_usd" 2>/dev/null || echo '$0.00')
+    if [ -n "$color" ]; then
+        printf " | \033[%sm💰 %s\033[0m" "$color" "$amount"
+    else
+        printf " | 💰 %s" "$amount"
+    fi
+}
+
 # レートリミット: 閾値以上のウィンドウだけ警告表示
 build_rate_limit_warning() {
     local warnings=""
@@ -215,11 +238,12 @@ duration_formatted=$(format_time $((${duration%.*} / 1000)))
 lines_display="\033[38;5;82m+${lines_added}\033[0m/\033[38;5;196m-${lines_removed}\033[0m"
 
 # 出力（1行表示）
-printf "%s%s | %s%s | ✏️ %b | ⏱️ %s%s\n" \
+printf "%s%s | %s%s%s | ✏️ %b | ⏱️ %s%s\n" \
     "$(build_title)" \
     "$(build_model)" \
     "$(build_context)" \
     "$(build_cache)" \
+    "$(build_cost)" \
     "$lines_display" \
     "$duration_formatted" \
     "$(build_rate_limit_warning)"

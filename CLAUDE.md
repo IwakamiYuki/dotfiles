@@ -157,7 +157,7 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - `bin/create-worktree` で作成 → `EnterWorktree(path)` でセッション移動 → プランモード開始
 
 **scripts/**: 各種スクリプト
-- `statusline.sh`: カスタムステータスライン（会話タイトル、モデル + effort、コンテキスト使用量、プロンプトキャッシュ状態、コード変更量、処理時間、レートリミット警告を表示）
+- `statusline.sh`: カスタムステータスライン（会話タイトル、モデル + effort、コンテキスト使用量、プロンプトキャッシュ状態、推定コスト、コード変更量、処理時間、レートリミット警告を表示）
 - `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
 - `generate-title.sh`: 会話タイトル生成（AI 生成）。codex CLI で会話全体を要約してタイトルを作成。失敗時は extract-title.sh にフォールバック
 - `debug-statusline-input.sh`: statusLine 入力データのデバッグ用
