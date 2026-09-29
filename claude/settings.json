@@ -64,9 +64,7 @@
       "Bash(~/.claude/scripts/post_pr_reply.sh:*)",
       "Bash(~/.claude/scripts/wait_and_recheck_pr_comments.sh:*)",
       "Read(.claude/tmp/**)",
-      "Write(.claude/tmp/**)",
       "Edit(.claude/tmp/**)",
-      "Update(.claude/tmp/**)",
       "Skill(review-pr)",
       "Skill(review-diff)",
       "mcp__serena__activate_project",
@@ -95,7 +93,6 @@
     ],
     "deny": [
       "NotebookEdit",
-      "NotebookRead",
       "Bash(rm -rf:*)",
       "Bash(git push --force:*)",
       "Bash(git push origin main:*)",
