@@ -123,6 +123,7 @@
     ],
     "defaultMode": "auto"
   },
+  "model": "opusplan",
   "hooks": {
     "PreToolUse": [
       {
@@ -207,11 +208,15 @@
   },
   "language": "Japanese",
   "alwaysThinkingEnabled": false,
-  "effortLevel": "xhigh",
+  "effortLevel": "medium",
+  "modelSettings": {
+    "claude-opus-5-5": {
+      "effortLevel": "medium"
+    }
+  },
   "plansDirectory": "./.claude/tmp",
   "tui": "default",
   "skipWorkflowUsageWarning": true,
   "theme": "dark",
-  "notificationStyle": "hook",
-  "model": "sonnet"
+  "notificationStyle": "hook"
 }
