@@ -1,0 +1,112 @@
+#!/bin/bash
+# merge 済みブランチの worktree を列挙して JSON で出力する（削除はしない）
+# Usage: scan-worktrees
+#
+# stdout: JSON {"default_branch","checked","candidates":[...],"excluded":[...]}
+# stderr: 進捗・警告
+#
+# 判定は worktree の HEAD SHA で行い、ブランチ名・ディレクトリ名（命名規則）には依存しない。
+#   1. gh: HEAD を含む PR が merged かつ head.sha == HEAD（squash / rebase merge も検知できる）
+#   2. git: HEAD が既定ブランチの merge commit の第 2 親（gh が使えない場合のフォールバック）
+# どちらも「HEAD の内容は merge 済み」を意味するため、未 push コミットの確認は不要
+
+set -u
+
+PROTECTED_BRANCHES='^(master|main|develop|development|staging|production)$'
+FALLBACK_SCAN_LIMIT=2000
+
+git rev-parse --git-dir >/dev/null 2>&1 || { echo "git リポジトリ内で実行してください" >&2; exit 1; }
+command -v jq >/dev/null || { echo "jq が必要です" >&2; exit 1; }
+
+CURRENT_TOP=$(git rev-parse --show-toplevel)
+# 先頭がメイン worktree
+MAIN_PATH=$(git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print; exit}')
+
+DEFAULT_REF=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)
+if [ -z "$DEFAULT_REF" ]; then
+  for b in origin/master origin/main master main; do
+    if git rev-parse --verify --quiet "$b" >/dev/null; then DEFAULT_REF="$b"; break; fi
+  done
+fi
+[ -z "$DEFAULT_REF" ] && { echo "既定ブランチを特定できません" >&2; exit 1; }
+DEFAULT_TIP=$(git rev-parse "$DEFAULT_REF")
+
+USE_GH=0
+if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+  USE_GH=1
+else
+  echo "gh が使えないため git のみで判定します（squash / rebase merge は検知できません）" >&2
+fi
+
+# 作成直後のブランチ（既定ブランチの祖先だが merge されていない）を誤検知しないため、
+# 「既定ブランチの merge commit の第 2 親」であることを条件にする
+MERGED_SECOND_PARENTS=""
+if [ "$USE_GH" = 0 ]; then
+  MERGED_SECOND_PARENTS=$(git rev-list --merges --parents -n "$FALLBACK_SCAN_LIMIT" "$DEFAULT_REF" | awk '{print $3}')
+fi
+
+# HEAD SHA → 一致した merged PR の JSON（無ければ空）
+detect_pr() {
+  gh api "repos/{owner}/{repo}/commits/$1/pulls" 2>/dev/null \
+    | jq -c --arg sha "$1" 'if type == "array" then [.[] | select(.merged_at != null and .head.sha == $sha)] | first // empty | {number, url: .html_url} else empty end'
+}
+
+process() {
+  local path="$1" head="$2" branch="$3" locked="$4"
+  local reason="" via="" pr="null"
+
+  [ "$path" = "$MAIN_PATH" ] && return
+
+  if [ "$USE_GH" = 1 ]; then
+    local found
+    found=$(detect_pr "$head")
+    if [ -n "$found" ]; then via="gh"; pr="$found"; fi
+  elif [ "$head" != "$DEFAULT_TIP" ] && grep -qx "$head" <<<"$MERGED_SECOND_PARENTS"; then
+    via="git"
+  fi
+  if [ -z "$via" ]; then
+    echo "skip(not merged): ${branch:-detached} $path" >&2
+    return
+  fi
+
+  if [ -n "$branch" ] && [[ "$branch" =~ $PROTECTED_BRANCHES ]]; then reason="保護ブランチ"; fi
+  [ "$path" = "$CURRENT_TOP" ] && reason="現在のセッションが入っている worktree"
+  [ "$locked" = 1 ] && reason="locked（git worktree unlock が必要）"
+
+  local status tracked untracked origin
+  status=$(git -C "$path" status --porcelain 2>/dev/null)
+  tracked=$(awk 'NF && !/^\?\?/' <<<"$status" | wc -l | tr -d ' ')
+  untracked=$(awk '/^\?\?/' <<<"$status" | wc -l | tr -d ' ')
+  [[ "$path" == *_worktree_* ]] && origin="create-worktree" || origin="manual"
+
+  jq -cn --arg path "$path" --arg head "$head" --arg branch "$branch" --arg via "$via" \
+    --argjson pr "$pr" --arg reason "$reason" --arg origin "$origin" \
+    --argjson tracked "$tracked" --argjson untracked "$untracked" \
+    '{path:$path, head:$head, branch:(if $branch=="" then null else $branch end),
+      merged_via:$via, pr:$pr, tracked_changes:$tracked, untracked_files:$untracked,
+      origin:$origin, excluded_reason:(if $reason=="" then null else $reason end)}'
+}
+
+ROWS=""
+CHECKED=0
+path=""; head=""; branch=""; locked=0
+# 末尾の空行で最後のブロックも flush する
+while IFS= read -r line; do
+  case "$line" in
+    "worktree "*) path="${line#worktree }"; head=""; branch=""; locked=0 ;;
+    "HEAD "*)     head="${line#HEAD }" ;;
+    "branch "*)   branch="${line#branch refs/heads/}" ;;
+    "locked"*)    locked=1 ;;
+    "")
+      if [ -n "$path" ]; then
+        CHECKED=$((CHECKED + 1))
+        ROWS+="$(process "$path" "$head" "$branch" "$locked")"$'\n'
+      fi
+      path="" ;;
+  esac
+done < <(git worktree list --porcelain; echo)
+
+printf '%s' "$ROWS" | jq -s --arg def "$DEFAULT_REF" --argjson checked "$CHECKED" \
+  '{default_branch:$def, checked:$checked,
+    candidates:[.[] | select(.excluded_reason==null)],
+    excluded:[.[] | select(.excluded_reason!=null)]}'

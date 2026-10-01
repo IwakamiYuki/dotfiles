@@ -1,0 +1,57 @@
+#!/bin/bash
+# worktree とブランチを削除する。承認済みの 1 件分だけを扱う
+# Usage: remove-worktree <worktree-path> <branch|-> <gh|git>
+#   branch : detached HEAD の worktree は "-" を渡す（ブランチ削除はしない）
+#   gh|git : scan-worktrees の merged_via。gh のときだけ squash merge 用に branch -D へ切り替える
+#
+# stdout: 結果の 1 行 JSON {"path","branch","head","worktree_removed","branch_deleted","patch","error"}
+# exit:   0 = worktree を削除できた、1 = 失敗
+
+set -u
+PATH_ARG="${1:-}"; BRANCH="${2:--}"; VIA="${3:-git}"
+[ -z "$PATH_ARG" ] && { echo "Usage: remove-worktree <path> <branch|-> <gh|git>" >&2; exit 1; }
+command -v jq >/dev/null || { echo "jq が必要です" >&2; exit 1; }
+
+MAIN_PATH=$(git worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print; exit}')
+cd "$MAIN_PATH" || exit 1
+
+HEAD_SHA=$(git -C "$PATH_ARG" rev-parse HEAD 2>/dev/null || echo "")
+PATCH=""; ERR=""; WT_REMOVED=false; BR_DELETED=false
+
+# 未コミットの tracked 変更がある場合のみ、復元用の patch を退避する
+if [ -d "$PATH_ARG" ] && git -C "$PATH_ARG" status --porcelain | grep -qv '^??'; then
+  PATCH_DIR="$MAIN_PATH/.claude/tmp/worktree-patches"
+  mkdir -p "$PATCH_DIR"
+  PATCH="$PATCH_DIR/$(basename "$PATH_ARG")-${HEAD_SHA:0:7}.patch"
+  if ! git -C "$PATH_ARG" diff HEAD > "$PATCH"; then
+    PATCH=""
+    ERR="patch の退避に失敗したため削除を中止"
+  fi
+fi
+
+# 未コミット変更（コピー由来の untracked を含む）は承認済みなので --force で削除する
+if [ -z "$ERR" ]; then
+  if OUT=$(git worktree remove --force "$PATH_ARG" 2>&1); then
+    WT_REMOVED=true
+    git worktree prune
+  else
+    ERR="$OUT"
+  fi
+fi
+
+if [ "$WT_REMOVED" = true ] && [ "$BRANCH" != "-" ]; then
+  if git branch -d "$BRANCH" >/dev/null 2>&1; then
+    BR_DELETED=true
+  elif [ "$VIA" = "gh" ] && git branch -D "$BRANCH" >/dev/null 2>&1; then
+    # PR で merged と確認済み（HEAD 一致）なので、squash merge による -d の拒否は想定内
+    BR_DELETED=true
+  else
+    ERR="worktree は削除したがブランチ削除に失敗: $BRANCH"
+  fi
+fi
+
+jq -cn --arg path "$PATH_ARG" --arg branch "$BRANCH" --arg head "$HEAD_SHA" --arg patch "$PATCH" --arg err "$ERR" \
+  --argjson wt "$WT_REMOVED" --argjson br "$BR_DELETED" \
+  '{path:$path, branch:$branch, head:$head, worktree_removed:$wt, branch_deleted:$br,
+    patch:(if $patch=="" then null else $patch end), error:(if $err=="" then null else $err end)}'
+[ "$WT_REMOVED" = true ]

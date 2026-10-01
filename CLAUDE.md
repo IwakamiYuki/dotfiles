@@ -156,6 +156,12 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - `/start-worktree <作業内容>` で、作業内容からブランチ名を決めて worktree を作成
 - `bin/create-worktree` で作成 → `EnterWorktree(path)` でセッション移動 → プランモード開始
 
+**skills/cleanup-worktrees/**: merge 済み worktree 削除スキル
+- 「merge 済みの worktree を消して」で、merge 済みの worktree を検知 → 一覧提示 → 一括承認 → worktree とブランチを削除
+- 判定は worktree の HEAD SHA で行い、命名規則に依存しない（`gh api commits/<sha>/pulls` で merged かつ `head.sha` 一致。`gh` が使えなければ merge commit の第 2 親で判定）
+- 未コミット変更があってもスキップしない。tracked の変更は削除前に `.claude/tmp/worktree-patches/` へ patch を退避
+- `bin/scan-worktrees`（検知、削除なし）/ `bin/remove-worktree`（1 件削除）
+
 **scripts/**: 各種スクリプト
 - `statusline.sh`: カスタムステータスライン（会話タイトル、モデル + effort、コンテキスト使用量、プロンプトキャッシュ状態、推定コスト、コード変更量、処理時間、レートリミット警告を表示）
 - `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
