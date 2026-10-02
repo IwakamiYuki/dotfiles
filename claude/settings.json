@@ -47,6 +47,7 @@
       "Bash(git blame:*)",
       "Bash(git branch:*)",
       "Bash(git add:*)",
+      "Bash(git commit:*)",
       "Bash(git stash:*)",
       "Bash(git fetch:*)",
       "Bash(git remote:*)",
@@ -113,7 +114,6 @@
       "Bash(rm:*)",
       "Bash(dd:*)",
       "Bash(mkfs:*)",
-      "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(git reset:*)",
       "Bash(git rebase:*)"

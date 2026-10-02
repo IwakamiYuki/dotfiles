@@ -27,7 +27,7 @@ description: |-
 git add src/foo.ts && git commit -m "feat: add foo feature"
 ```
 
-理由: settings.json で `git add` は allow（確認不要）、`git commit` は ask（確認必要）に設定されている。連結すると add の段階でも確認が必要になる。
+理由: `git add` と `git commit` を連結すると、`validate-bash.sh` の `git add` 検証（`-A` / `.` のブロック）を回避しやすくなり、コミット単位の見通しも悪くなる。
 
 ### Conventional Commits
 
