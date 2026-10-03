@@ -1,0 +1,169 @@
+#!/bin/bash
+
+# tmux-agent-sidebar-preview: Agent Sidebar の `p` / Space から開くポップアップの中身。
+# 選択中の Agent の pane の画面を（読み取り専用で）ライブ表示し、同じポップアップの中で
+# j / k で前後の Agent に切り替え、Enter でその pane へ移動する。
+#
+# Usage: tmux-agent-sidebar-preview <list_file> <start_index> <result_file> [sidebar_pid]
+#   list_file   : 1 行 1 Agent の TSV（pane_id, project, type, status, window_index, window_name）
+#   start_index : 最初に表示する行（0 始まり）
+#   result_file : 終了時に「最後に見ていた添字」と「移動したか(jumped/stay)」を書く。
+#                 sidebar はこのファイルの出現でポップアップの終了を検知し、選択位置を引き継ぐ
+#                 （<result_file>.cur には、切り替えるたびに現在の添字を書き、sidebar_pid へ SIGUSR1 を送る。
+#                  sidebar はこれを受けて、ポップアップの裏で選択ハイライトを即座に追従させる）
+#
+# 操作: j / ↓ / Tab = 次  k / ↑ = 前  Enter = その pane へ移動  q / Esc / p / Space = 閉じる
+#
+# 画面は `tmux capture-pane -e -p` で取る(色つき・副作用なし)。対象 pane の幅がポップアップより広くても
+# 切り詰め処理はせず、自動折り返し(DECAWM)を切ってターミナルに右端でクリップさせる。
+# macOS 標準の bash 3.2 で動く書き方にしている。
+
+set -u
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+unset LC_ALL
+export LC_CTYPE=en_US.UTF-8 LC_COLLATE=C
+
+LIST_FILE=${1:?list_file}
+IDX=${2:-0}
+RESULT_FILE=${3:?result_file}
+SIDEBAR_PID=${4:-}
+
+ESC=$'\033'
+TICK=1
+HEADER_ROWS=2
+
+P_ID=(); P_PROJ=(); P_TYPE=(); P_STATUS=(); P_WIN=(); P_WNAME=()
+N=0
+while IFS=$'\t' read -r id proj type status win wname; do
+  [ -z "$id" ] && continue
+  P_ID[N]=$id; P_PROJ[N]=$proj; P_TYPE[N]=$type; P_STATUS[N]=$status; P_WIN[N]=$win; P_WNAME[N]=$wname
+  N=$((N + 1))
+done < "$LIST_FILE"
+
+((N == 0)) && exit 0
+((IDX < 0 || IDX >= N)) && IDX=0
+
+jumped=stay
+
+# 現在の添字を公開し、sidebar へ知らせる(sidebar が読んで、裏の選択表示を追従させる)
+publish_idx() {
+  printf '%s\n' "$IDX" > "$RESULT_FILE.cur" 2>/dev/null
+  [ -n "$SIDEBAR_PID" ] && kill -USR1 "$SIDEBAR_PID" 2>/dev/null
+}
+
+cleanup() {
+  # 画面を戻してから結果を書く(sidebar は結果ファイルの出現で終了を検知する)
+  printf '%s' "${ESC}[?7h${ESC}[?25h${ESC}[0m"
+  stty echo 2>/dev/null
+  printf '%s\n%s\n' "$IDX" "$jumped" > "$RESULT_FILE.tmp" && mv "$RESULT_FILE.tmp" "$RESULT_FILE"
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM HUP
+
+stty -echo 2>/dev/null
+# カーソルを隠し、自動折り返しを切る(長い行は右端でクリップされる)
+printf '%s' "${ESC}[?25l${ESC}[?7l"
+
+status_color() {
+  case $1 in
+    working) REPLY="${ESC}[38;5;226m" ;;
+    waiting) REPLY="${ESC}[38;5;196m" ;;
+    done) REPLY="${ESC}[38;5;46m" ;;
+    idle) REPLY="${ESC}[38;5;216m" ;;
+    *) REPLY="${ESC}[38;5;245m" ;;
+  esac
+}
+
+# 末尾の空行(色指定だけの行を含む)を落として、下から $1 行ぶんを出力する。
+# 取り出した行の後ろには必ず属性リセットを付ける
+tail_visible() {
+  awk -v n="$1" '
+    { line[NR] = $0; t = $0; gsub(/\033\[[0-9;]*m/, "", t); gsub(/[ \t]/, "", t); if (t != "") last = NR }
+    END {
+      start = last - n + 1; if (start < 1) start = 1
+      for (i = start; i <= last; i++) print line[i] "\033[0m"
+    }'
+}
+
+draw() {
+  local h w id body i row=0 frame="" label pos color
+  read -r h w < <(stty size 2>/dev/null)
+  h=${h:-30}
+  w=${w:-100}
+  id=${P_ID[IDX]}
+
+  status_color "${P_STATUS[IDX]}"
+  color=$REPLY
+  label=" ${P_PROJ[IDX]}  ${P_TYPE[IDX]} · ${P_WIN[IDX]}:${P_WNAME[IDX]}  ${color}${P_STATUS[IDX]}${ESC}[39m"
+  pos="$((IDX + 1))/$N "
+  frame+="${ESC}[1;1H${ESC}[1;38;5;208m${label}${ESC}[0m${ESC}[K"
+  # 右端に「n/N」を寄せる(左側は表示幅が読めないため、ESC[nG で桁を指定する)
+  frame+="${ESC}[1;$((w - ${#pos} + 1))H${ESC}[38;5;245m${pos}${ESC}[0m"
+  frame+="${ESC}[2;1H${ESC}[38;5;245m j/k 前後  Enter 移動  q 閉じる${ESC}[0m${ESC}[K"
+
+  body=$(tmux capture-pane -e -p -t "$id" 2>/dev/null | tail_visible $((h - HEADER_ROWS)))
+  if [ -z "$body" ]; then
+    body="${ESC}[38;5;245m (pane の内容を取得できません)${ESC}[0m"
+  fi
+  i=0
+  while IFS= read -r line; do
+    row=$((HEADER_ROWS + 1 + i))
+    ((row > h)) && break
+    frame+="${ESC}[${row};1H${line}${ESC}[0m${ESC}[K"
+    i=$((i + 1))
+  done <<< "$body"
+  # 描画した範囲より下を消す
+  ((row < h)) && frame+="${ESC}[$((row + 1));1H${ESC}[J"
+  printf '%s' "$frame"
+}
+
+# 1 件の入力を KEY に正規化する(next / prev / enter / quit / other、タイムアウト時は空)
+read_key() {
+  local c seq=""
+  KEY=""
+  IFS= read -rsn1 -t "$TICK" c || return 0
+  case $c in
+    j | $'\t') KEY=next ;;
+    k) KEY=prev ;;
+    q | p | " ") KEY=quit ;;
+    "") KEY=enter ;;
+    $'\033')
+      IFS= read -rsn1 -t 1 c || { KEY=quit; return 0; }
+      if [ "$c" = "[" ] || [ "$c" = "O" ]; then
+        while IFS= read -rsn1 -t 1 c; do
+          seq+=$c
+          case $c in [@-~]) break ;; esac
+        done
+        case $seq in
+          A) KEY=prev ;;
+          B) KEY=next ;;
+          *) KEY=other ;;
+        esac
+      else
+        KEY=other
+      fi
+      ;;
+    *) KEY=other ;;
+  esac
+}
+
+publish_idx
+need_draw=1
+while :; do
+  if ((need_draw)); then
+    draw
+    need_draw=0
+  fi
+  read_key
+  case $KEY in
+    next) IDX=$(((IDX + 1) % N)); publish_idx; need_draw=1 ;;
+    prev) IDX=$(((IDX + N - 1) % N)); publish_idx; need_draw=1 ;;
+    enter)
+      tmux select-window -t "${P_ID[IDX]}" \; select-pane -t "${P_ID[IDX]}" 2>/dev/null && jumped=jumped
+      exit 0
+      ;;
+    quit) exit 0 ;;
+    "") need_draw=1 ;; # 入力が無い tick は、ライブ更新のために再描画する
+  esac
+done

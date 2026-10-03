@@ -120,6 +120,20 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - ⚠️ `Ctrl-t a`（Claude 一覧ポップアップ）が使用済みのため、再表示キーは `b`
 - sidebar 上で `j` / `k`（`↓` / `↑`、マウスホイール）→ 選択を移動。選択中はハイライト（sidebar にフォーカスがあるときだけ表示）
 - sidebar 上で `Enter`、または Agent の行を **クリック** → その Agent の window・pane へジャンプ（`r` で即時更新）
+- sidebar 上で `j` / `k`（`↓` / `↑`）→ 選択を動かして、そのまま **ポップアップでプレビュー**を開く（`@agent_sidebar_auto_preview`、後述）。マウスホイールは選択を動かすだけで、開かない
+- sidebar 上で `p`（または Space）→ 選択中の Agent の pane を **ポップアップでプレビュー**（`tmux-agent-sidebar-preview`）
+  - 中身は `tmux capture-pane -e -p`（色つき・読み取り専用）を 1 秒ごとに更新。Agent には影響しない
+  - ポップアップ内で `j` / `k`（`↓` / `↑`、Tab）→ 前後の Agent に切り替え、`Enter` → その pane へ移動、`q` / Esc / `p` / Space → 閉じる
+  - ポップアップは sidebar の **右隣**に開く（幅が 40 未満なら中央に大きく）。j/k で切り替えるたびに、裏の sidebar の選択ハイライトも追従する
+    （ポップアップが `<result_file>.cur` に現在の添字を書いて sidebar へ SIGUSR1 を送り、`display-popup` をバックグラウンドで起動した sidebar のハンドラが
+    即座に読んで再描画する。`display-popup` はポップアップが閉じるまで戻らないため。ポーリングだと最大 0.2 秒の遅れが出ていた）
+  - 閉じると、sidebar の選択位置は最後に見ていた Agent に引き継がれる
+  - **自動プレビュー** `@agent_sidebar_auto_preview`（実行中のサーバーでは `tmux set -g ...` で 2 秒以内に反映）:
+    `key`（既定。j/k で開く）/ `focus`（さらに sidebar がアクティブになったときも開く）/ `off`（p のみ）
+  - `focus` は端末のフォーカスイベント（`ESC[?1004h` → `ESC[I`）で検知する。`focus-events on` が前提（`.tmux.conf` に明示）。
+    ポップアップを閉じた直後の 2 秒は開き直さない。ポップアップ中は tmux の prefix キーが効かない（ポップアップがキーを受けるため）ので、
+    他の pane へ移るときは q で閉じるか Enter で移動する
+  - 幅の広い pane は自動折り返し（DECAWM）を切ってターミナルに右端でクリップさせる。下部の空行は落として、下から表示行数ぶんを出す
 
 **仕組み**:
 - 識別は pane option `@agent_sidebar=1`（sidebar プロセス自身も起動時に付与）。Agent 検出対象と `tmux-window-name` の共通パス計算から除外される
@@ -275,6 +289,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 │   ├── tmux-claude-agents-jump    # C-t a のポップアップ一覧（選択したペインへジャンプ）
 │   ├── tmux-agent-sidebar         # window 左端に置く Agent 一覧 pane の本体
 │   ├── tmux-agent-sidebar-open    # sidebar を window 左端に追加（二重起動防止）
+│   ├── tmux-agent-sidebar-preview # sidebar の p で開くポップアップ（pane のライブプレビュー）
 │   ├── tmux-rate-limits   # レートリミット使用率表示（現在はステータスバーから外し、sidebar の USAGE 欄が代替）
 │   └── ...                # その他スクリプト
 ├── lazygit/config.yml     # Lazygit 設定

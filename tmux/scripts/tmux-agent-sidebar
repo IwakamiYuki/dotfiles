@@ -7,6 +7,10 @@
 # 操作（sidebar にフォーカスがあるとき）:
 #   j / k / ↓ / ↑ / ホイール : 選択を移動   Enter : 選択した Agent の window・pane へジャンプ
 #   マウスクリック           : クリックした Agent の window・pane へジャンプ   r : 即時更新
+#   p / Space                : 選択中の Agent の pane をポップアップでプレビュー
+#                              （中で j/k 切り替え・Enter 移動。tmux-agent-sidebar-preview）
+#   自動プレビュー(@agent_sidebar_auto_preview): key = j/k を押すとポップアップを開く(既定)、
+#                              focus = さらに sidebar がアクティブになったときも開く、off = p のみ
 #
 # 検出方法:
 #   Claude : `claude agents --json`（pid / status / cwd）。pid の祖先をたどって pane に紐付ける。
@@ -103,7 +107,9 @@ TIMEOUT_CMD=""
 command -v gtimeout >/dev/null 2>&1 && TIMEOUT_CMD="gtimeout 5"
 
 cleanup() {
-  printf '%s' "${ESC}[?1006l${ESC}[?1000l${ESC}[?25h${ESC}[?1049l"
+  # ポップアップ中に終了した場合に備えて、プレビュー用の一時ファイルを消す
+  rm -f "/tmp/tmux-agent-sidebar-preview-$$".*
+  printf '%s' "${ESC}[?1004l${ESC}[?1006l${ESC}[?1000l${ESC}[?25h${ESC}[?1049l"
   stty echo 2>/dev/null
 }
 
@@ -767,6 +773,86 @@ jump_to() {
   tmux select-window -t "$id" \; select-pane -t "$id" 2>/dev/null
 }
 
+# 選択中の Agent の pane をポップアップでプレビューする。
+# ポップアップの中で j/k により別の Agent へ切り替えられ、Enter で移動、q で閉じる。
+# 終了時にポップアップ側が書く結果ファイルから、最後に見ていた Agent を選択位置として引き継ぐ
+PREVIEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-sidebar-preview"
+# ポップアップを sidebar の右隣に出すのに必要な最小幅(これ未満なら中央に大きく出す)
+PREVIEW_MIN_WIDTH=40
+
+# ポップアップが開いている間だけ有効。ポップアップが SIGUSR1 を送ってきたら、公開された添字へ選択を追従させる
+PREVIEW_ACTIVE=0
+PREVIEW_CUR_FILE=""
+PREVIEW_LAST_CUR=-1
+
+# SIGUSR1 のハンドラ。シグナルは取りこぼされず(ハンドラが走るまで保留される)、`wait` も即座に中断される
+on_preview_poke() {
+  local cur=""
+  ((PREVIEW_ACTIVE)) || return 0
+  [ -r "$PREVIEW_CUR_FILE" ] && read -r cur < "$PREVIEW_CUR_FILE"
+  if [[ $cur =~ ^[0-9]+$ ]] && ((cur != PREVIEW_LAST_CUR && cur < AG_N)); then
+    PREVIEW_LAST_CUR=$cur
+    SEL_IDX=$cur
+    SEL_KEY="${AG_ID[SEL_IDX]}|${AG_TYPE[SEL_IDX]}"
+    render
+  fi
+}
+
+open_preview() {
+  local list_file="/tmp/tmux-agent-sidebar-preview-$$.tsv" result_file="/tmp/tmux-agent-sidebar-preview-$$.result"
+  local cur_file="$result_file.cur"
+  local i idx jumped popup_pid geo pane_right win_w pop_x pop_w
+  local popup_geometry=(-w 90% -h 85%)
+
+  ((AG_N == 0)) && return 0
+  [ -x "$PREVIEW_BIN" ] || return 0
+
+  : > "$list_file"
+  for ((i = 0; i < AG_N; i++)); do
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${AG_ID[i]}" "${AG_PROJ[i]}" "${AG_TYPE[i]}" "${AG_STATUS[i]}" "${AG_WIN[i]}" "${AG_WNAME[i]}" >> "$list_file"
+  done
+  rm -f "$result_file" "$cur_file"
+
+  # sidebar の右隣に開いて、裏の sidebar の選択表示が見えるようにする(幅が足りなければ中央に大きく出す)
+  geo=$(tmux display-message -p -t "$TMUX_PANE" '#{pane_right}|#{window_width}' 2>/dev/null)
+  pane_right=${geo%%|*}
+  win_w=${geo#*|}
+  if [[ $pane_right =~ ^[0-9]+$ && $win_w =~ ^[0-9]+$ ]]; then
+    pop_x=$((pane_right + 1))
+    pop_w=$((win_w - pop_x))
+    ((pop_w >= PREVIEW_MIN_WIDTH)) && popup_geometry=(-x "$pop_x" -w "$pop_w" -h 95%)
+  fi
+
+  PREVIEW_CUR_FILE=$cur_file
+  PREVIEW_LAST_CUR=$SEL_IDX
+  PREVIEW_ACTIVE=1
+
+  # display-popup はポップアップが閉じるまで戻ってこないので、バックグラウンドで起動する。
+  # 生きている間、ポップアップ側が j/k のたびに送る SIGUSR1 で on_preview_poke が走り、裏の選択表示が追従する
+  tmux display-popup -E "${popup_geometry[@]}" -b rounded -S 'fg=colour208' -t "$TMUX_PANE" \
+    "'$PREVIEW_BIN' '$list_file' '$SEL_IDX' '$result_file' '$$'" &
+  popup_pid=$!
+  render
+  # シグナルで `wait` が中断されても、ポップアップが生きている限り待ち直す
+  while kill -0 "$popup_pid" 2>/dev/null; do
+    wait "$popup_pid" 2>/dev/null
+  done
+  PREVIEW_ACTIVE=0
+
+  if [ -r "$result_file" ]; then
+    { read -r idx; read -r jumped; } < "$result_file"
+    if [ -n "$idx" ] && ((idx >= 0 && idx < AG_N)); then
+      SEL_IDX=$idx
+      SEL_KEY="${AG_ID[SEL_IDX]}|${AG_TYPE[SEL_IDX]}"
+    fi
+    [ "$jumped" = jumped ] && FOCUSED=0
+  fi
+  rm -f "$list_file" "$result_file" "$cur_file"
+  PREVIEW_END=$SECONDS
+  last_collect=-999
+  size_dirty=1
+}
+
 # 入力を 1 件読み、KEY に up / down / enter / refresh / click / other を、
 # クリックなら CLICK_ROW に行番号を入れる。タイムアウト時は KEY が空になる
 read_key() {
@@ -778,6 +864,7 @@ read_key() {
     j) KEY=down ;;
     k) KEY=up ;;
     r) KEY=refresh ;;
+    p | " ") KEY=preview ;;
     "") KEY=enter ;;
     $'\033')
       # ESC 単体は other。CSI / SS3（矢印キー・マウス報告）は終端バイト（@-~）まで読む
@@ -791,6 +878,8 @@ read_key() {
       case $seq in
         A) KEY=up ;;
         B) KEY=down ;;
+        I) KEY=focus_in ;;
+        O) KEY=focus_out ;;
         "<"*[Mm])
           # SGR マウス報告: <ボタン;列;行 + M(押下) / m(解放)
           params=${seq#<}
@@ -800,8 +889,8 @@ read_key() {
           if [ "$final" = "M" ]; then
             case $b in
               0) KEY=click; CLICK_ROW=$y ;;
-              64) KEY=up ;;
-              65) KEY=down ;;
+              64) KEY=wheel_up ;;
+              65) KEY=wheel_down ;;
             esac
           fi
           ;;
@@ -829,15 +918,21 @@ trap 'exit 0' INT TERM HUP
 trap cleanup EXIT
 resized=0
 trap 'resized=1' WINCH
+trap on_preview_poke USR1
 
 stty -echo 2>/dev/null
 # 代替画面 + カーソル非表示 + マウス報告（押下/ホイールを SGR 形式で受け取る）
-printf '%s' "${ESC}[?1049h${ESC}[?25l${ESC}[?1000h${ESC}[?1006h"
+# + フォーカスイベント(この pane がアクティブになった/外れたときに ESC[I / ESC[O が届く)
+printf '%s' "${ESC}[?1049h${ESC}[?25l${ESC}[?1000h${ESC}[?1006h${ESC}[?1004h"
 
 # 入力待ちの 1 回あたりの最大待ち時間。データ更新は INTERVAL 秒ごと、キー入力・リサイズはこの間隔内に反応する
 TICK=1
 SCOPE_ALL=0
 opts=""
+opts_rest=""
+AUTO_PREVIEW=key
+# ポップアップを閉じた時刻(SECONDS)。閉じた直後に届きうるフォーカスイベントで再び開かないための目安
+PREVIEW_END=-999
 last_collect=-999
 need_render=1
 KEY=""
@@ -845,10 +940,13 @@ CLICK_ROW=0
 
 while :; do
   if ((SECONDS - last_collect >= INTERVAL)); then
-    # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}' 2>/dev/null)
+    # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}' 2>/dev/null)
     [ "${opts%%|*}" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
-    ICON_STYLE=${opts#*|}
+    opts_rest=${opts#*|}
+    ICON_STYLE=${opts_rest%%|*}
+    AUTO_PREVIEW=${opts_rest#*|}
+    [ -z "$AUTO_PREVIEW" ] && AUTO_PREVIEW=key
     apply_icon_style
 
     records=$(collect)
@@ -878,10 +976,33 @@ while :; do
   # 入力が無かった tick でも、working の Agent がいればスピナーを進めるために再描画する
   [ -z "$KEY" ] && ((N_WORK > 0)) && need_render=1
   case $KEY in
-    down | up)
+    down | up | wheel_down | wheel_up)
       # 入力が届いた時点でこの pane にフォーカスがあるので、選択のハイライトを出す
       FOCUSED=1
-      if [ "$KEY" = down ]; then move_selection 1; else move_selection -1; fi
+      case $KEY in
+        down | wheel_down) move_selection 1 ;;
+        *) move_selection -1 ;;
+      esac
+      need_render=1
+      # j/k(矢印)ではそのままプレビューを開く。ホイールは誤操作しやすいので選択を動かすだけ
+      if [ "$AUTO_PREVIEW" != off ] && [[ $KEY == down || $KEY == up ]]; then
+        render
+        open_preview
+        need_render=1
+      fi
+      ;;
+    focus_in)
+      # sidebar がアクティブになったら(focus モードなら)プレビューを開く。
+      # 閉じた直後に届くイベントで開き直さないよう、直後は無視する
+      FOCUSED=1
+      need_render=1
+      if [ "$AUTO_PREVIEW" = focus ] && ((SECONDS - PREVIEW_END >= 2)); then
+        render
+        open_preview
+      fi
+      ;;
+    focus_out)
+      FOCUSED=0
       need_render=1
       ;;
     enter)
@@ -901,6 +1022,11 @@ while :; do
       ;;
     refresh)
       last_collect=-999
+      ;;
+    preview)
+      FOCUSED=1
+      open_preview
+      need_render=1
       ;;
   esac
 done
