@@ -15,13 +15,9 @@ mkdir -p ~/.claude/icons
 ln -sf ~/dotfiles/claude/icons/claude-ai-icon.png ~/.claude/icons/claude-ai-icon.png
 ln -sf ~/dotfiles/claude/settings.json ~/.claude/settings.json
 ln -sf ~/dotfiles/claude/CLAUDE.md ~/.claude/CLAUDE.md
+# tmux/scripts/ 配下は全部リンクする（.tmux.conf が ~/.tmux/scripts/ を参照。漏れると C-t b 等が no such file で失敗する）
 mkdir -p ~/.tmux/scripts
-ln -sf ~/dotfiles/tmux/scripts/tmux-pane-border ~/.tmux/scripts/tmux-pane-border
-ln -sf ~/dotfiles/tmux/scripts/tmux-window-name ~/.tmux/scripts/tmux-window-name
-ln -sf ~/dotfiles/tmux/scripts/tmux-uloop-launch ~/.tmux/scripts/tmux-uloop-launch
-ln -sf ~/dotfiles/tmux/scripts/tmux-agent-sidebar ~/.tmux/scripts/tmux-agent-sidebar
-ln -sf ~/dotfiles/tmux/scripts/tmux-agent-sidebar-open ~/.tmux/scripts/tmux-agent-sidebar-open
-ln -sf ~/dotfiles/tmux/scripts/tmux-agent-sidebar-preview ~/.tmux/scripts/tmux-agent-sidebar-preview
+for f in ~/dotfiles/tmux/scripts/*; do ln -sf "$f" ~/.tmux/scripts/"$(basename "$f")"; done
 mkdir -p ~/Library/Application\ Support/lazygit
 ln -sf ~/dotfiles/lazygit/config.yml ~/Library/Application\ Support/lazygit/config.yml
 mkdir -p ~/Library/Application\ Support/com.mitchellh.ghostty
