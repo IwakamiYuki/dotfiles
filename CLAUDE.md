@@ -102,13 +102,12 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - 15 分ごとにセッション自動保存
 - tmux 起動時に自動復元
 - CPU/バッテリー情報をステータスバーに表示
-- Claude Code の各セッション状態を `⬤` で表示（`tmux/scripts/tmux-claude-agents-status`）
-  - 色で状態を表す（黄=busy、赤=waiting、薄橙=idle 既読、緑=idle 未読）
-  - クリックで該当ペインへジャンプ
-  - ⚠️ 記号は `⬤`（U+2B24）。`●`（U+25CF）は HackGen Console NF だと
-    半角幅に潰れて小さくなる。`⬤` もフォント指定なしだと Iosevka に
-    フォールバックして小さくなるため、`ghostty/config` の
-    `font-codepoint-map` による STIX Two Math 指定とセットで機能する
+- Claude Code の状態表示と 5h/1w レートリミットは、ステータスバーから **Agent Sidebar へ移した**（下の「Agent Sidebar」参照）
+  - ステータスバーには `tmux-claude-agents-status --state-only` だけを残している（表示は無し）。
+    sidebar の DONE（完了して未読）判定が使う状態ファイル `/tmp/tmux-claude-agents-state` を更新し続けるため。
+    これを外すと sidebar の DONE が出なくなる
+  - フォーカスで未読を消す `pane-focus-in` → `tmux-claude-agents-mark-read` も同じ状態ファイルを使う
+  - `⬤`（U+2B24）の STIX Two Math 指定（`ghostty/config`）は旧ステータスバー表示の名残で、sidebar は `⬤` を使わない
 
 ### Agent Sidebar (tmux/scripts/tmux-agent-sidebar*)
 各 window の左端に置く「普通の pane」で、現在の session 内の Claude Code / Codex の状態を一覧表示する。
@@ -272,11 +271,11 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 │       ├── sequential-thinking/  # 段階的思考スキル
 │       └── ...            # その他スキル
 ├── tmux/scripts/          # Tmux ステータスバー用スクリプト
-│   ├── tmux-claude-agents-status  # Claude セッション状態を ⬤ で表示
-│   ├── tmux-claude-agents-jump    # ⬤ クリックで該当ペインへジャンプ
+│   ├── tmux-claude-agents-status  # sidebar の DONE 判定用の状態ファイルを更新（--state-only、表示なし）
+│   ├── tmux-claude-agents-jump    # C-t a のポップアップ一覧（選択したペインへジャンプ）
 │   ├── tmux-agent-sidebar         # window 左端に置く Agent 一覧 pane の本体
 │   ├── tmux-agent-sidebar-open    # sidebar を window 左端に追加（二重起動防止）
-│   ├── tmux-rate-limits   # レートリミット使用率表示
+│   ├── tmux-rate-limits   # レートリミット使用率表示（現在はステータスバーから外し、sidebar の USAGE 欄が代替）
 │   └── ...                # その他スクリプト
 ├── lazygit/config.yml     # Lazygit 設定
 ├── ghostty/config         # Ghostty 設定（Shift+Enter 対応）

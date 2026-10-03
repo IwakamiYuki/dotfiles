@@ -77,6 +77,12 @@ if [ "$state_age" -ge "$STATE_TTL" ]; then
   printf '%s' "$new_state" > "$STATE_FILE"
 fi
 
+# --state-only: 状態ファイル(未読の完了フラグ)の更新だけ行い、ステータスバー用の文字列は出さない。
+# ステータスバーの表示は Agent Sidebar へ移したが、sidebar の DONE 判定がこの状態ファイルに依存する
+if [ "${1:-}" = "--state-only" ]; then
+  exit 0
+fi
+
 # --- 表示文字列の生成（毎秒実行） ---
 # ppid をキーに、セッション名・ウィンドウ番号・ペイン番号・pane_id を引いてウィンドウ順に並べる。
 # pane_id は #[range=pane|<pane_id>] でクリック範囲としてマークし、
