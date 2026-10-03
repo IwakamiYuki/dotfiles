@@ -118,13 +118,13 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - `Ctrl-t b` → 現在の window に sidebar を追加。すでにあれば二重起動せず sidebar へフォーカス
 - sidebar 上で `Ctrl-C` → sidebar だけ終了して pane が閉じる。main pane は残る
 - ⚠️ `Ctrl-t a`（Claude 一覧ポップアップ）が使用済みのため、再表示キーは `b`
-- sidebar 上で `j` / `k`（`↓` / `↑`、マウスホイール）→ 選択を移動。選択中はハイライト（sidebar にフォーカスがあるときだけ表示）
+- sidebar 上で `j` / `k`（`↓` / `↑`、マウスホイール）→ 選択を移動。選択中のカードはオレンジの角丸罫線で囲まれる（sidebar にフォーカスがあるときだけ表示。このとき 2 行目に操作ヒントも出る）
 - sidebar 上で `Enter`、または Agent の行を **クリック** → その Agent の window・pane へジャンプ（`r` で即時更新）
 - sidebar 上で `j` / `k`（`↓` / `↑`）→ 選択を動かして、そのまま **ポップアップでプレビュー**を開く（`@agent_sidebar_auto_preview`、後述）。マウスホイールは選択を動かすだけで、開かない
 - sidebar 上で `p`（または Space）→ 選択中の Agent の pane を **ポップアップでプレビュー**（`tmux-agent-sidebar-preview`）
   - 中身は `tmux capture-pane -e -p`（色つき・読み取り専用）を 1 秒ごとに更新。Agent には影響しない
   - ポップアップ内で `j` / `k`（`↓` / `↑`、Tab）→ 前後の Agent に切り替え、`Enter` → その pane へ移動、`q` / Esc / `p` / Space → 閉じる
-  - ポップアップは sidebar の **右隣**に開く（幅が 40 未満なら中央に大きく）。j/k で切り替えるたびに、裏の sidebar の選択ハイライトも追従する
+  - ポップアップは sidebar の **右隣**に開く（幅が 40 未満なら中央に大きく）。j/k で切り替えるたびに、裏の sidebar の選択（罫線）も追従する
     （ポップアップが `<result_file>.cur` に現在の添字を書いて sidebar へ SIGUSR1 を送り、`display-popup` をバックグラウンドで起動した sidebar のハンドラが
     即座に読んで再描画する。`display-popup` はポップアップが閉じるまで戻らないため。ポーリングだと最大 0.2 秒の遅れが出ていた）
   - 閉じると、sidebar の選択位置は最後に見ていた Agent に引き継がれる
@@ -145,11 +145,18 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - 見た目は Orca の worktree 一覧を意識したカード表示。window ごとの見出し（`── 6 dotfiles ───`）で区切り、各 Agent は背景色を敷いた 3〜4 行のカードで、左端のバーが状態色
   - `project ……… 種別(右寄せ)` / 会話タイトル（あれば）/ ` ブランチ   親ディレクトリ` / `[ ⠋ WORKING ] 待機理由 ……… 継続時間`。pane 番号と状態アイコン（●等）は出さない
   - 状態は背景色付きのピル（WORKING=黄 / WAITING=赤 / DONE=緑 / IDLE=くすんだ橙 / UNKNOWN=灰）。working のピルの中でスピナーが回る（`read -t` が整数秒のため 1 秒 1 コマ）
-  - 先頭行に状態別の件数（カードのバーと同じ色の `▎1 ▎1`）。いま見ている pane の Agent は、バーが太い `█`・project 名がオレンジの太字・背景が一段明るい
+  - 先頭行に状態別の件数（カードのバーと同じ色の `▎1 ▎1`）
+  - **選択**（カーソル）と**現在地**（いま見ている pane）は別の表現にして混同を避ける
+    - 選択: カードを **オレンジの角丸罫線 `╭─╮ │ │ ╰─╯` で丸ごと囲む**。カード間の区切り行を罫線に兼用するので行数は増えない（区切り行は選択時に上辺/下辺になる）
+    - 現在地: 左端を **シアンの `▶`**、project 名を **シアンの太字**にする（選択中は左端が罫線になるため名前の色だけで示す）
+  - 文字幅は `char_width`（UTF-8 のバイトからコードポイントを復元して判定。East Asian Ambiguous の `’ “ — → ▶` や罫線は 1 桁、CJK・絵文字は 2 桁）で数える。
+    以前は ASCII 以外を一律 2 桁と数えていて、`’` や `—` を含む行で右端の罫線が左へずれていた。
+    さらにカードの右端の縁は `ESC[row;colH` で桁を指定して描くので、幅の見積もりがずれても縁の位置は動かない
+  - 注意が必要な状態はカードの背景に色味を付ける（WAITING=暗い赤、DONE=暗い緑。選択中は一段明るい）
   - 下部に固定の `── USAGE ──` 欄で Claude Code の 5h / 1w レートリミット使用率（バー + % + リセットまでの残り時間。色は `tmux-rate-limits` と同じ段階で 80% 以上は赤）を表示。元データは `statusline.sh` が書く `/tmp/claude-rate-limits.json`。端末の高さが 14 未満、またはファイルが無いときは出さない
   - アイコンは Nerd Font 前提（`@agent_sidebar_icons nerd`）。`plain` にすると記号なしになる
   - タイトルは `/tmp/claude-title-<sessionId>.txt`、継続時間は `~/.claude/sessions/<pid>.json` の `statusUpdatedAt`、ブランチは cwd での `git branch --show-current`（10 秒キャッシュ。detached HEAD なら短縮 SHA）
-  - 行数はタイトルの有無で 3〜4 行に変わる（見出し・Agent 間の空行は別）。収まらない分は `+N more` にし、選択に追従してスクロールする
+  - 行数はタイトルの有無で 3〜4 行に変わる（見出し・区切り行は別。window ごとに「見出し → [区切り → カード]… → 閉じの区切り」）。収まらない分は `+N more` にし、選択に追従してスクロールする
 - Claude: `claude agents --json`（約 0.2 秒）と各セッションの更新時刻を `/tmp/tmux-agent-sidebar-claude2.txt` に 3 秒キャッシュして全 sidebar で共有。pid の祖先をたどって pane に紐付ける。status は working / waiting / idle。未読の完了は `tmux-claude-agents-status` の状態ファイルを参照して done 表示
 - Codex: ps の引数（`codex` 本体、または `node .../codex`）で検出。状態を確実に判定する手段が無いため unknown 固定（推測しない）
 - 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|title|cwd`。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む

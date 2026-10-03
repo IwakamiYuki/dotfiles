@@ -68,8 +68,17 @@ BOLD_ON="${ESC}[1m"
 BOLD_OFF="${ESC}[22m"
 # Agent を「カード」に見せるための背景色（通常 / 選択中）。window-style の bg=colour233 より一段明るくする
 CARD_BG="${ESC}[48;5;236m"
-CARD_BG_ACTIVE="${ESC}[48;5;238m"
-CARD_BG_SELECTED="${ESC}[48;5;240m"
+# 注意が必要な状態(WAITING / DONE)のカードは背景に色味を付けて、一覧の中で目に入るようにする。
+# 選択中(角丸の罫線で囲む)はそれぞれ一段明るい色にする
+CARD_BG_WAITING="${ESC}[48;5;52m"
+CARD_BG_DONE="${ESC}[48;5;22m"
+CARD_BG_SELECTED="${ESC}[48;5;238m"
+CARD_BG_WAITING_SELECTED="${ESC}[48;5;88m"
+CARD_BG_DONE_SELECTED="${ESC}[48;5;28m"
+# 選択中のカードを囲む罫線の色(テーマのオレンジ)
+C_SELECT="${ESC}[1;38;5;208m"
+# 「いま見ている pane」の Agent は、左端の ▶ と project 名をシアンの太字にする(選択のオレンジとは別の色にして混同を避ける)
+C_HERE="${ESC}[1;38;5;51m"
 C_RULE="${ESC}[38;5;239m"
 
 # 状態ピルの配色（背景色 / 文字色）。status ごとに case で選ぶ
@@ -286,14 +295,62 @@ collect() {
 
 # --- 表示 ---------------------------------------------------------------
 
-# REPLY に、表示幅 $2 以内へ切り詰めた $1 を入れる（ASCII 以外は全角 2 幅として数える）
+# 1 文字の端末上の表示幅(0 / 1 / 2)を REPLY に入れる。ASCII 以外は UTF-8 のバイトからコードポイントを
+# 復元して判定する。East Asian Ambiguous(’ “ — → ▶ 罫線 など)は tmux / Ghostty の既定どおり 1 桁。
+# (以前は ASCII 以外を一律 2 桁と数えていたため、’ や — を含む行で右端の罫線が左へずれていた)
+char_width() {
+  local c=$1
+  local LC_ALL=C
+  local n=${#c} b1 b2 b3 b4 cp
+  REPLY=1
+  ((n == 1)) && return 0
+  printf -v b1 '%d' "'${c:0:1}"; ((b1 < 0)) && b1=$((b1 + 256))
+  printf -v b2 '%d' "'${c:1:1}"; ((b2 < 0)) && b2=$((b2 + 256))
+  if ((n == 2)); then
+    cp=$(((b1 & 31) << 6 | (b2 & 63)))
+    ((cp >= 0x300 && cp <= 0x36F)) && REPLY=0  # 結合文字
+    return 0
+  elif ((n == 3)); then
+    printf -v b3 '%d' "'${c:2:1}"; ((b3 < 0)) && b3=$((b3 + 256))
+    cp=$(((b1 & 15) << 12 | (b2 & 63) << 6 | (b3 & 63)))
+  elif ((n == 4)); then
+    printf -v b3 '%d' "'${c:2:1}"; ((b3 < 0)) && b3=$((b3 + 256))
+    printf -v b4 '%d' "'${c:3:1}"; ((b4 < 0)) && b4=$((b4 + 256))
+    cp=$(((b1 & 7) << 18 | (b2 & 63) << 12 | (b3 & 63) << 6 | (b4 & 63)))
+  else
+    return 0
+  fi
+
+  if ((cp == 0x200D || (cp >= 0xFE00 && cp <= 0xFE0F))); then
+    REPLY=0  # ZWJ・異体字セレクタ
+  elif ((cp >= 0x1100 && cp <= 0x115F)) \
+    || ((cp >= 0x2E80 && cp <= 0x303E)) \
+    || ((cp >= 0x3041 && cp <= 0x33FF)) \
+    || ((cp >= 0x3400 && cp <= 0x4DBF)) \
+    || ((cp >= 0x4E00 && cp <= 0x9FFF)) \
+    || ((cp >= 0xA000 && cp <= 0xA4CF)) \
+    || ((cp >= 0xAC00 && cp <= 0xD7A3)) \
+    || ((cp >= 0xF900 && cp <= 0xFAFF)) \
+    || ((cp >= 0xFE30 && cp <= 0xFE6F)) \
+    || ((cp >= 0xFF00 && cp <= 0xFF60)) \
+    || ((cp >= 0xFFE0 && cp <= 0xFFE6)) \
+    || ((cp >= 0x1F300 && cp <= 0x1F64F)) \
+    || ((cp >= 0x1F680 && cp <= 0x1F6FF)) \
+    || ((cp >= 0x1F900 && cp <= 0x1F9FF)) \
+    || ((cp >= 0x20000 && cp <= 0x3FFFD)) \
+    || ((cp == 0x2705 || cp == 0x274C || cp == 0x2728 || cp == 0x26A1 || cp == 0x2B50 || cp == 0x2B1B || cp == 0x2B1C)); then
+    REPLY=2
+  fi
+}
+
+# REPLY に、表示幅 $2 以内へ切り詰めた $1 を入れる。実際に使った表示幅は TRUNC_W に入る
 trunc() {
   local s=$1 max=$2 out="" w=0 i c cw
   for ((i = 0; i < ${#s}; i++)); do
     c=${s:i:1}
     case $c in
-      [\ -~] | · | ─) cw=1 ;;
-      *) cw=2 ;;
+      [\ -~]) cw=1 ;;
+      *) char_width "$c"; cw=$REPLY ;;
     esac
     ((w + cw > max)) && break
     out+=$c
@@ -386,67 +443,103 @@ put_group_header() {
   frame+="${ESC}[${row};1H${C_RULE}──${C_GROUP}${BOLD_ON}${REPLY}${BOLD_OFF}${C_RULE}${fill// /─}${ESC}[K${C_RESET}"
 }
 
-# カードの 1 行を積む。$1=バー文字 $2=バー色 $3=中身(ANSI 付き。表示幅は width-3 以内に収めておく)
+# カードの 1 行を積む。$1=中身(ANSI 付き)。中身の右側の余りは背景で埋める。
+# 左端は状態色のバー(選択中は罫線 │)、右端は選択中だけ罫線 │
 card_row() {
   ((row >= height)) && return 0
   row=$((row + 1))
   ROW_AGENT[row]=$CUR_IDX
-  frame+="${ESC}[${row};1H${CARD_BG_NOW}${2}${1}${FG_DEFAULT} ${3}${ESC}[K${C_RESET}"
+  # 右の縁は桁を指定して描く。中身の表示幅($2)の見積もりが実際とずれても、縁の位置は動かない。
+  # 先に ESC[K で行末まで背景を敷き、そのあとで縁を置く(縁の右 1 桁は既定の背景に戻す)
+  frame+="${ESC}[${row};1H${CARD_BG_NOW}${EDGE_L} $1${ESC}[K${ESC}[${row};$((width - 1))H${EDGE_R}${C_RESET}${ESC}[K"
+}
+
+# Agent 間・window 区切りの 1 行。直下のカードが選択中ならその上辺 ╭──╮、直上のカードが選択中なら下辺 ╰──╯、
+# どちらでもなければ空行。空行を罫線に兼用するので、選択しても行数は増えない
+put_sep() {
+  local above=$1 below=$2
+  ((row >= height)) && return 0
+  row=$((row + 1))
+  ROW_AGENT[row]=""
+  if [ "$FOCUSED" = 1 ] && [ -n "$below" ] && [ "$below" = "$SEL_IDX" ]; then
+    frame+="${ESC}[${row};1H${C_SELECT}╭${BORDER_FILL}╮${C_RESET}${ESC}[K"
+  elif [ "$FOCUSED" = 1 ] && [ -n "$above" ] && [ "$above" = "$SEL_IDX" ]; then
+    frame+="${ESC}[${row};1H${C_SELECT}╰${BORDER_FILL}╯${C_RESET}${ESC}[K"
+  else
+    frame+="${ESC}[${row};1H${ESC}[K"
+  fi
 }
 
 put_agent() {
   local i=$1
   local status=${AG_STATUS[i]} type=${AG_TYPE[i]} detail=${AG_DETAIL[i]} elapsed=${AG_ELAPSED[i]}
-  local inner=$((width - 3)) color pill_bg pill_fg label bar="▎" name_on=""
-  local line pad dw rest bw
+  local inner=$CARD_INNER color pill_bg pill_fg label name_on="" selected=0 bg_normal bg_sel
+  local right right_w lw rest tw dw avail pad detail_part=""
 
   case $status in
     # 状態は左端のバーの色と状態ピルで示す。スピナーだけは working のピルの中で回す
-    working) color=$C_WORKING; pill_bg=220; pill_fg=232; label="${SPINNER[SECONDS % ${#SPINNER[@]}]} WORKING" ;;
-    waiting) color=$C_WAITING; pill_bg=196; pill_fg=255; label="WAITING" ;;
-    done) color=$C_DONE; pill_bg=41; pill_fg=232; label="DONE" ;;
-    idle) color=$C_IDLE; pill_bg=137; pill_fg=232; label="IDLE" ;;
-    *) color=$C_UNKNOWN; pill_bg=240; pill_fg=252; label="UNKNOWN" ;;
+    working) color=$C_WORKING; pill_bg=220; pill_fg=232; label="${SPINNER[SECONDS % ${#SPINNER[@]}]} WORKING"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
+    waiting) color=$C_WAITING; pill_bg=196; pill_fg=255; label="WAITING"; bg_normal=$CARD_BG_WAITING; bg_sel=$CARD_BG_WAITING_SELECTED ;;
+    done) color=$C_DONE; pill_bg=41; pill_fg=232; label="DONE"; bg_normal=$CARD_BG_DONE; bg_sel=$CARD_BG_DONE_SELECTED ;;
+    idle) color=$C_IDLE; pill_bg=137; pill_fg=232; label="IDLE"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
+    *) color=$C_UNKNOWN; pill_bg=240; pill_fg=252; label="UNKNOWN"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
   esac
-  # いま見ている pane の Agent は、太いバー・オレンジの太字・一段明るい背景で他と区別する
-  [ "${AG_ACT[i]}" = 1 ] && { bar="█"; name_on="${BOLD_ON}${C_ACTIVE}"; }
 
+  [ "$FOCUSED" = 1 ] && [ "$i" = "$SEL_IDX" ] && selected=1
   CUR_IDX=$i
-  CARD_BG_NOW=$CARD_BG
-  [ "${AG_ACT[i]}" = 1 ] && CARD_BG_NOW=$CARD_BG_ACTIVE
-  [ "$FOCUSED" = 1 ] && [ "$i" = "$SEL_IDX" ] && CARD_BG_NOW=$CARD_BG_SELECTED
-
-  # 1 行目: project ……… 種別(右寄せ)
-  trunc "${AG_PROJ[i]}" $((inner - ${#type} - 1))
-  printf -v pad '%*s' $((inner - TRUNC_W - ${#type})) ''
-  card_row "$bar" "$color" "${name_on}${REPLY}${BOLD_OFF}${pad}${C_DIM}${type}${FG_DEFAULT}"
+  if ((selected)); then
+    CARD_BG_NOW=$bg_sel
+    EDGE_L="${C_SELECT}│${C_RESET}${CARD_BG_NOW}"
+    EDGE_R="${C_SELECT}│${C_RESET}"
+  else
+    CARD_BG_NOW=$bg_normal
+    EDGE_L="${color}▎${FG_DEFAULT}"
+    EDGE_R=" "
+  fi
+  # 1 行目: project ……… 種別。いま見ている pane の Agent は、左端を ▶ にして project 名をシアンの太字にする
+  # (選択中は左端が罫線 │ なので ▶ にはしない)
+  right="${C_DIM}${type}${FG_DEFAULT}"
+  right_w=${#type}
+  local edge_l_saved=$EDGE_L
+  if [ "${AG_ACT[i]}" = 1 ]; then
+    name_on=$C_HERE
+    ((selected)) || EDGE_L="${C_HERE}▶${C_RESET}${CARD_BG_NOW}"
+  fi
+  trunc "${AG_PROJ[i]}" $((inner - right_w - 1))
+  printf -v pad '%*s' $((inner - TRUNC_W - right_w)) ''
+  card_row "${name_on}${REPLY}${BOLD_OFF}${FG_DEFAULT}${pad}${right}"
+  EDGE_L=$edge_l_saved
 
   # 会話タイトル（あれば）
   if [ -n "${AG_TITLE[i]}" ]; then
     trunc "${AG_TITLE[i]}" "$inner"
-    card_row "$bar" "$color" "${C_TITLE_ROW}${REPLY}${FG_DEFAULT}"
+    card_row "${C_TITLE_ROW}${REPLY}${FG_DEFAULT}"
   fi
 
   # ブランチ + 親ディレクトリ。入りきらなければディレクトリを落とす
-  line=""
+  local line=""
   rest=$inner
+  lw=0
   if [ -n "${AG_BRANCH[i]}" ]; then
     trunc "${AG_BRANCH[i]}" $((rest - ICON_W))
-    bw=$((ICON_W + TRUNC_W))
+    tw=$TRUNC_W
     line="${C_DIM}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
-    rest=$((rest - bw))
+    lw=$((ICON_W + tw))
+    rest=$((rest - lw))
     if ((rest >= ICON_W + 6)); then
       trunc "${AG_DIR[i]}" $((rest - 2 - ICON_W))
       line+="  ${C_RULE}${ICON_DIR}${REPLY}${FG_DEFAULT}"
+      lw=$((lw + 2 + ICON_W + TRUNC_W))
     fi
   else
     trunc "${AG_DIR[i]}" $((rest - ICON_W))
     line="${C_RULE}${ICON_DIR}${REPLY}${FG_DEFAULT}"
+    lw=$((ICON_W + TRUNC_W))
   fi
-  card_row "$bar" "$color" "${line}"
+  card_row "$line"
 
   # 状態ピル + 待機理由 ……… 継続時間(右寄せ)
-  local pillw=$((${#label} + 2)) elw=${#elapsed} detail_part="" avail
+  local pillw=$((${#label} + 2)) elw=${#elapsed}
   avail=$((inner - pillw - 1))
   ((elw > 0)) && avail=$((avail - elw - 1))
   dw=0
@@ -456,7 +549,7 @@ put_agent() {
     detail_part=" ${C_DIM}${REPLY}${FG_DEFAULT}"
   fi
   printf -v pad '%*s' $((inner - pillw - dw - elw)) ''
-  card_row "$bar" "$color" "${ESC}[48;5;${pill_bg};38;5;${pill_fg};1m ${label} ${BOLD_OFF}${FG_DEFAULT}${CARD_BG_NOW}${detail_part}${pad}${C_DIM}${elapsed}${FG_DEFAULT}"
+  card_row "${ESC}[48;5;${pill_bg};38;5;${pill_fg};1m ${label} ${BOLD_OFF}${FG_DEFAULT}${CARD_BG_NOW}${detail_part}${pad}${C_DIM}${elapsed}${FG_DEFAULT}"
 
   CUR_IDX=""
 }
@@ -581,8 +674,11 @@ build_footer() {
 }
 
 # FIT に「top 番目から表示できる Agent 数」を入れる。
-# 先頭の Agent の前には window 見出し 1 行、同じ window の次の Agent との間は空行 1 行、
-# 別 window の Agent との間は「空行 + 見出し」の 2 行が入る。
+# 並び: 見出し → [区切り → カード]… → 閉じの区切り（window ごと）。区切りは選択時に罫線になる。
+#   各カード   : 区切り 1 + カードの行数
+#   最初の Agent: さらに見出し 1
+#   別 window  : さらに「前の window の閉じの区切り 1 + 見出し 1」
+#   最後に閉じの区切り 1 を必ず見込む
 # 全件が収まらない（または先頭を省いている）ときは「+N more」の 1 行ぶんを空けて数え直す
 compute_fit() {
   local top=$1 avail pass i used n need
@@ -592,15 +688,13 @@ compute_fit() {
     used=0
     n=0
     for ((i = top; i < AG_N; i++)); do
-      need=${AG_ROWS[i]}
+      need=$((${AG_ROWS[i]} + 1))
       if ((n == 0)); then
         need=$((need + 1))
-      elif [ "${AG_WKEY[i]}" = "${AG_WKEY[i - 1]}" ]; then
-        need=$((need + 1))
-      else
+      elif [ "${AG_WKEY[i]}" != "${AG_WKEY[i - 1]}" ]; then
         need=$((need + 2))
       fi
-      ((used + need > avail)) && break
+      ((used + need + 1 > avail)) && break
       used=$((used + need))
       n=$((n + 1))
     done
@@ -640,11 +734,25 @@ render() {
   frame=""
   row=0
   ROW_AGENT=()
+  # カード中身の桁数(左の縁 1 + 空白 1 + 中身 + 右の縁 1 + 右端の余白 1)と、選択罫線の横線の長さ
+  CARD_INNER=$((width - 4))
+  printf -v BORDER_FILL '%*s' $((width - 3)) ''
+  BORDER_FILL=${BORDER_FILL// /─}
 
   put_title_row
-  # BSD tr はマルチバイトを扱えないため、罫線は bash の置換で作る
-  printf -v rule '%*s' $((width - 2)) ''
-  put "$C_RULE" " ${rule// /─}"
+  # 2 行目は罫線。sidebar にフォーカスがあるときは操作ヒントに切り替える(フォーカス状態の目印にもなる)
+  if [ "$FOCUSED" = 1 ] && ((width >= 30)); then
+    # 色指定を含むため、表示幅で切り詰める put は通さず直接積む(幅は 30 以上のときだけ出す)
+    if ((row < height)); then
+      row=$((row + 1))
+      ROW_AGENT[row]=""
+      frame+="${ESC}[${row};1H${C_DIM} ${C_ACTIVE}j/k${C_DIM} select  ${C_ACTIVE}⏎${C_DIM} jump  ${C_ACTIVE}p${C_DIM} peek${ESC}[K${C_RESET}"
+    fi
+  else
+    # BSD tr はマルチバイトを扱えないため、罫線は bash の置換で作る
+    printf -v rule '%*s' $((width - 2)) ''
+    put "$C_RULE" " ${rule// /─}"
+  fi
   put "" ""
 
   if ((AG_N == 0)); then
@@ -668,15 +776,20 @@ render() {
     for ((i = TOP_IDX; i < AG_N && shown < FIT; i++)); do
       if ((shown == 0)); then
         put_group_header "$i"
+        put_sep "" "$i"
       elif [ "${AG_WKEY[i]}" = "${AG_WKEY[i - 1]}" ]; then
-        put "" ""
+        put_sep "$((i - 1))" "$i"
       else
-        put "" ""
+        # 別 window: 前の window の閉じの区切り → 見出し → 区切り
+        put_sep "$((i - 1))" ""
         put_group_header "$i"
+        put_sep "" "$i"
       fi
       put_agent "$i"
       shown=$((shown + 1))
     done
+    # 最後の window の閉じの区切り(最後のカードが選択中なら下辺の罫線になる)
+    put_sep "$((i - 1))" ""
 
     ((AG_N > shown)) && put "$C_DIM" " +$((AG_N - shown)) more"
   fi
