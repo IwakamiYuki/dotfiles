@@ -6,10 +6,12 @@
 # 📝 会話タイトル - session_name（/rename の名前か AI 生成タイトル）。無ければ generate-title.sh で生成
 # 🤖 モデル名 + effort - 使用中のモデルと reasoning effort（fast mode 時は ⚡）
 # 💬 コンテキスト使用量 - 入力トークン数 / ウィンドウサイズ と使用率
-# 🧊 プロンプトキャッシュ - warm なら失効時刻、切れていれば cold。miss があれば件数
+# 🧊 プロンプトキャッシュ - warm なら失効時刻、切れていれば cold。cold 時の再キャッシュ量と miss 件数
 # 💰 推定コスト - セッションの推定金額（USD、定価ベース。閾値以上で警告色）
-# ✏️ コード変更量 - 追加/削除された行数
+# 💳 支出上限 - Claude apps gateway の spend limit 使用率とリセット日（届いたときだけ）
+# 🔀 PR - 現在のブランチの PR / MR 番号とレビュー状態（あるときだけ）
 # ⏱️ 総処理時間 - セッション開始からの経過時間
+# 📦 バージョン - Claude Code のバージョン
 # ⚠️ レートリミット警告 - 5h/1w のどちらかが閾値以上のときだけ表示
 #
 # 5h/1w のレートリミット（rate_limits）はアカウント単位で全セッション共通のため、
@@ -26,6 +28,9 @@ RATE_LIMIT_WARN_PCT=80
 # セッションの推定コストを警告色（オレンジ / 赤）で表示する金額（USD）
 COST_WARN_USD=5
 COST_ALERT_USD=20
+# 支出上限（spend limit）を警告色（オレンジ / 赤）で表示する使用率（%）
+SPEND_WARN_PCT=60
+SPEND_ALERT_PCT=80
 
 # 標準入力からClaude Codeのコンテキスト情報を取得
 input=$(cat)
@@ -33,10 +38,11 @@ input=$(cat)
 # jq の呼び出しを 1 回にまとめる（statusLine は頻繁に実行されるため）
 # 空値は "" で揃え、US（\x1f）区切りで受け取る（タブは IFS の空白扱いで空欄が詰まるため）
 IFS=$'\x1f' read -r model session_id session_name transcript_path effort fast_mode \
-    duration cost_usd lines_added lines_removed \
+    duration cost_usd \
     context_tokens context_pct context_window_size \
     cache_observed cache_warm cache_expires_at cache_misses \
     five_hour_pct five_hour_resets seven_day_pct seven_day_resets \
+    recache_tokens spend_pct spend_resets pr_number pr_state pr_kind version \
     < <(echo "$input" | jq -r '[
         (.model.display_name // .model // ""),
         (.session_id // ""),
@@ -46,8 +52,6 @@ IFS=$'\x1f' read -r model session_id session_name transcript_path effort fast_mo
         (.fast_mode // false),
         (.cost.total_duration_ms // 0),
         (.cost.total_cost_usd // 0),
-        (.cost.total_lines_added // 0),
-        (.cost.total_lines_removed // 0),
         (.context_window.total_input_tokens // ""),
         (.context_window.used_percentage // ""),
         (.context_window.context_window_size // ""),
@@ -58,7 +62,14 @@ IFS=$'\x1f' read -r model session_id session_name transcript_path effort fast_mo
         (.rate_limits.five_hour.used_percentage // ""),
         (.rate_limits.five_hour.resets_at // ""),
         (.rate_limits.seven_day.used_percentage // ""),
-        (.rate_limits.seven_day.resets_at // "")
+        (.rate_limits.seven_day.resets_at // ""),
+        (.prompt_cache.recache_tokens_if_cold // ""),
+        (.rate_limits.spend_limit.used_percentage // ""),
+        (.rate_limits.spend_limit.resets_at // ""),
+        (.pr.number // ""),
+        (.pr.review_state // ""),
+        (.pr.kind // ""),
+        (.version // "")
     ] | map(tostring) | join("\u001f")')
 
 # 浮動小数点を整数に丸める関数（四捨五入）
@@ -177,11 +188,18 @@ build_context() {
 build_cache() {
     [ "$cache_observed" != "true" ] && return
 
+    # cold になったら次の 1 回で書き直すトークン数（書き込みは入力単価の 2 倍で高くつく）
+    local recache=""
+    if [ "$recache_tokens" -gt 0 ] 2>/dev/null; then
+        recache="cold→$(format_tokens "$recache_tokens")"
+    fi
+
     local display
     if [ "$cache_warm" = "true" ] && [ -n "$cache_expires_at" ]; then
         display="🧊 ~$(date -r "$cache_expires_at" +%H:%M 2>/dev/null)"
+        [ -n "$recache" ] && display+=" (${recache})"
     else
-        display="\033[38;5;240m🧊 cold\033[0m"
+        display="\033[38;5;240m🧊 ${recache:-cold}\033[0m"
     fi
     if [ "$cache_misses" -gt 0 ] 2>/dev/null; then
         display+=" \033[38;5;208mmiss ${cache_misses}\033[0m"
@@ -204,6 +222,55 @@ build_cost() {
         printf " | \033[%sm💰 %s\033[0m" "$color" "$amount"
     else
         printf " | 💰 %s" "$amount"
+    fi
+}
+
+# 支出上限: Claude apps gateway 経由で spend limit があるときだけ届く。100% 超もありうる
+build_spend_limit() {
+    [ -z "$spend_pct" ] && return
+
+    local pct
+    pct=$(round_pct "$spend_pct")
+    local color=""
+    if [ "$pct" -ge "$SPEND_ALERT_PCT" ]; then
+        color="38;5;196"
+    elif [ "$pct" -ge "$SPEND_WARN_PCT" ]; then
+        color="38;5;208"
+    fi
+
+    local display="💳 ${pct}%"
+    if [ -n "$spend_resets" ]; then
+        display+=" (~$(date -r "$spend_resets" +%m/%d 2>/dev/null))"
+    fi
+    if [ -n "$color" ]; then
+        printf " | \033[%sm%s\033[0m" "$color" "$display"
+    else
+        printf " | %s" "$display"
+    fi
+}
+
+# PR: GitLab の MR は "!番号"、GitHub の PR は "#番号"。レビュー状態は色で区別する
+build_pr() {
+    [ -z "$pr_number" ] && return
+
+    local prefix="#"
+    [ "$pr_kind" = "mr" ] && prefix="!"
+
+    local color
+    case "$pr_state" in
+        approved)          color="38;5;82" ;;   # 緑
+        changes_requested) color="38;5;196" ;;  # 赤
+        pending)           color="38;5;214" ;;  # 黄橙
+        draft)             color="38;5;240" ;;  # 灰
+        *)                 color="" ;;
+    esac
+
+    local display="🔀 ${prefix}${pr_number}"
+    [ -n "$pr_state" ] && display+=" ${pr_state}"
+    if [ -n "$color" ]; then
+        printf " | \033[%sm%s\033[0m" "$color" "$display"
+    else
+        printf " | %s" "$display"
     fi
 }
 
@@ -235,15 +302,19 @@ if [ -n "$five_hour_pct" ]; then
 fi
 
 duration_formatted=$(format_time $((${duration%.*} / 1000)))
-lines_display="\033[38;5;82m+${lines_added}\033[0m/\033[38;5;196m-${lines_removed}\033[0m"
 
 # 出力（1行表示）
-printf "%s%s | %s%s%s | ✏️ %b | ⏱️ %s%s\n" \
+version_display=""
+[ -n "$version" ] && version_display=" | 📦 ${version}"
+
+printf "%s%s | %s%s%s%s%s | ⏱️ %s%s%s\n" \
     "$(build_title)" \
     "$(build_model)" \
     "$(build_context)" \
     "$(build_cache)" \
     "$(build_cost)" \
-    "$lines_display" \
+    "$(build_spend_limit)" \
+    "$(build_pr)" \
     "$duration_formatted" \
+    "$version_display" \
     "$(build_rate_limit_warning)"

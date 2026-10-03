@@ -220,7 +220,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - `bin/scan-worktrees`（検知、削除なし）/ `bin/remove-worktree`（1 件削除）
 
 **scripts/**: 各種スクリプト
-- `statusline.sh`: カスタムステータスライン（会話タイトル、モデル + effort、コンテキスト使用量、プロンプトキャッシュ状態、推定コスト、コード変更量、処理時間、レートリミット警告を表示）
+- `statusline.sh`: カスタムステータスライン（会話タイトル、モデル + effort、コンテキスト使用量、プロンプトキャッシュ状態と cold 時の再キャッシュ量、推定コスト、支出上限、PR とレビュー状態、処理時間、バージョン、レートリミット警告を表示）
 - `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
 - `generate-title.sh`: 会話タイトル生成（AI 生成）。codex CLI で会話全体を要約してタイトルを作成。失敗時は extract-title.sh にフォールバック
 - `debug-statusline-input.sh`: statusLine 入力データのデバッグ用
