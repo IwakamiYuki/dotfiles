@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# tmux-agent-sidebar-open: 指定 window の左端に Agent Sidebar pane を追加する。
+#
+# Usage: tmux-agent-sidebar-open [window_id]
+#   window_id 省略時は現在の window。
+#
+# - すでに sidebar がある window では二重起動せず、その sidebar へフォーカスを移す
+# - -f（window 全体に対する分割）で、main pane が複数あっても window の左端・全高に置く。
+#   既存の pane layout は左を詰める形になるだけで組み替えない
+# - -d で、フォーカスは main pane に残す（C-t c 直後にそのままシェルへ入力できる）
+# - 幅は tmux option @agent_sidebar_width（既定 32）
+
+set -euo pipefail
+
+DEFAULT_WIDTH=32
+
+window_id="${1:-}"
+[ -z "$window_id" ] && window_id=$(tmux display-message -p '#{window_id}')
+
+# sidebar は pane option @agent_sidebar=1 で識別する（プロセス名には依存しない）
+existing=$(tmux list-panes -t "$window_id" -F '#{@agent_sidebar}|#{pane_id}' | awk -F'|' '$1 == "1" { print $2; exit }')
+if [ -n "$existing" ]; then
+  tmux select-pane -t "$existing"
+  exit 0
+fi
+
+width=$(tmux show-option -gqv @agent_sidebar_width)
+case "$width" in
+  '' | *[!0-9]*) width=$DEFAULT_WIDTH ;;
+esac
+
+sidebar_cmd="$(cd "$(dirname "$0")" && pwd)/tmux-agent-sidebar"
+
+new_pane=$(tmux split-window -hbfd -t "$window_id" -l "$width" -P -F '#{pane_id}' "'$sidebar_cmd'")
+# sidebar プロセスが自分でも付けるが、起動直後の二重生成判定のすき間を無くすためここでも付ける
+tmux set-option -p -t "$new_pane" @agent_sidebar 1

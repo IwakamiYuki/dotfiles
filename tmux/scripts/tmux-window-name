@@ -18,10 +18,12 @@ if [ -z "$window_id" ]; then
 fi
 
 # ウィンドウ内の全ペインのカレントディレクトリを取得
+# (Agent Sidebar pane は共通パスの計算から除外する)
 paths=()
-while IFS= read -r p; do
+while IFS='|' read -r is_sidebar p; do
+  [ "$is_sidebar" = "1" ] && continue
   [ -n "$p" ] && paths+=("$p")
-done < <(tmux list-panes -t "$window_id" -F '#{pane_current_path}' 2>/dev/null)
+done < <(tmux list-panes -t "$window_id" -F '#{@agent_sidebar}|#{pane_current_path}' 2>/dev/null)
 
 if [ ${#paths[@]} -eq 0 ]; then
   exit 0

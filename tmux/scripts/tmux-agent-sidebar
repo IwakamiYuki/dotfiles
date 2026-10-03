@@ -1,0 +1,906 @@
+#!/bin/bash
+
+# tmux-agent-sidebar: 各 window の左側に置く「普通の pane」で動かす軽量な Agent 一覧表示。
+# tmux session 内で動いている Claude Code / Codex を検出して状態を表示する。
+# 起動は tmux-agent-sidebar-open 経由（C-t b / C-t c）。Ctrl-C で終了すると pane ごと閉じる。
+#
+# 操作（sidebar にフォーカスがあるとき）:
+#   j / k / ↓ / ↑ / ホイール : 選択を移動   Enter : 選択した Agent の window・pane へジャンプ
+#   マウスクリック           : クリックした Agent の window・pane へジャンプ   r : 即時更新
+#
+# 検出方法:
+#   Claude : `claude agents --json`（pid / status / cwd）。pid の祖先をたどって pane に紐付ける。
+#            未読の完了(done)は tmux-claude-agents-status が書く状態ファイルを参照する。
+#   Codex  : ps の引数（codex 本体、または node 経由の codex スクリプト）で検出し、祖先の pane に紐付ける。
+#            状態を確実に判定する手段が無いため status は常に unknown（推測しない）。
+#
+# 下部に Claude Code の 5h / 1w レートリミット使用率（tmux-rate-limits と同じ /tmp/claude-rate-limits.json）を出す。
+# 表示する情報: window ごとの見出し / project（cwd 末尾）と種別 / 会話タイトル / 親ディレクトリ・git ブランチ / 状態と継続時間
+#   タイトル : /tmp/claude-title-<sessionId>.txt（statusline 機構が書き出す）
+#   継続時間 : ~/.claude/sessions/<pid>.json の statusUpdatedAt
+#   ブランチ : cwd で git を呼ぶ（GIT_TTL 秒キャッシュ）
+#
+# 内部モデル（collect が出力する 1 行 1 Agent）:
+#   R|session|window_idx|window_name|pane_idx|type|pane_id|active|project|status|detail|elapsed_sec|title|cwd
+# 検出(collect)と表示(render)は、この共通レコードだけを介して分離している。
+#
+# macOS 標準の bash 3.2 で動く書き方にしている（連想配列・${var,,} 等は使わない）。
+
+set -u
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# 文字数ベースの切り詰め（${s:i:1}）を UTF-8 で正しく動かす。
+# LC_COLLATE=C にしないと、case の範囲指定 [ -~] が照合順序で解釈されて ASCII 文字まで範囲外になる
+unset LC_ALL
+export LC_CTYPE=en_US.UTF-8 LC_COLLATE=C
+
+INTERVAL="${AGENT_SIDEBAR_INTERVAL:-2}"
+CLAUDE_BIN="${AGENT_SIDEBAR_CLAUDE_BIN:-claude}"
+CLAUDE_CACHE_TTL=3
+# 形式を変えたので旧版(-claude.txt)とは別名にしている（旧版の sidebar が書く古い形式と混ざらないように）
+CLAUDE_CACHE_FILE="${AGENT_SIDEBAR_CLAUDE_CACHE:-/tmp/tmux-agent-sidebar-claude2.txt}"
+SESSIONS_DIR="${AGENT_SIDEBAR_SESSIONS_DIR:-$HOME/.claude/sessions}"
+# statusline.sh が書き出す 5h/1w の使用率とリセット時刻（tmux-rate-limits も同じファイルを読む）
+RATE_LIMIT_FILE="${AGENT_SIDEBAR_RATE_LIMITS:-/tmp/claude-rate-limits.json}"
+GIT_TTL=10
+# tmux-claude-agents-status が書く "ppid:status:alerting" の状態ファイル（未読の完了判定に使う）
+ALERT_STATE_FILE="/tmp/tmux-claude-agents-state"
+
+ESC=$'\033'
+C_RESET="${ESC}[0m"
+C_BOLD="${ESC}[1m"
+C_TITLE="${ESC}[1;38;5;208m"
+C_DIM="${ESC}[38;5;245m"
+C_WORKING="${ESC}[38;5;226m"
+C_WAITING="${ESC}[38;5;196m"
+C_DONE="${ESC}[38;5;46m"
+C_IDLE="${ESC}[38;5;216m"
+C_UNKNOWN="${ESC}[38;5;245m"
+C_ACTIVE="${ESC}[38;5;208m"
+C_TITLE_ROW="${ESC}[38;5;252m"
+C_GROUP="${ESC}[38;5;173m"
+FG_DEFAULT="${ESC}[39m"
+BOLD_ON="${ESC}[1m"
+BOLD_OFF="${ESC}[22m"
+# Agent を「カード」に見せるための背景色（通常 / 選択中）。window-style の bg=colour233 より一段明るくする
+CARD_BG="${ESC}[48;5;236m"
+CARD_BG_ACTIVE="${ESC}[48;5;238m"
+CARD_BG_SELECTED="${ESC}[48;5;240m"
+C_RULE="${ESC}[38;5;239m"
+
+# 状態ピルの配色（背景色 / 文字色）。status ごとに case で選ぶ
+SPINNER=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+
+# アイコン。Nerd Font 前提の既定(nerd)と、フォントを選ばない plain を @agent_sidebar_icons で切り替える。
+# ICON_W は「アイコン + 空白」の表示幅
+ICON_STYLE=nerd
+ICON_BRANCH=""
+ICON_DIR=""
+ICON_W=0
+apply_icon_style() {
+  if [ "$ICON_STYLE" = plain ]; then
+    ICON_BRANCH=""
+    ICON_DIR=""
+    ICON_W=0
+  else
+    ICON_BRANCH=$'\xee\x82\xa0 '  # U+E0A0 (git branch)
+    ICON_DIR=$'\xef\x81\xbb '     # U+F07B (folder)
+    ICON_W=2
+  fi
+}
+apply_icon_style
+
+HEADER_ROWS=3
+# 親ディレクトリ表示の最大文字数（これを超えると先頭を "…" で省く）
+PARENT_DIR_MAX=14
+
+if [ -z "${TMUX_PANE:-}" ]; then
+  echo "tmux-agent-sidebar: tmux の pane 内で実行してください" >&2
+  exit 1
+fi
+
+TIMEOUT_CMD=""
+command -v gtimeout >/dev/null 2>&1 && TIMEOUT_CMD="gtimeout 5"
+
+cleanup() {
+  printf '%s' "${ESC}[?1006l${ESC}[?1000l${ESC}[?25h${ESC}[?1049l"
+  stty echo 2>/dev/null
+}
+
+# --- 検出 ---------------------------------------------------------------
+
+# `claude agents --json` は約 0.2 秒かかるため、複数 window の sidebar で共有するキャッシュを使う。
+# 失敗（空応答）時は直前のキャッシュを残す。
+refresh_claude_cache() {
+  local now mtime json lines updates tmp
+  now=$(date +%s)
+  mtime=$(stat -f %m "$CLAUDE_CACHE_FILE" 2>/dev/null || echo 0)
+  [ $((now - mtime)) -lt "$CLAUDE_CACHE_TTL" ] && return 0
+
+  json=$($TIMEOUT_CMD "$CLAUDE_BIN" agents --json 2>/dev/null) || json=""
+  if [ -z "$json" ]; then
+    touch "$CLAUDE_CACHE_FILE" 2>/dev/null
+    return 0
+  fi
+  # C|pid|status|waitingFor|cwd|name|sessionId
+  lines=$(printf '%s' "$json" | jq -r '
+    .[] | ["C", .pid, .status, (.waitingFor // ""), (.cwd // ""), (.name // ""), (.sessionId // "")]
+        | map(tostring | gsub("[|\\n\\t]"; " ")) | join("|")' 2>/dev/null) || return 0
+  # U|pid|statusUpdatedAt(ms) : 全セッションぶんを jq 1 回で読む
+  updates=$(jq -r 'select(.statusUpdatedAt != null) | "U|\(.pid)|\(.statusUpdatedAt)"' "$SESSIONS_DIR"/*.json 2>/dev/null)
+  tmp="${CLAUDE_CACHE_FILE}.$$"
+  printf '%s\n%s\n' "$lines" "$updates" > "$tmp" && mv "$tmp" "$CLAUDE_CACHE_FILE"
+}
+
+read -r -d '' AWK_COLLECT <<'EOF' || true
+function base(p,   n, a) { n = split(p, a, "/"); return a[n] }
+
+# 会話タイトルのキャッシュ（statusline 機構が書く）を読む。未設定の既定タイトルは出さない
+function title_of(sid,   f, t) {
+  if (sid == "") return ""
+  f = "/tmp/claude-title-" sid ".txt"
+  t = ""
+  if ((getline t < f) <= 0) t = ""
+  close(f)
+  gsub(/[|	]/, " ", t)
+  return (t == "新しい会話") ? "" : t
+}
+
+# pid から祖先をたどり、最初に見つかった pane_pid の pane 番号を返す
+function pane_of(pid,   i) {
+  for (i = 0; i < 64 && pid != "" && pid != 0 && pid != 1; i++) {
+    if (pid in pane_by_pid) return pane_by_pid[pid]
+    pid = ppid[pid]
+  }
+  return ""
+}
+
+function add(pi, type, project, status, detail, elapsed, title, cwd,   active) {
+  active = (p_win_active[pi] == 1 && p_active[pi] == 1 && p_sess[pi] == cur_sess) ? 1 : 0
+  n++
+  rec[n] = "R|" p_sess[pi] "|" p_win[pi] "|" p_wname[pi] "|" p_pane[pi] "|" type "|" p_id[pi] "|" active "|" project "|" status "|" detail "|" elapsed "|" title "|" cwd
+  skey[n] = p_sess[pi]
+  nkey[n] = p_win[pi] * 100000 + p_pane[pi]
+}
+
+{
+  tag = substr($0, 1, 1)
+  rest = substr($0, 3)
+}
+
+# P|session|window_id|window_idx|pane_idx|pane_id|pane_pid|sidebar|win_active|pane_active|window_name|path
+tag == "P" {
+  split(rest, f, "|")
+  np++
+  p_sess[np] = f[1]; p_wid[np] = f[2]; p_win[np] = f[3]; p_pane[np] = f[4]
+  p_id[np] = f[5]; p_sidebar[np] = f[7]; p_win_active[np] = f[8]; p_active[np] = f[9]; p_wname[np] = f[10]
+  p_path[np] = rest
+  sub(/^([^|]*\|){10}/, "", p_path[np])
+  if (f[5] == self) { cur_sess = f[1]; self_wid = f[2]; self_focus = (f[8] == 1 && f[9] == 1) ? 1 : 0 }
+  # sidebar pane 自身（と他の sidebar）は Agent 検出の対象から外す
+  if (f[7] != 1) pane_by_pid[f[6]] = np
+}
+
+# S|pid ppid args...
+tag == "S" {
+  split(rest, g, " ")
+  ppid[g[1]] = g[2]
+  arg1[g[1]] = g[3]
+  arg2[g[1]] = g[4]
+}
+
+# C|pid|status|waitingFor|cwd|name|sessionId  （claude agents --json のキャッシュ）
+tag == "C" {
+  nc++
+  split(rest, f, "|")
+  c_pid[nc] = f[1]; c_status[nc] = f[2]; c_wait[nc] = f[3]; c_cwd[nc] = f[4]; c_name[nc] = f[5]; c_sid[nc] = f[6]
+}
+
+# U|pid|statusUpdatedAt(ms)
+tag == "U" {
+  split(rest, f, "|")
+  updated_ms[f[1]] = f[2]
+}
+
+# A|ppid:status:alerting
+tag == "A" {
+  split(rest, f, ":")
+  alerting[f[1]] = f[3]
+}
+
+END {
+  # sidebar と同じ window に、sidebar 以外の pane が残っているか（0 なら呼び出し側が終了する）
+  main_panes = -1
+  if (self_wid != "") {
+    main_panes = 0
+    for (i = 1; i <= np; i++) if (p_wid[i] == self_wid && p_sidebar[i] != 1) main_panes++
+  }
+  # sidebar 自身が操作対象（active な window の active な pane）かどうかも渡す
+  print "M|" main_panes "|" self_focus
+
+  # --- Claude ---
+  for (i = 1; i <= nc; i++) {
+    pi = pane_of(c_pid[i])
+    if (pi == "") continue
+    st = c_status[i]
+    if (st == "busy") status = "working"
+    else if (st == "waiting") status = "waiting"
+    else if (st == "idle") status = (alerting[ppid[c_pid[i]]] == 1) ? "done" : "idle"
+    else status = "unknown"
+    cwd = c_cwd[i]; if (cwd == "") cwd = p_path[pi]
+    project = base(cwd)
+    # 経過秒だけ渡し、表示用の整形は bash 側で行う
+    elapsed = (c_pid[i] in updated_ms) ? now - int(updated_ms[c_pid[i]] / 1000) : ""
+    if (elapsed != "" && elapsed < 0) elapsed = 0
+    add(pi, "Claude", project, status, c_wait[i], elapsed, title_of(c_sid[i]), cwd)
+  }
+
+  # --- Codex（status は判定手段が無いため unknown 固定） ---
+  for (pid in ppid) {
+    a1 = base(arg1[pid]); a2 = base(arg2[pid])
+    if (!(a1 == "codex" || (a1 ~ /^node/ && a2 == "codex"))) continue
+    pi = pane_of(pid)
+    if (pi == "" || codex_seen[pi]) continue
+    codex_seen[pi] = 1
+    project = base(p_path[pi])
+    add(pi, "Codex", project, "unknown", "", "", "", p_path[pi])
+  }
+
+  # session → window → pane の順に並べる（件数が少ないので単純な挿入ソート）
+  for (i = 2; i <= n; i++) {
+    r = rec[i]; s = skey[i]; k = nkey[i]
+    for (j = i - 1; j >= 1 && (skey[j] > s || (skey[j] == s && nkey[j] > k)); j--) {
+      rec[j + 1] = rec[j]; skey[j + 1] = skey[j]; nkey[j + 1] = nkey[j]
+    }
+    rec[j + 1] = r; skey[j + 1] = s; nkey[j + 1] = k
+  }
+  for (i = 1; i <= n; i++) print rec[i]
+}
+EOF
+
+# 現在の session（または全 session）の Agent 一覧を共通レコードで標準出力へ出す
+collect() {
+  local list_args
+  if [ "$SCOPE_ALL" = 1 ]; then
+    list_args=(-a)
+  else
+    list_args=(-s -t "$SESSION_ID")
+  fi
+
+  refresh_claude_cache
+  {
+    tmux list-panes "${list_args[@]}" -F \
+      '#{session_name}|#{window_id}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{@agent_sidebar}|#{window_active}|#{pane_active}|#{window_name}|#{pane_current_path}' 2>/dev/null |
+      awk '{ print "P|" $0 }'
+    ps -axo pid=,ppid=,args= | awk '{ print "S|" $0 }'
+    cat "$CLAUDE_CACHE_FILE" 2>/dev/null
+    awk '{ print "A|" $0 }' "$ALERT_STATE_FILE" 2>/dev/null
+  } | awk -v self="$TMUX_PANE" -v now="$(date +%s)" "$AWK_COLLECT"
+}
+
+# --- 表示 ---------------------------------------------------------------
+
+# REPLY に、表示幅 $2 以内へ切り詰めた $1 を入れる（ASCII 以外は全角 2 幅として数える）
+trunc() {
+  local s=$1 max=$2 out="" w=0 i c cw
+  for ((i = 0; i < ${#s}; i++)); do
+    c=${s:i:1}
+    case $c in
+      [\ -~] | · | ─) cw=1 ;;
+      *) cw=2 ;;
+    esac
+    ((w + cw > max)) && break
+    out+=$c
+    w=$((w + cw))
+  done
+  REPLY=$out
+  TRUNC_W=$w
+}
+
+frame=""
+row=0
+# いま描画中の Agent の添字（Agent 以外の行は空）と、画面の行 → Agent 添字の対応（クリック判定用）
+CUR_IDX=""
+ROW_AGENT=()
+# 現在描画中のカードの背景色
+CARD_BG_NOW=""
+
+# put <色> <テキスト> : 1 行ぶんを画面バッファに積む（幅超過は切り詰め、画面高さ超過は捨てる）
+put() {
+  ((row >= height)) && return 0
+  row=$((row + 1))
+  ROW_AGENT[row]=$CUR_IDX
+  trunc "$2" $((width - 1))
+  frame+="${ESC}[${row};1H${1}${REPLY}${ESC}[K${C_RESET}"
+}
+
+# 経過秒 → "45s" / "3m" / "2h5m" / "1d3h"。REPLY に入れる（空なら空）
+fmt_elapsed() {
+  local sec=$1
+  REPLY=""
+  [ -z "$sec" ] && return 0
+  if ((sec < 60)); then
+    REPLY="${sec}s"
+  elif ((sec < 3600)); then
+    REPLY="$((sec / 60))m"
+  elif ((sec < 86400)); then
+    REPLY="$((sec / 3600))h$((sec % 3600 / 60))m"
+  else
+    REPLY="$((sec / 86400))d$((sec % 86400 / 3600))h"
+  fi
+}
+
+# 親ディレクトリを ~ 短縮し、長ければ末尾側を残して "…" で省く。REPLY に入れる
+fmt_parent_dir() {
+  local dir=${1%/*}
+  [ -z "$dir" ] && dir=/
+  case $dir in
+    "$HOME") dir="~" ;;
+    "$HOME"/*) dir="~${dir#"$HOME"}" ;;
+  esac
+  ((${#dir} > PARENT_DIR_MAX)) && dir="…${dir: -$((PARENT_DIR_MAX - 1))}"
+  REPLY=$dir
+}
+
+# cwd の git ブランチ（detached HEAD なら短縮 SHA）。GIT_TTL 秒キャッシュして REPLY に入れる
+GIT_CACHE_DIR=()
+GIT_CACHE_AT=()
+GIT_CACHE_VAL=()
+git_branch_of() {
+  local dir=$1 i n=${#GIT_CACHE_DIR[@]} br
+  REPLY=""
+  [ -z "$dir" ] && return 0
+  for ((i = 0; i < n; i++)); do
+    if [ "${GIT_CACHE_DIR[i]}" = "$dir" ]; then
+      if ((SECONDS - GIT_CACHE_AT[i] < GIT_TTL)); then
+        REPLY=${GIT_CACHE_VAL[i]}
+        return 0
+      fi
+      break
+    fi
+  done
+  # 存在しない dir（削除済みリポジトリなど）や git 管理外では空になるだけ
+  br=$(git -C "$dir" branch --show-current 2>/dev/null)
+  [ -z "$br" ] && br=$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)
+  GIT_CACHE_DIR[i]=$dir
+  GIT_CACHE_AT[i]=$SECONDS
+  GIT_CACHE_VAL[i]=$br
+  REPLY=$br
+}
+
+# window の見出し行（"── 6 dotfiles ────"）。scope=all のときは session 名も添える
+put_group_header() {
+  local i=$1 text=" ${AG_WIN[i]} ${AG_WNAME[i]} " fill
+  [ "$SCOPE_ALL" = 1 ] && text=" ${AG_SESS[i]}:${AG_WIN[i]} ${AG_WNAME[i]} "
+  ((row >= height)) && return 0
+  row=$((row + 1))
+  ROW_AGENT[row]=""
+  trunc "$text" $((width - 6))
+  printf -v fill '%*s' $((width - 1 - 2 - TRUNC_W)) ''
+  frame+="${ESC}[${row};1H${C_RULE}──${C_GROUP}${BOLD_ON}${REPLY}${BOLD_OFF}${C_RULE}${fill// /─}${ESC}[K${C_RESET}"
+}
+
+# カードの 1 行を積む。$1=バー文字 $2=バー色 $3=中身(ANSI 付き。表示幅は width-3 以内に収めておく)
+card_row() {
+  ((row >= height)) && return 0
+  row=$((row + 1))
+  ROW_AGENT[row]=$CUR_IDX
+  frame+="${ESC}[${row};1H${CARD_BG_NOW}${2}${1}${FG_DEFAULT} ${3}${ESC}[K${C_RESET}"
+}
+
+put_agent() {
+  local i=$1
+  local status=${AG_STATUS[i]} type=${AG_TYPE[i]} detail=${AG_DETAIL[i]} elapsed=${AG_ELAPSED[i]}
+  local inner=$((width - 3)) color pill_bg pill_fg label bar="▎" name_on=""
+  local line pad dw rest bw
+
+  case $status in
+    # 状態は左端のバーの色と状態ピルで示す。スピナーだけは working のピルの中で回す
+    working) color=$C_WORKING; pill_bg=220; pill_fg=232; label="${SPINNER[SECONDS % ${#SPINNER[@]}]} WORKING" ;;
+    waiting) color=$C_WAITING; pill_bg=196; pill_fg=255; label="WAITING" ;;
+    done) color=$C_DONE; pill_bg=41; pill_fg=232; label="DONE" ;;
+    idle) color=$C_IDLE; pill_bg=137; pill_fg=232; label="IDLE" ;;
+    *) color=$C_UNKNOWN; pill_bg=240; pill_fg=252; label="UNKNOWN" ;;
+  esac
+  # いま見ている pane の Agent は、太いバー・オレンジの太字・一段明るい背景で他と区別する
+  [ "${AG_ACT[i]}" = 1 ] && { bar="█"; name_on="${BOLD_ON}${C_ACTIVE}"; }
+
+  CUR_IDX=$i
+  CARD_BG_NOW=$CARD_BG
+  [ "${AG_ACT[i]}" = 1 ] && CARD_BG_NOW=$CARD_BG_ACTIVE
+  [ "$FOCUSED" = 1 ] && [ "$i" = "$SEL_IDX" ] && CARD_BG_NOW=$CARD_BG_SELECTED
+
+  # 1 行目: project ……… 種別(右寄せ)
+  trunc "${AG_PROJ[i]}" $((inner - ${#type} - 1))
+  printf -v pad '%*s' $((inner - TRUNC_W - ${#type})) ''
+  card_row "$bar" "$color" "${name_on}${REPLY}${BOLD_OFF}${pad}${C_DIM}${type}${FG_DEFAULT}"
+
+  # 会話タイトル（あれば）
+  if [ -n "${AG_TITLE[i]}" ]; then
+    trunc "${AG_TITLE[i]}" "$inner"
+    card_row "$bar" "$color" "${C_TITLE_ROW}${REPLY}${FG_DEFAULT}"
+  fi
+
+  # ブランチ + 親ディレクトリ。入りきらなければディレクトリを落とす
+  line=""
+  rest=$inner
+  if [ -n "${AG_BRANCH[i]}" ]; then
+    trunc "${AG_BRANCH[i]}" $((rest - ICON_W))
+    bw=$((ICON_W + TRUNC_W))
+    line="${C_DIM}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
+    rest=$((rest - bw))
+    if ((rest >= ICON_W + 6)); then
+      trunc "${AG_DIR[i]}" $((rest - 2 - ICON_W))
+      line+="  ${C_RULE}${ICON_DIR}${REPLY}${FG_DEFAULT}"
+    fi
+  else
+    trunc "${AG_DIR[i]}" $((rest - ICON_W))
+    line="${C_RULE}${ICON_DIR}${REPLY}${FG_DEFAULT}"
+  fi
+  card_row "$bar" "$color" "${line}"
+
+  # 状態ピル + 待機理由 ……… 継続時間(右寄せ)
+  local pillw=$((${#label} + 2)) elw=${#elapsed} detail_part="" avail
+  avail=$((inner - pillw - 1))
+  ((elw > 0)) && avail=$((avail - elw - 1))
+  dw=0
+  if [ -n "$detail" ] && ((avail >= 4)); then
+    trunc "$detail" "$avail"
+    dw=$((TRUNC_W + 1))
+    detail_part=" ${C_DIM}${REPLY}${FG_DEFAULT}"
+  fi
+  printf -v pad '%*s' $((inner - pillw - dw - elw)) ''
+  card_row "$bar" "$color" "${ESC}[48;5;${pill_bg};38;5;${pill_fg};1m ${label} ${BOLD_OFF}${FG_DEFAULT}${CARD_BG_NOW}${detail_part}${pad}${C_DIM}${elapsed}${FG_DEFAULT}"
+
+  CUR_IDX=""
+}
+
+# --- レートリミット(下部の USAGE 欄) -------------------------------------
+
+LIM_5H_PCT=""
+LIM_5H_RESET=""
+LIM_1W_PCT=""
+LIM_1W_RESET=""
+# 下部欄を出すのに必要な最小の端末高さ(これ未満では Agent 一覧を優先して出さない)
+FOOTER_MIN_TERM_H=14
+
+# json_field <json> <key> : 単純な "key": value を REPLY に入れる(null は空)。fork せず正規表現で読む
+json_field() {
+  local re="\"$2\"[[:space:]]*:[[:space:]]*\"?([^\",}[:space:]]+)"
+  REPLY=""
+  [[ $1 =~ $re ]] && REPLY=${BASH_REMATCH[1]}
+  [ "$REPLY" = null ] && REPLY=""
+  return 0
+}
+
+# リセット時刻(epoch 秒 または ISO 8601 UTC)を "2h30m" / "5d12h" / "now" 形式の残り時間にして REPLY に入れる
+fmt_reset_in() {
+  local at=$1 epoch="" clean diff
+  REPLY=""
+  [ -z "$at" ] && return 0
+  if [[ $at =~ ^[0-9]+$ ]]; then
+    epoch=$at
+  else
+    clean="${at%%.*}"
+    clean="${clean%Z}"
+    epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$clean" "+%s" 2>/dev/null)
+  fi
+  [ -z "$epoch" ] && return 0
+  diff=$((epoch - $(date +%s)))
+  if ((diff <= 0)); then
+    REPLY="now"
+  elif ((diff >= 86400)); then
+    REPLY="$((diff / 86400))d$((diff % 86400 / 3600))h"
+  elif ((diff >= 3600)); then
+    REPLY="$((diff / 3600))h$((diff % 3600 / 60))m"
+  else
+    REPLY="$((diff / 60))m"
+  fi
+}
+
+read_limits() {
+  local json
+  LIM_5H_PCT=""; LIM_5H_RESET=""; LIM_1W_PCT=""; LIM_1W_RESET=""
+  [ -r "$RATE_LIMIT_FILE" ] || return 0
+  json=$(<"$RATE_LIMIT_FILE") || return 0
+
+  json_field "$json" five_hour_pct
+  [ -z "$REPLY" ] && return 0
+  printf -v LIM_5H_PCT '%.0f' "$REPLY" 2>/dev/null || LIM_5H_PCT=0
+  json_field "$json" five_hour_resets
+  fmt_reset_in "$REPLY"
+  LIM_5H_RESET=$REPLY
+
+  json_field "$json" seven_day_pct
+  if [ -n "$REPLY" ]; then
+    printf -v LIM_1W_PCT '%.0f' "$REPLY" 2>/dev/null || LIM_1W_PCT=0
+    json_field "$json" seven_day_resets
+    fmt_reset_in "$REPLY"
+    LIM_1W_RESET=$REPLY
+  fi
+}
+
+# 使用率に応じた色(tmux-rate-limits と同じ段階: 低=橙系 → 80% 以上は赤)を REPLY に入れる
+limit_color() {
+  local pct=$1
+  if ((pct < 30)); then REPLY="${ESC}[38;5;214m"
+  elif ((pct < 60)); then REPLY="${ESC}[38;5;220m"
+  elif ((pct < 80)); then REPLY="${ESC}[38;5;226m"
+  else REPLY="${ESC}[38;5;196m"; fi
+}
+
+# limit_row <行番号> <ラベル> <使用率> <リセットまで>: "5h ████░░░░  23%  2h30m" を FOOTER_FRAME に積む
+limit_row() {
+  local at=$1 label=$2 pct=$3 reset=$4 bw filled filled_str empty_str rs="" color pct_str
+  [ -n "$reset" ] && rs="  $reset"
+  # 行の構成: 空白1 + ラベル2 + 空白1 + バー + 空白1 + 使用率4桁 + リセット + 右余白1。
+  # バー幅は 5h / 1w で揃えるため、長い方のリセット表記(FOOTER_RLEN)に合わせる
+  bw=$((width - 10 - FOOTER_RLEN))
+  if ((bw < 4)); then
+    rs=""
+    bw=$((width - 10))
+  fi
+  ((bw > 14)) && bw=14
+  ((bw < 3)) && bw=3
+  ((pct > 100)) && pct=100
+  filled=$((pct * bw / 100))
+  ((pct > 0 && filled == 0)) && filled=1
+  printf -v filled_str '%*s' "$filled" ''
+  printf -v empty_str '%*s' $((bw - filled)) ''
+  limit_color "$pct"
+  color=$REPLY
+  printf -v pct_str '%3d%%' "$pct"
+  FOOTER_FRAME+="${ESC}[${at};1H ${C_DIM}${label}${FG_DEFAULT} ${color}${filled_str// /█}${C_RULE}${empty_str// /░}${FG_DEFAULT} ${color}${pct_str}${C_DIM}${rs}${FG_DEFAULT}${ESC}[K${C_RESET}"
+}
+
+# 下部欄を組み立てる。FOOTER_FRAME に描画文字列、footer_rows に使う行数を入れる
+build_footer() {
+  local top fill
+  FOOTER_FRAME=""
+  footer_rows=0
+  [ -z "$LIM_5H_PCT" ] && return 0
+  ((term_h < FOOTER_MIN_TERM_H)) && return 0
+
+  footer_rows=2
+  [ -n "$LIM_1W_PCT" ] && footer_rows=3
+  FOOTER_RLEN=0
+  [ -n "$LIM_5H_RESET" ] && FOOTER_RLEN=$((2 + ${#LIM_5H_RESET}))
+  [ -n "$LIM_1W_PCT" ] && [ -n "$LIM_1W_RESET" ] && ((2 + ${#LIM_1W_RESET} > FOOTER_RLEN)) && FOOTER_RLEN=$((2 + ${#LIM_1W_RESET}))
+  top=$((term_h - footer_rows + 1))
+
+  printf -v fill '%*s' $((width - 1 - 2 - 7)) ''
+  FOOTER_FRAME+="${ESC}[${top};1H${C_RULE}──${C_GROUP}${BOLD_ON} USAGE ${BOLD_OFF}${C_RULE}${fill// /─}${ESC}[K${C_RESET}"
+  limit_row $((top + 1)) 5h "$LIM_5H_PCT" "$LIM_5H_RESET"
+  [ -n "$LIM_1W_PCT" ] && limit_row $((top + 2)) 1w "$LIM_1W_PCT" "$LIM_1W_RESET"
+}
+
+# FIT に「top 番目から表示できる Agent 数」を入れる。
+# 先頭の Agent の前には window 見出し 1 行、同じ window の次の Agent との間は空行 1 行、
+# 別 window の Agent との間は「空行 + 見出し」の 2 行が入る。
+# 全件が収まらない（または先頭を省いている）ときは「+N more」の 1 行ぶんを空けて数え直す
+compute_fit() {
+  local top=$1 avail pass i used n need
+  for pass in 1 2; do
+    avail=$((height - HEADER_ROWS))
+    ((pass == 2)) && avail=$((avail - 1))
+    used=0
+    n=0
+    for ((i = top; i < AG_N; i++)); do
+      need=${AG_ROWS[i]}
+      if ((n == 0)); then
+        need=$((need + 1))
+      elif [ "${AG_WKEY[i]}" = "${AG_WKEY[i - 1]}" ]; then
+        need=$((need + 1))
+      else
+        need=$((need + 2))
+      fi
+      ((used + need > avail)) && break
+      used=$((used + need))
+      n=$((n + 1))
+    done
+    ((pass == 1 && top == 0 && n == AG_N)) && break
+  done
+  ((n < 1)) && n=1
+  FIT=$n
+}
+
+# 先頭行: 「▎AGENTS ……… 状態別の件数」
+put_title_row() {
+  local summary="" sumw=0 pad
+  ((N_WORK > 0)) && { summary+="${C_WORKING}▎${FG_DEFAULT}${N_WORK} "; sumw=$((sumw + 2 + ${#N_WORK})); }
+  ((N_WAIT > 0)) && { summary+="${C_WAITING}▎${FG_DEFAULT}${N_WAIT} "; sumw=$((sumw + 2 + ${#N_WAIT})); }
+  ((N_DONE > 0)) && { summary+="${C_DONE}▎${FG_DEFAULT}${N_DONE} "; sumw=$((sumw + 2 + ${#N_DONE})); }
+  ((row >= height)) && return 0
+  row=$((row + 1))
+  ROW_AGENT[row]=""
+  # 左側は「▎AGENTS 」の 8 桁 + 件数の桁数
+  printf -v pad '%*s' $((width - 1 - 8 - ${#AG_N} - sumw)) ''
+  frame+="${ESC}[${row};1H${C_ACTIVE}▎${C_TITLE}AGENTS ${C_DIM}${AG_N}${FG_DEFAULT}${pad}${summary}${ESC}[K${C_RESET}"
+}
+
+render() {
+  local shown=0 i rule
+
+  # term_h = 端末の全高。height = Agent 一覧に使える高さ(下部の USAGE 欄を除く)
+  if ((size_dirty)); then
+    read -r term_h width < <(stty size 2>/dev/null)
+    term_h=${term_h:-24}
+    width=${width:-32}
+    size_dirty=0
+  fi
+  build_footer
+  height=$((term_h - footer_rows))
+
+  frame=""
+  row=0
+  ROW_AGENT=()
+
+  put_title_row
+  # BSD tr はマルチバイトを扱えないため、罫線は bash の置換で作る
+  printf -v rule '%*s' $((width - 2)) ''
+  put "$C_RULE" " ${rule// /─}"
+  put "" ""
+
+  if ((AG_N == 0)); then
+    put "$C_DIM" "  No agents running"
+  else
+    # 選択中の Agent が必ず見えるように、表示開始位置をずらす
+    ((SEL_IDX < TOP_IDX)) && TOP_IDX=$SEL_IDX
+    ((TOP_IDX >= AG_N)) && TOP_IDX=$((AG_N - 1))
+    # 画面が広がって余裕ができたら、末尾まで見える範囲で表示開始位置を先頭側へ戻す
+    while ((TOP_IDX > 0)); do
+      compute_fit $((TOP_IDX - 1))
+      ((TOP_IDX - 1 + FIT >= AG_N)) || break
+      TOP_IDX=$((TOP_IDX - 1))
+    done
+    compute_fit "$TOP_IDX"
+    while ((SEL_IDX >= TOP_IDX + FIT)); do
+      TOP_IDX=$((TOP_IDX + 1))
+      compute_fit "$TOP_IDX"
+    done
+
+    for ((i = TOP_IDX; i < AG_N && shown < FIT; i++)); do
+      if ((shown == 0)); then
+        put_group_header "$i"
+      elif [ "${AG_WKEY[i]}" = "${AG_WKEY[i - 1]}" ]; then
+        put "" ""
+      else
+        put "" ""
+        put_group_header "$i"
+      fi
+      put_agent "$i"
+      shown=$((shown + 1))
+    done
+
+    ((AG_N > shown)) && put "$C_DIM" " +$((AG_N - shown)) more"
+  fi
+
+  # 描画済み範囲より下を消してから 1 回の write で出す（ちらつき防止）
+  # （最終行まで使い切った場合に打つと、カーソルが最終行に丸められてその行を消してしまう）
+  ((row < height)) && frame+="${ESC}[$((row + 1));1H${ESC}[J"
+  # 下部欄は消去の後に描く(消去が下部欄にかからないように)
+  frame+=$FOOTER_FRAME
+  printf '%s' "$frame"
+}
+
+# --- 入力・操作 ---------------------------------------------------------------
+
+AG_N=0
+MAIN_PANES=-1
+FOCUSED=0
+SEL_IDX=0
+SEL_KEY=""
+TOP_IDX=0
+FIT=1
+N_WORK=0
+N_WAIT=0
+N_DONE=0
+size_dirty=1
+term_h=24
+footer_rows=0
+FOOTER_FRAME=""
+
+# collect の出力を AG_* 配列へ展開し、選択位置を（pane_id|type をキーに）引き継ぐ
+parse_records() {
+  local tag sess win wname pane type id act proj st det elapsed title cwd i
+  AG_N=0
+  AG_SESS=(); AG_WIN=(); AG_WNAME=(); AG_WKEY=(); AG_TYPE=(); AG_ID=(); AG_ACT=(); AG_PROJ=(); AG_STATUS=(); AG_DETAIL=()
+  AG_ELAPSED=(); AG_TITLE=(); AG_DIR=(); AG_BRANCH=(); AG_ROWS=()
+  while IFS='|' read -r tag sess win wname pane type id act proj st det elapsed title cwd; do
+    case $tag in
+      M) MAIN_PANES=$sess; FOCUSED=${win:-0} ;;
+      R)
+        AG_SESS[AG_N]=$sess; AG_WIN[AG_N]=$win; AG_WNAME[AG_N]=$wname; AG_WKEY[AG_N]="$sess:$win"; AG_TYPE[AG_N]=$type
+        AG_ID[AG_N]=$id; AG_ACT[AG_N]=$act; AG_PROJ[AG_N]=$proj; AG_STATUS[AG_N]=$st; AG_DETAIL[AG_N]=$det
+        AG_TITLE[AG_N]=$title
+        fmt_elapsed "$elapsed"; AG_ELAPSED[AG_N]=$REPLY
+        fmt_parent_dir "$cwd"; AG_DIR[AG_N]=$REPLY
+        git_branch_of "$cwd"; AG_BRANCH[AG_N]=$REPLY
+        # project / 親ディレクトリ・ブランチ / 状態 の 3 行 + タイトルがあれば 1 行
+        AG_ROWS[AG_N]=3
+        [ -n "$title" ] && AG_ROWS[AG_N]=4
+        AG_N=$((AG_N + 1))
+        ;;
+    esac
+  done <<< "$1"
+
+  N_WORK=0; N_WAIT=0; N_DONE=0
+  for ((i = 0; i < AG_N; i++)); do
+    case ${AG_STATUS[i]} in
+      working) N_WORK=$((N_WORK + 1)) ;;
+      waiting) N_WAIT=$((N_WAIT + 1)) ;;
+      done) N_DONE=$((N_DONE + 1)) ;;
+    esac
+  done
+
+  # 前回選んでいた Agent を探す。無ければ（初回など）いま見ている Agent、それも無ければ先頭
+  local found=""
+  for ((i = 0; i < AG_N; i++)); do
+    [ "${AG_ID[i]}|${AG_TYPE[i]}" = "$SEL_KEY" ] && { found=$i; break; }
+  done
+  if [ -z "$found" ]; then
+    found=0
+    for ((i = 0; i < AG_N; i++)); do
+      [ "${AG_ACT[i]}" = 1 ] && { found=$i; break; }
+    done
+  fi
+  SEL_IDX=$found
+  ((AG_N > 0)) && SEL_KEY="${AG_ID[SEL_IDX]}|${AG_TYPE[SEL_IDX]}"
+}
+
+# 選択を $1（+1 / -1）だけ動かす
+move_selection() {
+  ((AG_N == 0)) && return 0
+  local n=$((SEL_IDX + $1))
+  ((n < 0)) && n=0
+  ((n >= AG_N)) && n=$((AG_N - 1))
+  SEL_IDX=$n
+  SEL_KEY="${AG_ID[SEL_IDX]}|${AG_TYPE[SEL_IDX]}"
+}
+
+# 指定した Agent の window・pane へ移動する（別 session の Agent なら session も切り替える）
+jump_to() {
+  local i=$1 id
+  id=${AG_ID[i]:-}
+  [ -z "$id" ] && return 0
+  [ "${AG_SESS[i]}" != "$CUR_SESS" ] && tmux switch-client -t "${AG_SESS[i]}" 2>/dev/null
+  tmux select-window -t "$id" \; select-pane -t "$id" 2>/dev/null
+}
+
+# 入力を 1 件読み、KEY に up / down / enter / refresh / click / other を、
+# クリックなら CLICK_ROW に行番号を入れる。タイムアウト時は KEY が空になる
+read_key() {
+  local c seq="" params b y final
+  KEY=""
+  IFS= read -rsn1 -t "$TICK" c || return 0
+
+  case $c in
+    j) KEY=down ;;
+    k) KEY=up ;;
+    r) KEY=refresh ;;
+    "") KEY=enter ;;
+    $'\033')
+      # ESC 単体は other。CSI / SS3（矢印キー・マウス報告）は終端バイト（@-~）まで読む
+      IFS= read -rsn1 -t 1 c || { KEY=other; return 0; }
+      [ "$c" = "[" ] || [ "$c" = "O" ] || { KEY=other; return 0; }
+      while IFS= read -rsn1 -t 1 c; do
+        seq+=$c
+        case $c in [@-~]) break ;; esac
+      done
+      final=${seq: -1}
+      case $seq in
+        A) KEY=up ;;
+        B) KEY=down ;;
+        "<"*[Mm])
+          # SGR マウス報告: <ボタン;列;行 + M(押下) / m(解放)
+          params=${seq#<}
+          params=${params%[Mm]}
+          b=${params%%;*}
+          y=${params##*;}
+          if [ "$final" = "M" ]; then
+            case $b in
+              0) KEY=click; CLICK_ROW=$y ;;
+              64) KEY=up ;;
+              65) KEY=down ;;
+            esac
+          fi
+          ;;
+        *) KEY=other ;;
+      esac
+      ;;
+    *) KEY=other ;;
+  esac
+}
+
+# --- メイン ---------------------------------------------------------------
+
+SESSION_ID=$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}' 2>/dev/null) || exit 1
+CUR_SESS=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)
+
+# 自分自身を sidebar として識別させる（起動経路に依らず Agent 検出対象から外れる）
+tmux set-option -p -t "$TMUX_PANE" @agent_sidebar 1
+# 下端のボーダーには git 情報等の pane 用表示が出るため、sidebar では固定文字にする
+tmux set-option -p -t "$TMUX_PANE" pane-border-format ' agent sidebar ' 2>/dev/null
+
+# TUI では stderr が画面を壊すだけなので捨てる（調査時は環境変数で戻せる）
+[ -z "${AGENT_SIDEBAR_DEBUG:-}" ] && exec 2>/dev/null
+
+trap 'exit 0' INT TERM HUP
+trap cleanup EXIT
+resized=0
+trap 'resized=1' WINCH
+
+stty -echo 2>/dev/null
+# 代替画面 + カーソル非表示 + マウス報告（押下/ホイールを SGR 形式で受け取る）
+printf '%s' "${ESC}[?1049h${ESC}[?25l${ESC}[?1000h${ESC}[?1006h"
+
+# 入力待ちの 1 回あたりの最大待ち時間。データ更新は INTERVAL 秒ごと、キー入力・リサイズはこの間隔内に反応する
+TICK=1
+SCOPE_ALL=0
+opts=""
+last_collect=-999
+need_render=1
+KEY=""
+CLICK_ROW=0
+
+while :; do
+  if ((SECONDS - last_collect >= INTERVAL)); then
+    # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons）
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}' 2>/dev/null)
+    [ "${opts%%|*}" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
+    ICON_STYLE=${opts#*|}
+    apply_icon_style
+
+    records=$(collect)
+    # tmux が応答しない（server 終了）場合は終了する
+    [ -z "$records" ] && exit 0
+    parse_records "$records"
+    read_limits
+    # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる
+    [ "$MAIN_PANES" = "0" ] && exit 0
+
+    last_collect=$SECONDS
+    need_render=1
+  fi
+
+  if ((resized)); then
+    resized=0
+    size_dirty=1
+    need_render=1
+  fi
+
+  if ((need_render)); then
+    render
+    need_render=0
+  fi
+
+  read_key
+  # 入力が無かった tick でも、working の Agent がいればスピナーを進めるために再描画する
+  [ -z "$KEY" ] && ((N_WORK > 0)) && need_render=1
+  case $KEY in
+    down | up)
+      # 入力が届いた時点でこの pane にフォーカスがあるので、選択のハイライトを出す
+      FOCUSED=1
+      if [ "$KEY" = down ]; then move_selection 1; else move_selection -1; fi
+      need_render=1
+      ;;
+    enter)
+      jump_to "$SEL_IDX"
+      FOCUSED=0
+      last_collect=-999
+      ;;
+    click)
+      idx=${ROW_AGENT[CLICK_ROW]:-}
+      if [ -n "$idx" ]; then
+        SEL_IDX=$idx
+        SEL_KEY="${AG_ID[idx]}|${AG_TYPE[idx]}"
+        jump_to "$idx"
+        FOCUSED=0
+        last_collect=-999
+      fi
+      ;;
+    refresh)
+      last_collect=-999
+      ;;
+  esac
+done
