@@ -19,6 +19,8 @@ mkdir -p ~/.tmux/scripts
 ln -sf ~/dotfiles/tmux/scripts/tmux-pane-border ~/.tmux/scripts/tmux-pane-border
 ln -sf ~/dotfiles/tmux/scripts/tmux-window-name ~/.tmux/scripts/tmux-window-name
 ln -sf ~/dotfiles/tmux/scripts/tmux-uloop-launch ~/.tmux/scripts/tmux-uloop-launch
+ln -sf ~/dotfiles/tmux/scripts/tmux-agent-sidebar ~/.tmux/scripts/tmux-agent-sidebar
+ln -sf ~/dotfiles/tmux/scripts/tmux-agent-sidebar-open ~/.tmux/scripts/tmux-agent-sidebar-open
 mkdir -p ~/Library/Application\ Support/lazygit
 ln -sf ~/dotfiles/lazygit/config.yml ~/Library/Application\ Support/lazygit/config.yml
 mkdir -p ~/Library/Application\ Support/com.mitchellh.ghostty

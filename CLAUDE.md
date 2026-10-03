@@ -102,13 +102,49 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - 15 分ごとにセッション自動保存
 - tmux 起動時に自動復元
 - CPU/バッテリー情報をステータスバーに表示
-- Claude Code の各セッション状態を `⬤` で表示（`tmux/scripts/tmux-claude-agents-status`）
-  - 色で状態を表す（黄=busy、赤=waiting、薄橙=idle 既読、緑=idle 未読）
-  - クリックで該当ペインへジャンプ
-  - ⚠️ 記号は `⬤`（U+2B24）。`●`（U+25CF）は HackGen Console NF だと
-    半角幅に潰れて小さくなる。`⬤` もフォント指定なしだと Iosevka に
-    フォールバックして小さくなるため、`ghostty/config` の
-    `font-codepoint-map` による STIX Two Math 指定とセットで機能する
+- Claude Code の状態表示と 5h/1w レートリミットは、ステータスバーから **Agent Sidebar へ移した**（下の「Agent Sidebar」参照）
+  - ステータスバーには `tmux-claude-agents-status --state-only` だけを残している（表示は無し）。
+    sidebar の DONE（完了して未読）判定が使う状態ファイル `/tmp/tmux-claude-agents-state` を更新し続けるため。
+    これを外すと sidebar の DONE が出なくなる
+  - フォーカスで未読を消す `pane-focus-in` → `tmux-claude-agents-mark-read` も同じ状態ファイルを使う
+  - `⬤`（U+2B24）の STIX Two Math 指定（`ghostty/config`）は旧ステータスバー表示の名残で、sidebar は `⬤` を使わない
+
+### Agent Sidebar (tmux/scripts/tmux-agent-sidebar*)
+各 window の左端に置く「普通の pane」で、現在の session 内の Claude Code / Codex の状態を一覧表示する。
+daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画するだけの軽量スクリプト。
+
+**キー**:
+- `Ctrl-t c` → 新規 window を作り、左端に sidebar を追加（フォーカスは main pane）
+- `Ctrl-t b` → 現在の window に sidebar を追加。すでにあれば二重起動せず sidebar へフォーカス
+- sidebar 上で `Ctrl-C` → sidebar だけ終了して pane が閉じる。main pane は残る
+- ⚠️ `Ctrl-t a`（Claude 一覧ポップアップ）が使用済みのため、再表示キーは `b`
+- sidebar 上で `j` / `k`（`↓` / `↑`、マウスホイール）→ 選択を移動。選択中はハイライト（sidebar にフォーカスがあるときだけ表示）
+- sidebar 上で `Enter`、または Agent の行を **クリック** → その Agent の window・pane へジャンプ（`r` で即時更新）
+
+**仕組み**:
+- 識別は pane option `@agent_sidebar=1`（sidebar プロセス自身も起動時に付与）。Agent 検出対象と `tmux-window-name` の共通パス計算から除外される
+- `-f` 付き split なので、main pane が複数ある window でも window 全体の左端・全高に置かれる
+- main pane が全て閉じて sidebar だけが残った window は、sidebar が自分で終了して window ごと閉じる
+- 入力は `read -t 1` で待つ（データ更新は 2 秒ごと、キー入力・リサイズは 1 秒以内に反応）。クリックは SGR マウス報告（`ESC[?1000h` + `?1006h`）で受け取り、行→Agent の対応表で対象を決める。tmux の `mouse on` が前提
+- ジャンプは `select-window -t <pane_id>` + `select-pane -t <pane_id>`（`scope=all` で別 session の Agent なら `switch-client` も行う）
+- 設定: `@agent_sidebar_width`（既定 32）、`@agent_sidebar_scope`（`session` | `all`）、`@agent_sidebar_icons`（`nerd` | `plain`）。`.tmux.conf` に定義
+- 見た目は Orca の worktree 一覧を意識したカード表示。window ごとの見出し（`── 6 dotfiles ───`）で区切り、各 Agent は背景色を敷いた 3〜4 行のカードで、左端のバーが状態色
+  - `project ……… 種別(右寄せ)` / 会話タイトル（あれば）/ ` ブランチ   親ディレクトリ` / `[ ⠋ WORKING ] 待機理由 ……… 継続時間`。pane 番号と状態アイコン（●等）は出さない
+  - 状態は背景色付きのピル（WORKING=黄 / WAITING=赤 / DONE=緑 / IDLE=くすんだ橙 / UNKNOWN=灰）。working のピルの中でスピナーが回る（`read -t` が整数秒のため 1 秒 1 コマ）
+  - 先頭行に状態別の件数（カードのバーと同じ色の `▎1 ▎1`）。いま見ている pane の Agent は、バーが太い `█`・project 名がオレンジの太字・背景が一段明るい
+  - 下部に固定の `── USAGE ──` 欄で Claude Code の 5h / 1w レートリミット使用率（バー + % + リセットまでの残り時間。色は `tmux-rate-limits` と同じ段階で 80% 以上は赤）を表示。元データは `statusline.sh` が書く `/tmp/claude-rate-limits.json`。端末の高さが 14 未満、またはファイルが無いときは出さない
+  - アイコンは Nerd Font 前提（`@agent_sidebar_icons nerd`）。`plain` にすると記号なしになる
+  - タイトルは `/tmp/claude-title-<sessionId>.txt`、継続時間は `~/.claude/sessions/<pid>.json` の `statusUpdatedAt`、ブランチは cwd での `git branch --show-current`（10 秒キャッシュ。detached HEAD なら短縮 SHA）
+  - 行数はタイトルの有無で 3〜4 行に変わる（見出し・Agent 間の空行は別）。収まらない分は `+N more` にし、選択に追従してスクロールする
+- Claude: `claude agents --json`（約 0.2 秒）と各セッションの更新時刻を `/tmp/tmux-agent-sidebar-claude2.txt` に 3 秒キャッシュして全 sidebar で共有。pid の祖先をたどって pane に紐付ける。status は working / waiting / idle。未読の完了は `tmux-claude-agents-status` の状態ファイルを参照して done 表示
+- Codex: ps の引数（`codex` 本体、または `node .../codex`）で検出。状態を確実に判定する手段が無いため unknown 固定（推測しない）
+- 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|title|cwd`。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む
+- 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
+
+**既知の制限**:
+- tmux-resurrect で復元すると、sidebar pane は空のシェル pane になる（`C-t b` を押す前に邪魔なら閉じる）
+- 既存 window へは自動追加しない（必要な window で `C-t b`）
+- 起動中のスクリプトを書き換えると bash が壊れた読み方をするため、スクリプトを更新したら sidebar は閉じて開き直す
 
 ### Claude Code (claude/)
 **settings.json**: MCP サーバーの事前承認とフック設定
@@ -235,9 +271,11 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 │       ├── sequential-thinking/  # 段階的思考スキル
 │       └── ...            # その他スキル
 ├── tmux/scripts/          # Tmux ステータスバー用スクリプト
-│   ├── tmux-claude-agents-status  # Claude セッション状態を ⬤ で表示
-│   ├── tmux-claude-agents-jump    # ⬤ クリックで該当ペインへジャンプ
-│   ├── tmux-rate-limits   # レートリミット使用率表示
+│   ├── tmux-claude-agents-status  # sidebar の DONE 判定用の状態ファイルを更新（--state-only、表示なし）
+│   ├── tmux-claude-agents-jump    # C-t a のポップアップ一覧（選択したペインへジャンプ）
+│   ├── tmux-agent-sidebar         # window 左端に置く Agent 一覧 pane の本体
+│   ├── tmux-agent-sidebar-open    # sidebar を window 左端に追加（二重起動防止）
+│   ├── tmux-rate-limits   # レートリミット使用率表示（現在はステータスバーから外し、sidebar の USAGE 欄が代替）
 │   └── ...                # その他スクリプト
 ├── lazygit/config.yml     # Lazygit 設定
 ├── ghostty/config         # Ghostty 設定（Shift+Enter 対応）
