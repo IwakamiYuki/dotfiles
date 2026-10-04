@@ -18,6 +18,10 @@
 #   Codex  : ps の引数（codex 本体、または node 経由の codex スクリプト）で検出し、祖先の pane に紐付ける。
 #            状態を確実に判定する手段が無いため status は常に unknown（推測しない）。
 #
+# 種別(Claude / Codex)を画像で示す(@agent_sidebar_type_icon image): Kitty graphics protocol の Unicode placeholders を使う。
+#   画像データは tmux のパススルー(allow-passthrough on)で端末へ一度送って登録し、カードには「画像の置き場所を示す
+#   特殊な文字」を置く。画像が普通の文字として扱われるので、window 切り替えや再描画でも残像が出ない。
+#   パススルーが無効・アイコンが無い・設定が text のときは、従来の文字表示のまま。
 # 下部に Claude Code の 5h / 1w レートリミット使用率（tmux-rate-limits と同じ /tmp/claude-rate-limits.json）を出す。
 # 表示する情報: window ごとの見出し / project（cwd 末尾）と種別 / 会話タイトル / 親ディレクトリ・git ブランチ / 状態と継続時間
 #   タイトル : /tmp/claude-title-<sessionId>.txt（statusline 機構が書き出す）
@@ -102,6 +106,22 @@ apply_icon_style() {
   fi
 }
 apply_icon_style
+
+# 種別アイコン(画像)。ファイルは tmux/assets/agent-icons/{claude,codex}.png。symlink 経由で呼ばれても実体側の assets を探す
+script_real=$(readlink "$0" 2>/dev/null || echo "$0")
+TYPE_ICON_DIR="${AGENT_SIDEBAR_ICON_DIR:-$(cd "$(dirname "$script_real")/../assets/agent-icons" 2>/dev/null && pwd)}"
+# 端末側の画像 ID(placeholder の前景色 = 256 色の番号で ID を表すので 1〜255)。他アプリと衝突しにくい大きめの値にする
+KITTY_ID_CLAUDE=250
+KITTY_ID_CODEX=251
+KITTY_B64_CLAUDE=""
+KITTY_B64_CODEX=""
+TYPE_ICON_MODE=text      # text | image(画像で表示できる条件が揃っているときだけ image)
+KITTY_SENT_AT=-999
+KITTY_RESEND_SEC=10      # 端末の再接続などで登録が消えても戻るよう、定期的に送り直す
+# Unicode placeholder: U+10EEEE + 行の結合文字 + 列の結合文字(U+0305=0, U+030D=1)。2 桁 × 1 行の画像
+KITTY_PH=$'\xf4\x8e\xbb\xae'
+KITTY_D0=$'\xcc\x85'
+KITTY_D1=$'\xcc\x8d'
 
 HEADER_ROWS=3
 # 親ディレクトリ表示の最大文字数（これを超えると先頭を "…" で省く）
@@ -294,6 +314,47 @@ collect() {
 }
 
 # --- 表示 ---------------------------------------------------------------
+
+# PNG を base64 にして KITTY_B64_* に読み込む(起動時に 1 回)。無ければ空のまま
+load_type_icons() {
+  KITTY_B64_CLAUDE=""
+  KITTY_B64_CODEX=""
+  [ -r "$TYPE_ICON_DIR/claude.png" ] && KITTY_B64_CLAUDE=$(base64 < "$TYPE_ICON_DIR/claude.png" | tr -d '\n')
+  [ -r "$TYPE_ICON_DIR/codex.png" ] && KITTY_B64_CODEX=$(base64 < "$TYPE_ICON_DIR/codex.png" | tr -d '\n')
+}
+
+# 画像を端末へ登録する。$1=画像 ID $2=base64。4096 バイトずつのチャンクに分け、tmux のパススルー
+# (ESC P tmux ; … ESC \ で包み、中の ESC は二重にする)で送る。a=T,U=1 は「送信 + 仮想配置(placeholder 用)」、
+# q=2 は端末からの応答を抑える(応答が pane の入力に混ざらないように)
+kitty_send_image() {
+  local id=$1 data=$2 pos=0 len=${#2} chunk more ctl out=""
+  while ((pos < len)); do
+    chunk=${data:pos:4096}
+    pos=$((pos + 4096))
+    ((pos < len)) && more=1 || more=0
+    if ((pos <= 4096)); then
+      ctl="a=T,f=100,i=${id},U=1,c=2,r=1,q=2,m=${more}"
+    else
+      ctl="m=${more}"
+    fi
+    out+="${ESC}Ptmux;${ESC}${ESC}_G${ctl};${chunk}${ESC}${ESC}\\${ESC}\\"
+  done
+  printf '%s' "$out"
+}
+
+# 種別 $1 の placeholder 文字列(2 桁)を REPLY に入れる。画像で示せない種別なら空
+type_icon_cells() {
+  local id
+  REPLY=""
+  [ "$TYPE_ICON_MODE" = image ] || return 0
+  case $1 in
+    Claude) [ -n "$KITTY_B64_CLAUDE" ] && id=$KITTY_ID_CLAUDE ;;
+    Codex) [ -n "$KITTY_B64_CODEX" ] && id=$KITTY_ID_CODEX ;;
+  esac
+  [ -z "${id:-}" ] && return 0
+  # 前景色(256 色の番号)が画像 ID。背景のカード色はそのまま残る
+  REPLY="${ESC}[38;5;${id}m${KITTY_PH}${KITTY_D0}${KITTY_D0}${KITTY_PH}${KITTY_D0}${KITTY_D1}${FG_DEFAULT}"
+}
 
 # 1 文字の端末上の表示幅(0 / 1 / 2)を REPLY に入れる。ASCII 以外は UTF-8 のバイトからコードポイントを
 # 復元して判定する。East Asian Ambiguous(’ “ — → ▶ 罫線 など)は tmux / Ghostty の既定どおり 1 桁。
@@ -500,14 +561,24 @@ put_agent() {
   # (選択中は左端が罫線 │ なので ▶ にはしない)
   right="${C_DIM}${type}${FG_DEFAULT}"
   right_w=${#type}
+  # 種別を画像で示せるときは、左端に 2 桁の画像 + 空白を置き、右寄せの文字は出さない(project 名の幅が増える)
+  local lead="" lead_w=0 gap=1
+  type_icon_cells "$type"
+  if [ -n "$REPLY" ]; then
+    lead="$REPLY "
+    lead_w=3
+    right=""
+    right_w=0
+    gap=0
+  fi
   local edge_l_saved=$EDGE_L
   if [ "${AG_ACT[i]}" = 1 ]; then
     name_on=$C_HERE
     ((selected)) || EDGE_L="${C_HERE}▶${C_RESET}${CARD_BG_NOW}"
   fi
-  trunc "${AG_PROJ[i]}" $((inner - right_w - 1))
-  printf -v pad '%*s' $((inner - TRUNC_W - right_w)) ''
-  card_row "${name_on}${REPLY}${BOLD_OFF}${FG_DEFAULT}${pad}${right}"
+  trunc "${AG_PROJ[i]}" $((inner - lead_w - right_w - gap))
+  printf -v pad '%*s' $((inner - lead_w - TRUNC_W - right_w)) ''
+  card_row "${lead}${name_on}${REPLY}${BOLD_OFF}${FG_DEFAULT}${pad}${right}"
   EDGE_L=$edge_l_saved
 
   # 会話タイトル（あれば）
@@ -1040,9 +1111,12 @@ printf '%s' "${ESC}[?1049h${ESC}[?25l${ESC}[?1000h${ESC}[?1006h${ESC}[?1004h"
 
 # 入力待ちの 1 回あたりの最大待ち時間。データ更新は INTERVAL 秒ごと、キー入力・リサイズはこの間隔内に反応する
 TICK=1
+load_type_icons
 SCOPE_ALL=0
 opts=""
-opts_rest=""
+opt_scope=""
+opt_type_icon=""
+opt_passthrough=""
 AUTO_PREVIEW=key
 # ポップアップを閉じた時刻(SECONDS)。閉じた直後に届きうるフォーカスイベントで再び開かないための目安
 PREVIEW_END=-999
@@ -1054,13 +1128,18 @@ CLICK_ROW=0
 while :; do
   if ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}' 2>/dev/null)
-    [ "${opts%%|*}" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
-    opts_rest=${opts#*|}
-    ICON_STYLE=${opts_rest%%|*}
-    AUTO_PREVIEW=${opts_rest#*|}
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}' 2>/dev/null)
+    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough <<< "$opts"
+    [ "$opt_scope" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
     [ -z "$AUTO_PREVIEW" ] && AUTO_PREVIEW=key
     apply_icon_style
+    # 画像表示は、設定が image で、パススルーが有効で、アイコンが読めたときだけ
+    if [ "$opt_type_icon" = image ] && [ -n "$opt_passthrough" ] && [ "$opt_passthrough" != off ] \
+      && { [ -n "$KITTY_B64_CLAUDE" ] || [ -n "$KITTY_B64_CODEX" ]; }; then
+      TYPE_ICON_MODE=image
+    else
+      TYPE_ICON_MODE=text
+    fi
 
     records=$(collect)
     # tmux が応答しない（server 終了）場合は終了する
@@ -1072,6 +1151,13 @@ while :; do
 
     last_collect=$SECONDS
     need_render=1
+
+    # 画像モードなら、アイコンを端末へ登録する(初回と、KITTY_RESEND_SEC 秒ごと)
+    if [ "$TYPE_ICON_MODE" = image ] && ((SECONDS - KITTY_SENT_AT >= KITTY_RESEND_SEC)); then
+      [ -n "$KITTY_B64_CLAUDE" ] && kitty_send_image "$KITTY_ID_CLAUDE" "$KITTY_B64_CLAUDE"
+      [ -n "$KITTY_B64_CODEX" ] && kitty_send_image "$KITTY_ID_CODEX" "$KITTY_B64_CODEX"
+      KITTY_SENT_AT=$SECONDS
+    fi
   fi
 
   if ((resized)); then

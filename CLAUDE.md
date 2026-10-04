@@ -157,13 +157,20 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     さらにカードの右端の縁は `ESC[row;colH` で桁を指定して描くので、幅の見積もりがずれても縁の位置は動かない
   - 注意が必要な状態はカードの背景に色味を付ける（WAITING=暗い赤、DONE=暗い緑。選択中は一段明るい）
   - 下部に固定の `── USAGE ──` 欄で Claude Code の 5h / 1w レートリミット使用率（バー + % + リセットまでの残り時間。色は `tmux-rate-limits` と同じ段階で 80% 以上は赤）を表示。元データは `statusline.sh` が書く `/tmp/claude-rate-limits.json`。端末の高さが 14 未満、またはファイルが無いときは出さない
+  - **種別アイコン（画像）** `@agent_sidebar_type_icon`: `text`（既定。project 名の右に `Claude` / `Codex` の文字）| `image`（project 名の左に 2 桁 × 1 行の画像。project 名の幅が増える）
+    - 画像は `tmux/assets/agent-icons/{claude,codex}.png`（出所は同ディレクトリの `NOTICE.md`。Simple Icons の SVG を色付け・PNG 化したもの）
+    - Kitty graphics protocol の **Unicode placeholders** を使う: 画像データを tmux のパススルー（`ESC P tmux ; … ESC \`）で端末へ一度登録し、
+      カードには `U+10EEEE` + 行/列の結合文字（`U+0305` / `U+030D`）の文字を置く（前景色の 256 色番号が画像 ID）。画像が文字として扱われるので、
+      window 切り替え・再描画で残像が出ない。10 秒ごとに登録し直す（端末の再接続で消えても戻る）
+    - `allow-passthrough on`（既定は off）・Ghostty（Kitty graphics 対応）・アイコンが読めること、が条件。満たさなければ自動で `text` に戻る
+    - 画像 ID は 250 / 251（他のアプリと衝突しにくい値）。tmux のパススルーは表示中の window の pane からしか端末へ届かない
   - アイコンは Nerd Font 前提（`@agent_sidebar_icons nerd`）。`plain` にすると記号なしになる
   - タイトルは `/tmp/claude-title-<sessionId>.txt`、継続時間は `~/.claude/sessions/<pid>.json` の `statusUpdatedAt`、ブランチは cwd での `git branch --show-current`（10 秒キャッシュ。detached HEAD なら短縮 SHA）
   - 行数はタイトルの有無で 3〜4 行に変わる（見出し・区切り行は別。window ごとに「見出し → [区切り → カード]… → 閉じの区切り」）。収まらない分は `+N more` にし、選択に追従してスクロールする
 - Claude: `claude agents --json`（約 0.2 秒）と各セッションの更新時刻を `/tmp/tmux-agent-sidebar-claude2.txt` に 3 秒キャッシュして全 sidebar で共有。pid の祖先をたどって pane に紐付ける。status は working / waiting / idle。未読の完了は `tmux-claude-agents-status` の状態ファイルを参照して done 表示
 - Codex: ps の引数（`codex` 本体、または `node .../codex`）で検出。状態を確実に判定する手段が無いため unknown 固定（推測しない）
 - 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|title|cwd`。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む
-- 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
+- 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_ICON_DIR`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
 
 **既知の制限**:
 - 別の Mac へ移したときは `~/.tmux/scripts/` へのリンクが必要（git では運ばれない）。「初期セットアップ」のループで `tmux/scripts/*` を全部リンクする。足りないと `C-t b` / `C-t c` が `no such file or directory: ~/.tmux/scripts/tmux-agent-sidebar-open` で失敗する
