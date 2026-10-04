@@ -1,0 +1,236 @@
+#!/bin/bash
+
+# tmux-agent-cockpit: Agent cockpit（左に sidebar、右に「選択した Agent の本物の pane」を出す専用 window）の制御。
+#
+# 仕組み: cockpit window の右側には「交換用 pane（slot）」が 1 つだけある。Agent を選ぶと、その Agent の本物の
+# pane と slot を swap-pane で入れ替える。Agent の pane は cockpit の枠に入り（サイズも枠に合う）、slot は
+# Agent の元の位置に移って目印を出す。Agent を切り替えるときは、先に元へ戻してから次を入れる（slot は使い回す）。
+# 本物の pane なので、カーソル・スクロール・マウス・貼り付けが全部そのまま使える。
+#
+# 危険な点: Agent が cockpit の中にいる間に cockpit window を閉じると、Agent も終了する。
+# tmux には「閉じる直前」のフックが無いので、閉じる経路ごとに先に戻す:
+#   close  : 戻してから window を閉じる（.tmux.conf で prefix + & を差し替えている）
+#   restore: cockpit の sidebar が終了するときに呼ぶ
+#   heal   : 戻し忘れ・Agent の終了で壊れた状態を直す（sidebar 起動時と、Agent が消えたときに呼ぶ）
+#
+# Usage: tmux-agent-cockpit open | show <pane_id> | restore | close | heal
+#
+# 状態は tmux の option に持つ:
+#   window @agent_cockpit=1 / @agent_cockpit_slot=<slot の pane_id> / @agent_cockpit_shown=<表示中の Agent の pane_id>
+#   pane   @agent_cockpit_slot_pane=1（slot）/ @agent_origin_widx, @agent_origin_wname, @agent_origin_pidx
+#          （表示中 Agent の元の window 番号・名前と pane 番号。sidebar が元の window の見出しの下に、元の並び順で出すために使う）
+
+set -u
+
+# symlink 経由（~/.tmux/scripts/）で呼ばれたときは、同じ場所にある兄弟スクリプトを使う
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+wopt() { tmux show-options -wqv -t "$1" "$2" 2>/dev/null; }
+# display-message は存在しない -t でもエラーにならず空を返すので、返ってきた pane_id が一致するかで確かめる
+pane_exists() { [ -n "${1:-}" ] && [ "$(tmux display-message -p -t "$1" '#{pane_id}' 2>/dev/null)" = "$1" ]; }
+pane_window() { tmux display-message -p -t "$1" '#{window_id}' 2>/dev/null; }
+
+# 現在の session の cockpit window の id
+find_cockpit() {
+  tmux list-windows -F '#{window_id} #{@agent_cockpit}' 2>/dev/null | awk '$2 == 1 { print $1; exit }'
+}
+
+# cockpit の sidebar pane（無ければ空）
+find_sidebar() {
+  tmux list-panes -t "$1" -F '#{pane_id} #{@agent_sidebar}' 2>/dev/null | awk '$2 == 1 { print $1; exit }'
+}
+
+# slot が無ければ（誤って閉じた等）作り直す。slot の pane_id を REPLY に入れる
+ensure_slot() {
+  local cock=$1 slot sb
+  slot=$(wopt "$cock" @agent_cockpit_slot)
+  if pane_exists "$slot"; then
+    REPLY=$slot
+    return 0
+  fi
+  sb=$(find_sidebar "$cock")
+  [ -z "$sb" ] && sb=$(tmux list-panes -t "$cock" -F '#{pane_id}' | head -n 1)
+  slot=$(tmux split-window -d -h -t "$sb" -P -F '#{pane_id}' "'$BIN_DIR/tmux-agent-cockpit-slot'") || return 1
+  tmux set-option -p -t "$slot" @agent_cockpit_slot_pane 1
+  tmux set-option -w -t "$cock" @agent_cockpit_slot "$slot"
+  REPLY=$slot
+}
+
+clear_origin() {
+  tmux set-option -pu -t "$1" @agent_origin_widx 2>/dev/null
+  tmux set-option -pu -t "$1" @agent_origin_wname 2>/dev/null
+  tmux set-option -pu -t "$1" @agent_origin_pidx 2>/dev/null
+}
+
+# 表示中の Agent を元の位置へ戻す
+do_restore() {
+  local cock shown slot
+  cock=$(find_cockpit)
+  [ -z "$cock" ] && return 0
+  shown=$(wopt "$cock" @agent_cockpit_shown)
+  [ -z "$shown" ] && return 0
+  slot=$(wopt "$cock" @agent_cockpit_slot)
+
+  if ! pane_exists "$shown"; then
+    # Agent が先に終了していた: slot は元の window に取り残されているので、cockpit に戻す
+    heal_orphan_slot "$cock" "$slot"
+  elif pane_exists "$slot" && [ "$(pane_window "$slot")" != "$cock" ]; then
+    # 通常: もう一度 swap すれば、Agent は元の位置へ、slot は cockpit の枠へ戻る
+    tmux swap-pane -d -s "$shown" -t "$slot"
+    clear_origin "$shown"
+  else
+    # slot が失われていて元の位置へ戻せない: Agent を新しい window に逃がして、終了させない
+    tmux break-pane -d -s "$shown" 2>/dev/null
+    clear_origin "$shown"
+  fi
+  tmux set-option -wu -t "$cock" @agent_cockpit_shown 2>/dev/null
+}
+
+# Agent が終了して slot だけが元の window に残ったとき、slot を cockpit に戻す（無理なら slot を片付ける）
+heal_orphan_slot() {
+  local cock=$1 slot=$2 target
+  pane_exists "$slot" || return 0
+  [ "$(pane_window "$slot")" = "$cock" ] && return 0
+  target=$(find_sidebar "$cock")
+  [ -z "$target" ] && target=$(tmux list-panes -t "$cock" -F '#{pane_id}' 2>/dev/null | head -n 1)
+  if [ -n "$target" ]; then
+    tmux join-pane -d -h -s "$slot" -t "$target"
+  else
+    tmux kill-pane -t "$slot"
+  fi
+}
+
+do_heal() {
+  local cock shown slot
+  cock=$(find_cockpit)
+  [ -z "$cock" ] && return 0
+  shown=$(wopt "$cock" @agent_cockpit_shown)
+  slot=$(wopt "$cock" @agent_cockpit_slot)
+  if [ -n "$shown" ] && ! pane_exists "$shown"; then
+    heal_orphan_slot "$cock" "$slot"
+    tmux set-option -wu -t "$cock" @agent_cockpit_shown 2>/dev/null
+  fi
+}
+
+# show の高速パス。状態の確認を list-panes -a の 1 回にまとめ、「元へ戻す → 元の位置を記録 → 入れ替え → 記録」を
+# tmux の複合コマンド(;)1 回で実行する。以前は tmux を約 25 回呼んでいて、j/k のたびに約 130ms かかっていた。
+# 状態が想定どおりでない場合(slot が無い・表示中の pane が消えた・複合コマンドが途中で失敗した等)は、
+# 確実に直せる do_show_slow に任せる。
+do_show() {
+  local target=$1 state cock="" shown="" slot="" my_win=""
+  local pid wid widx pidx wname flags c_flag c_shown c_slot
+  local t_wid="" t_widx="" t_pidx="" t_wname="" t_flags="" shown_ok=0 slot_wid="" slot_ok=0
+
+  [ -n "${TMUX_PANE:-}" ] && my_win=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)
+
+  state=$(tmux list-panes -a -F '#{pane_id}|#{window_id}|#{window_index}|#{pane_index}|#{window_name}|#{@agent_sidebar}#{@agent_cockpit_slot_pane}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_cockpit_slot}' 2>/dev/null) || state=""
+
+  # 1 周目: cockpit window(自分がいる window を優先)の状態を拾う
+  while IFS='|' read -r pid wid widx pidx wname flags c_flag c_shown c_slot; do
+    if [ "$c_flag" = 1 ] && { [ -z "$cock" ] || [ "$wid" = "$my_win" ]; }; then
+      cock=$wid; shown=$c_shown; slot=$c_slot
+    fi
+  done <<< "$state"
+  [ -z "$cock" ] && { do_show_slow "$target"; return; }
+
+  # 2 周目: target / shown / slot の所在を拾う
+  while IFS='|' read -r pid wid widx pidx wname flags c_flag c_shown c_slot; do
+    if [ "$pid" = "$target" ]; then t_wid=$wid; t_widx=$widx; t_pidx=$pidx; t_wname=$wname; t_flags=$flags; fi
+    if [ -n "$shown" ] && [ "$pid" = "$shown" ]; then shown_ok=1; fi
+    if [ -n "$slot" ] && [ "$pid" = "$slot" ]; then slot_ok=1; slot_wid=$wid; fi
+  done <<< "$state"
+
+  # target が存在しない・sidebar/slot・cockpit 内にいる(表示中以外) → 従来どおり判定させる
+  [ -z "$t_wid" ] && return 1
+  [ -n "$t_flags" ] && return 1
+  [ "$shown" = "$target" ] && return 0
+  [ "$t_wid" = "$cock" ] && return 1
+
+  # 高速パスの前提: slot が存在し、(何も表示していない → slot は cockpit にいる / 表示中 → その pane が存在し slot は外にいる)
+  if [ "$slot_ok" != 1 ]; then do_show_slow "$target"; return; fi
+  if [ -z "$shown" ]; then
+    [ "$slot_wid" = "$cock" ] || { do_show_slow "$target"; return; }
+  else
+    { [ "$shown_ok" = 1 ] && [ "$slot_wid" != "$cock" ]; } || { do_show_slow "$target"; return; }
+  fi
+
+  local args=()
+  if [ -n "$shown" ]; then
+    args+=(swap-pane -d -s "$shown" -t "$slot" ';'
+      set-option -pu -t "$shown" @agent_origin_widx ';'
+      set-option -pu -t "$shown" @agent_origin_pidx ';'
+      set-option -pu -t "$shown" @agent_origin_wname ';')
+  fi
+  args+=(set-option -p -t "$target" @agent_origin_widx "$t_widx" ';'
+    set-option -p -t "$target" @agent_origin_pidx "$t_pidx" ';'
+    set-option -p -t "$target" @agent_origin_wname "$t_wname" ';'
+    swap-pane -d -s "$target" -t "$slot" ';'
+    set-option -w -t "$cock" @agent_cockpit_shown "$target")
+  tmux "${args[@]}" 2>/dev/null || do_show_slow "$target"
+}
+
+do_show_slow() {
+  local target=$1 cock shown slot origin
+  cock=$(find_cockpit)
+  [ -z "$cock" ] && { echo "cockpit window がありません（prefix + B で作成）" >&2; return 1; }
+  pane_exists "$target" || return 1
+  # sidebar・slot・cockpit 内の pane は対象にしない
+  [ "$(tmux display-message -p -t "$target" '#{@agent_sidebar}#{@agent_cockpit_slot_pane}')" = "" ] || return 1
+  [ "$(pane_window "$target")" = "$cock" ] && [ "$target" != "$(wopt "$cock" @agent_cockpit_shown)" ] && return 1
+
+  shown=$(wopt "$cock" @agent_cockpit_shown)
+  [ "$shown" = "$target" ] && return 0
+  [ -n "$shown" ] && do_restore
+
+  ensure_slot "$cock" || return 1
+  slot=$REPLY
+
+  # swap すると target の「元の window」が分からなくなるので、先に記録する（sidebar の見出しに使う）
+  # window 番号・名前に加えて pane 番号も残す(sidebar の並び順に使う。cockpit 内の番号を使うと、枠に入れた Agent が他を追い越す)
+  origin=$(tmux display-message -p -t "$target" '#{window_index}|#{pane_index}|#{window_name}')
+  tmux set-option -p -t "$target" @agent_origin_widx "${origin%%|*}"
+  origin=${origin#*|}
+  tmux set-option -p -t "$target" @agent_origin_pidx "${origin%%|*}"
+  tmux set-option -p -t "$target" @agent_origin_wname "${origin#*|}"
+  if tmux swap-pane -d -s "$target" -t "$slot"; then
+    tmux set-option -w -t "$cock" @agent_cockpit_shown "$target"
+  else
+    clear_origin "$target"
+    return 1
+  fi
+}
+
+do_open() {
+  local cock slot sb
+  cock=$(find_cockpit)
+  if [ -n "$cock" ]; then
+    tmux select-window -t "$cock"
+    return 0
+  fi
+  slot=$(tmux new-window -n cockpit -P -F '#{pane_id}' "'$BIN_DIR/tmux-agent-cockpit-slot'") || return 1
+  cock=$(pane_window "$slot")
+  tmux set-option -w -t "$cock" @agent_cockpit 1
+  tmux set-option -w -t "$cock" @agent_cockpit_slot "$slot"
+  tmux set-option -p -t "$slot" @agent_cockpit_slot_pane 1
+  # 左端に sidebar（-d: フォーカスは slot に残るので、あとで sidebar へ移す）
+  "$BIN_DIR/tmux-agent-sidebar-open" "$cock"
+  sb=$(find_sidebar "$cock")
+  [ -n "$sb" ] && tmux select-pane -t "$sb"
+}
+
+do_close() {
+  local cock
+  cock=$(find_cockpit)
+  [ -z "$cock" ] && return 0
+  do_restore
+  tmux kill-window -t "$cock"
+}
+
+case "${1:-open}" in
+  open) do_open ;;
+  show) do_show "${2:?pane_id}" ;;
+  restore) do_restore ;;
+  close) do_close ;;
+  heal) do_heal ;;
+  *) echo "Usage: $0 open | show <pane_id> | restore | close | heal" >&2; exit 2 ;;
+esac

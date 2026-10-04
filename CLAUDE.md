@@ -122,7 +122,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - sidebar 上で `Ctrl-C` → sidebar だけ終了して pane が閉じる。main pane は残る
 - ⚠️ `Ctrl-t a`（Claude 一覧ポップアップ）が使用済みのため、再表示キーは `b`
 - sidebar 上で `j` / `k`（`↓` / `↑`、マウスホイール）→ 選択を移動。選択中のカードはオレンジの角丸罫線で囲まれる（sidebar にフォーカスがあるときだけ表示。このとき 2 行目に操作ヒントも出る）
-- sidebar 上で `Enter`、または Agent の行を **クリック** → その Agent の window・pane へジャンプ（`r` で即時更新）
+- sidebar 上で `Enter` / `l` / `h`、または Agent の行を **クリック** → その Agent の window・pane へジャンプ（`r` で即時更新）
 - sidebar 上で `j` / `k`（`↓` / `↑`）→ 選択を動かして、そのまま **ポップアップでプレビュー**を開く（`@agent_sidebar_auto_preview`、後述）。マウスホイールは選択を動かすだけで、開かない
 - sidebar 上で `p`（または Space）→ 選択中の Agent の pane を **ポップアップでプレビュー**（`tmux-agent-sidebar-preview`）
   - 中身は `tmux capture-pane -e -p`（色つき・読み取り専用）を 1 秒ごとに更新。Agent には影響しない
@@ -181,6 +181,35 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - tmux-resurrect で復元すると、sidebar pane は空のシェル pane になる（`C-t b` を押す前に邪魔なら閉じる）
 - 既存 window へは自動追加しない（必要な window で `C-t b`）
 - 起動中のスクリプトを書き換えると bash が壊れた読み方をするため、スクリプトを更新したら sidebar は閉じて開き直す
+
+### Agent cockpit (tmux/scripts/tmux-agent-cockpit*)
+左に sidebar、右に「sidebar で選択した Agent の **本物の pane**」を出す専用 window。この window だけで、あらゆる window の Claude Code / Codex を確認・指示出しできる。
+本物の pane なので、カーソル・上へのスクロール（コピーモード）・マウス・貼り付けがそのまま使える（`capture-pane` の代理表示では出来ない）。
+
+**キー**:
+- `Ctrl-t B` → cockpit window を開く（あれば移動）。開くと、選択中の Agent が右の枠に入る
+- cockpit の sidebar で `j` / `k`（`↓` / `↑`、ホイール、クリック）→ 右の枠の Agent が切り替わる。`Enter` / `l` / `h` → 右の枠へフォーカス（戻るのは `Ctrl-t h`）
+- `Ctrl-t &` → cockpit window では **先に Agent を元へ戻してから**閉じる（通常の window は従来どおり確認つき kill-window）
+- sidebar を `Ctrl-C` で終了しても、枠の Agent は元へ戻る
+- 「いまアクティブな pane の Agent」(`▶`)は通常 2 秒ごとの収集で更新されるが、フォーカスが動く操作（Enter / フォーカスイベント）の直後は、動き先が分かっているので手元で先に反映してから収集をやり直す（約 30ms で変わる。以前は 1〜2 秒）
+
+**仕組み**:
+- 右の枠には「交換用 pane（slot、`tmux-agent-cockpit-slot`）」が 1 つだけある。Agent を選ぶと、その Agent の pane と slot を `swap-pane` で入れ替える
+  （Agent は枠に入ってサイズも枠に合い、slot は Agent の元の位置に移って「cockpit に表示中」と出す）。切り替えは、元へ戻してから次を入れる（slot は使い回す）
+- 状態は tmux の option: window `@agent_cockpit`（=1）/ `@agent_cockpit_slot` / `@agent_cockpit_shown`、pane `@agent_cockpit_slot_pane` / `@agent_origin_widx` / `@agent_origin_wname` / `@agent_origin_pidx`
+  （枠に入っている Agent の元の window 番号・名前と pane 番号。sidebar は元の window の見出しの下に、元の並び順で出し続ける。
+  pane 番号を記録しないと、cockpit 内の番号で並べ替わってしまい、j/k のたびにカードの順番が入れ替わる）
+- `tmux-window-name` は cockpit window と slot を計算から外す（Agent の入れ替えで window 名が変わらないように）
+- 制御は `tmux-agent-cockpit open | show <pane_id> | restore | close | heal`。`heal` は、枠の Agent が終了して slot が元の window に取り残されたときに slot を cockpit へ戻す
+  （sidebar は起動時と、cockpit の main pane が 0 になったときに呼ぶ。直後に次の Agent が自動で枠に入る）
+- `show` は高速パスで動く: 状態の確認を `list-panes -a` の 1 回にまとめ、「元へ戻す → 元の位置を記録 → 入れ替え → 記録」を tmux の複合コマンド（`;` 区切り）1 回で実行する
+  （以前は tmux を約 25 回呼んで約 130ms、今は約 26ms）。想定外の状態（slot が無い・表示中の pane が消えた・複合コマンドが途中で失敗）は、確実に直せる従来の処理（`do_show_slow`）に任せる。
+  sidebar は j/k で、入れ替えを待たずに先に選択の罫線を描き、そのあとで入れ替える（罫線は約 13ms で動く）
+- `display-message -t <存在しない pane>` はエラーにならず空を返すので、pane の存在確認は返ってきた `#{pane_id}` の一致で行う
+
+**危険な点（重要）**: Agent が枠に入っている間に cockpit window を **tmux の外から** 閉じると、Agent も終了する。tmux には「閉じる直前」のフックが無い（`window-unlinked` 等は閉じた後）。
+守れる経路: `prefix + &`（差し替え済み）、sidebar の終了、次回起動時の `heal`。**守れない経路**: `prefix :` から `kill-window` を直接実行、`kill-session`、tmux サーバーの終了。
+その場合も会話の記録は残る（`claude --resume`）が、実行中の処理は失われる。
 
 ### Claude Code (claude/)
 **settings.json**: MCP サーバーの事前承認とフック設定
@@ -312,6 +341,8 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 │   ├── tmux-agent-sidebar         # window 左端に置く Agent 一覧 pane の本体
 │   ├── tmux-agent-sidebar-open    # sidebar を window 左端に追加（二重起動防止）
 │   ├── tmux-agent-sidebar-preview # sidebar の p で開くポップアップ（pane のライブプレビュー）
+│   ├── tmux-agent-cockpit         # Agent cockpit の制御（open / show / restore / close / heal）
+│   ├── tmux-agent-cockpit-slot    # cockpit の右の枠に常駐する交換用 pane
 │   ├── tmux-rate-limits   # レートリミット使用率表示（現在はステータスバーから外し、sidebar の USAGE 欄が代替）
 │   └── ...                # その他スクリプト
 ├── lazygit/config.yml     # Lazygit 設定

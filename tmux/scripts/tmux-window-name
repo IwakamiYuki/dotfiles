@@ -17,13 +17,17 @@ if [ -z "$window_id" ]; then
   exit 0
 fi
 
+# Agent cockpit window は名前を固定する（中身は選択した Agent の pane に入れ替わるため、パスから名前を決めない）
+[ "$(tmux show-options -wqv -t "$window_id" @agent_cockpit 2>/dev/null)" = "1" ] && exit 0
+
 # ウィンドウ内の全ペインのカレントディレクトリを取得
-# (Agent Sidebar pane は共通パスの計算から除外する)
+# (Agent Sidebar pane と、cockpit の交換用 pane は共通パスの計算から除外する)
 paths=()
-while IFS='|' read -r is_sidebar p; do
+while IFS='|' read -r is_sidebar is_slot p; do
   [ "$is_sidebar" = "1" ] && continue
+  [ "$is_slot" = "1" ] && continue
   [ -n "$p" ] && paths+=("$p")
-done < <(tmux list-panes -t "$window_id" -F '#{@agent_sidebar}|#{pane_current_path}' 2>/dev/null)
+done < <(tmux list-panes -t "$window_id" -F '#{@agent_sidebar}|#{@agent_cockpit_slot_pane}|#{pane_current_path}' 2>/dev/null)
 
 if [ ${#paths[@]} -eq 0 ]; then
   exit 0

@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# tmux-agent-cockpit-slot: Agent cockpit の右側の枠に常駐する「交換用 pane」。
+# 選択した Agent の本物の pane と swap-pane で入れ替わり、Agent が cockpit に表示されている間は、
+# 元の window の同じ位置に移って、そこに目印のメッセージを出す。pane 自身は何もしない（入力も捨てる）。
+#
+# 場所によって出すメッセージを変える:
+#   cockpit 内   : 「Agent を選ぶと、ここに表示される」
+#   それ以外の window: 「ここにいた Agent は cockpit に表示中」
+
+set -u
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+unset LC_ALL
+export LC_CTYPE=en_US.UTF-8 LC_COLLATE=C
+
+ESC=$'\033'
+DIM="${ESC}[38;5;245m"
+ORANGE="${ESC}[38;5;208m"
+RESET="${ESC}[0m"
+
+cleanup() {
+  printf '%s' "${ESC}[?25h${RESET}"
+  stty echo 2>/dev/null
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM HUP
+
+stty -echo 2>/dev/null
+printf '%s' "${ESC}[?25l"
+
+draw() {
+  local in_cockpit=$1 h w row
+  read -r h w < <(stty size 2>/dev/null)
+  h=${h:-24}
+  row=$((h / 2))
+  ((row < 1)) && row=1
+  printf '%s' "${ESC}[2J"
+  if [ "$in_cockpit" = 1 ]; then
+    printf '%s' "${ESC}[${row};3H${ORANGE}Agent cockpit${RESET}"
+    printf '%s' "${ESC}[$((row + 1));3H${DIM}左の一覧で j / k を押すと、Agent の pane がここに表示されます${RESET}"
+  else
+    printf '%s' "${ESC}[${row};3H${ORANGE}⇄ cockpit に表示中${RESET}"
+    printf '%s' "${ESC}[$((row + 1));3H${DIM}この位置にいた Agent の pane は cockpit window にあります（prefix + B）${RESET}"
+  fi
+}
+
+last=""
+while :; do
+  here=$(tmux display-message -p -t "${TMUX_PANE:-}" '#{@agent_cockpit}' 2>/dev/null)
+  size=$(stty size 2>/dev/null)
+  state="${here}|${size}"
+  if [ "$state" != "$last" ]; then
+    draw "$here"
+    last=$state
+  fi
+  # 待ちながら入力を捨てる（read の待ち時間を sleep の代わりにする）
+  IFS= read -rsn1 -t 1 _ || true
+done

@@ -5,8 +5,10 @@
 # 起動は tmux-agent-sidebar-open 経由（C-t b / C-t c）。Ctrl-C で終了すると pane ごと閉じる。
 #
 # 操作（sidebar にフォーカスがあるとき）:
-#   j / k / ↓ / ↑ / ホイール : 選択を移動   Enter : 選択した Agent の window・pane へジャンプ
+#   j / k / ↓ / ↑ / ホイール : 選択を移動   Enter / l / h : 選択した Agent の window・pane へジャンプ
 #   マウスクリック           : クリックした Agent の window・pane へジャンプ   r : 即時更新
+#   cockpit window(prefix + B)の sidebar では、j/k で選択した Agent の本物の pane が右の枠に入る(tmux-agent-cockpit)。
+#                              Enter = 右の枠へフォーカス、マウスクリック = その Agent を枠に入れる(移動はしない)
 #   p / Space                : 選択中の Agent の pane をポップアップでプレビュー
 #                              （中で j/k 切り替え・Enter 移動。tmux-agent-sidebar-preview）
 #   自動プレビュー(@agent_sidebar_auto_preview): key = j/k を押すとポップアップを開く(既定)、
@@ -148,6 +150,8 @@ TIMEOUT_CMD=""
 command -v gtimeout >/dev/null 2>&1 && TIMEOUT_CMD="gtimeout 5"
 
 cleanup() {
+  # cockpit の sidebar が終了するとき、枠に入っている Agent を元の位置へ戻す(戻さないと、cockpit を閉じたときに Agent も終了する)
+  [ "${COCKPIT:-0}" = 1 ] && "$COCKPIT_BIN" restore >/dev/null 2>&1
   # ポップアップ中に終了した場合に備えて、プレビュー用の一時ファイルを消す
   rm -f "/tmp/tmux-agent-sidebar-preview-$$".*
   printf '%s' "${ESC}[?1004l${ESC}[?1006l${ESC}[?1000l${ESC}[?25h${ESC}[?1049l"
@@ -244,14 +248,16 @@ function add(pi, type, project, status, detail, elapsed, title, cwd,   active) {
   rest = substr($0, 3)
 }
 
-# P|session|window_id|window_idx|pane_idx|pane_id|pane_pid|sidebar|win_active|pane_active|window_name|path
+# P|session|window_id|window_idx|pane_idx|pane_id|pane_pid|sidebar|win_active|pane_active|window_name|origin_widx|origin_wname|origin_pidx|path
+# origin_* は、cockpit に入れられている Agent の「元の window 番号・名前・pane 番号」。あれば見出しの window と並び順をそちらにする
 tag == "P" {
   split(rest, f, "|")
   np++
   p_sess[np] = f[1]; p_wid[np] = f[2]; p_win[np] = f[3]; p_pane[np] = f[4]
   p_id[np] = f[5]; p_sidebar[np] = f[7]; p_win_active[np] = f[8]; p_active[np] = f[9]; p_wname[np] = f[10]
+  if (f[11] != "") { p_win[np] = f[11]; p_wname[np] = f[12]; p_pane[np] = f[13] }
   p_path[np] = rest
-  sub(/^([^|]*\|){10}/, "", p_path[np])
+  sub(/^([^|]*\|){13}/, "", p_path[np])
   if (f[5] == self) { cur_sess = f[1]; self_wid = f[2]; self_focus = (f[8] == 1 && f[9] == 1) ? 1 : 0 }
   # sidebar pane 自身（と他の sidebar）は Agent 検出の対象から外す
   if (f[7] != 1) pane_by_pid[f[6]] = np
@@ -357,7 +363,7 @@ collect() {
   refresh_title_cache
   {
     tmux list-panes "${list_args[@]}" -F \
-      '#{session_name}|#{window_id}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{@agent_sidebar}|#{window_active}|#{pane_active}|#{window_name}|#{pane_current_path}' 2>/dev/null |
+      '#{session_name}|#{window_id}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{@agent_sidebar}|#{window_active}|#{pane_active}|#{window_name}|#{@agent_origin_widx}|#{@agent_origin_wname}|#{@agent_origin_pidx}|#{pane_current_path}' 2>/dev/null |
       awk '{ print "P|" $0 }'
     ps -axo pid=,ppid=,args= | awk '{ print "S|" $0 }'
     cat "$CLAUDE_CACHE_FILE" 2>/dev/null
@@ -888,7 +894,11 @@ render() {
     if ((row < height)); then
       row=$((row + 1))
       ROW_AGENT[row]=""
-      frame+="${ESC}[${row};1H${C_DIM} ${C_ACTIVE}j/k${C_DIM} select  ${C_ACTIVE}⏎${C_DIM} jump  ${C_ACTIVE}p${C_DIM} peek${ESC}[K${C_RESET}"
+      if [ "$COCKPIT" = 1 ]; then
+        frame+="${ESC}[${row};1H${C_DIM} ${C_ACTIVE}j/k${C_DIM} select  ${C_ACTIVE}⏎/l/h${C_DIM} focus${ESC}[K${C_RESET}"
+      else
+        frame+="${ESC}[${row};1H${C_DIM} ${C_ACTIVE}j/k${C_DIM} select  ${C_ACTIVE}⏎/l${C_DIM} jump  ${C_ACTIVE}p${C_DIM} peek${ESC}[K${C_RESET}"
+      fi
     fi
   else
     # BSD tr はマルチバイトを扱えないため、罫線は bash の置換で作る
@@ -1031,6 +1041,27 @@ jump_to() {
 # ポップアップの中で j/k により別の Agent へ切り替えられ、Enter で移動、q で閉じる。
 # 終了時にポップアップ側が書く結果ファイルから、最後に見ていた Agent を選択位置として引き継ぐ
 PREVIEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-sidebar-preview"
+# cockpit window(prefix + B)の sidebar のとき 1。選択した Agent の pane を右の枠へ入れる
+COCKPIT=0
+COCKPIT_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-cockpit"
+cockpit_shown=""
+
+# 「いまアクティブな pane」の Agent(▶ とシアンの名前)は、通常 2 秒ごとの収集でしか更新されない。
+# フォーカスが動いた直後は、動き先が分かっているので手元で先に反映し、そのあと収集をやり直して実データで確かめる
+mark_active_agent() {  # $1 = アクティブになった Agent の pane_id(空なら、どの Agent もアクティブでない)
+  local i
+  for ((i = 0; i < AG_N; i++)); do
+    if [ -n "$1" ] && [ "${AG_ID[i]}" = "$1" ]; then AG_ACT[i]=1; else AG_ACT[i]=0; fi
+  done
+}
+
+# 選択中の Agent の pane を cockpit の右の枠へ入れる(今表示中のものは先に元へ戻る)
+cockpit_show_selected() {
+  ((AG_N > 0)) || return 0
+  "$COCKPIT_BIN" show "${AG_ID[SEL_IDX]}" >/dev/null 2>&1
+  cockpit_shown=${AG_ID[SEL_IDX]}
+}
+
 # ポップアップを sidebar の右隣に出すのに必要な最小幅(これ未満なら中央に大きく出す)
 PREVIEW_MIN_WIDTH=40
 
@@ -1119,7 +1150,8 @@ read_key() {
     k) KEY=up ;;
     r) KEY=refresh ;;
     p | " ") KEY=preview ;;
-    "") KEY=enter ;;
+    # l / h も Enter と同じ(cockpit では右の枠へフォーカス、通常は Agent へ移動)
+    "" | l | h) KEY=enter ;;
     $'\033')
       # ESC 単体は other。CSI / SS3（矢印キー・マウス報告）は終端バイト（@-~）まで読む
       IFS= read -rsn1 -t 1 c || { KEY=other; return 0; }
@@ -1182,11 +1214,14 @@ printf '%s' "${ESC}[?1049h${ESC}[?25l${ESC}[?1000h${ESC}[?1006h${ESC}[?1004h"
 # 入力待ちの 1 回あたりの最大待ち時間。データ更新は INTERVAL 秒ごと、キー入力・リサイズはこの間隔内に反応する
 TICK=1
 load_type_icons
+# cockpit の sidebar なら、前回の戻し忘れ(Agent が枠に入ったまま、等)を直してから始める
+[ "$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_cockpit}' 2>/dev/null)" = 1 ] && "$COCKPIT_BIN" heal >/dev/null 2>&1
 SCOPE_ALL=0
 opts=""
 opt_scope=""
 opt_type_icon=""
 opt_passthrough=""
+opt_cockpit=""
 AUTO_PREVIEW=key
 # ポップアップを閉じた時刻(SECONDS)。閉じた直後に届きうるフォーカスイベントで再び開かないための目安
 PREVIEW_END=-999
@@ -1198,8 +1233,9 @@ CLICK_ROW=0
 while :; do
   if ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}' 2>/dev/null)
-    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough <<< "$opts"
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}' 2>/dev/null)
+    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown <<< "$opts"
+    [ "$opt_cockpit" = 1 ] && COCKPIT=1 || COCKPIT=0
     [ "$opt_scope" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
     [ -z "$AUTO_PREVIEW" ] && AUTO_PREVIEW=key
     apply_icon_style
@@ -1216,8 +1252,22 @@ while :; do
     [ -z "$records" ] && exit 0
     parse_records "$records"
     read_limits
-    # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる
-    [ "$MAIN_PANES" = "0" ] && exit 0
+    # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる。
+    # cockpit では、枠に入っていた Agent が終了しただけのことがあるので、交換用の枠を戻してから判断する
+    if [ "$MAIN_PANES" = "0" ]; then
+      if [ "$COCKPIT" = 1 ]; then
+        "$COCKPIT_BIN" heal >/dev/null 2>&1
+        [ "$(tmux list-panes -t "$TMUX_PANE" -F '#{@agent_sidebar}' 2>/dev/null | grep -vc 1)" -gt 0 ] || exit 0
+        last_collect=-999
+      else
+        exit 0
+      fi
+    fi
+
+    # cockpit で、まだ何も枠に入っていなければ、選択中の Agent を入れる(開いた直後)
+    if [ "$COCKPIT" = 1 ] && [ -z "$cockpit_shown" ]; then
+      cockpit_show_selected
+    fi
 
     last_collect=$SECONDS
     need_render=1
@@ -1253,8 +1303,14 @@ while :; do
         *) move_selection -1 ;;
       esac
       need_render=1
+      if [ "$COCKPIT" = 1 ]; then
+        # cockpit では、選択した Agent の本物の pane を右の枠へ入れる(ポップアップは使わない)。
+        # 入れ替え(tmux の呼び出し)を待たず、先に選択の罫線を動かしてから入れ替える
+        render
+        need_render=0
+        cockpit_show_selected
       # j/k(矢印)ではそのままプレビューを開く。ホイールは誤操作しやすいので選択を動かすだけ
-      if [ "$AUTO_PREVIEW" != off ] && [[ $KEY == down || $KEY == up ]]; then
+      elif [ "$AUTO_PREVIEW" != off ] && [[ $KEY == down || $KEY == up ]]; then
         render
         open_preview
         need_render=1
@@ -1265,7 +1321,10 @@ while :; do
       # 閉じた直後に届くイベントで開き直さないよう、直後は無視する
       FOCUSED=1
       need_render=1
-      if [ "$AUTO_PREVIEW" = focus ] && ((SECONDS - PREVIEW_END >= 2)); then
+      # cockpit では、sidebar がアクティブ = どの Agent もアクティブではない
+      [ "$COCKPIT" = 1 ] && mark_active_agent ""
+      last_collect=-999
+      if [ "$AUTO_PREVIEW" = focus ] && [ "$COCKPIT" != 1 ] && ((SECONDS - PREVIEW_END >= 2)); then
         render
         open_preview
       fi
@@ -1273,29 +1332,53 @@ while :; do
     focus_out)
       FOCUSED=0
       need_render=1
+      # cockpit では、sidebar から外れた先は右の枠(表示中の Agent)
+      [ "$COCKPIT" = 1 ] && mark_active_agent "${cockpit_shown:-${AG_ID[SEL_IDX]:-}}"
+      last_collect=-999
       ;;
     enter)
-      jump_to "$SEL_IDX"
-      FOCUSED=0
-      last_collect=-999
+      if [ "$COCKPIT" = 1 ]; then
+        # cockpit: 右の枠(Agent の pane)へフォーカスを移す。戻るのは prefix + h
+        tmux select-pane -R -t "$TMUX_PANE" 2>/dev/null
+        FOCUSED=0
+        # 右の枠(表示中の Agent)がアクティブになった。収集を待たずにすぐ反映する
+        mark_active_agent "${cockpit_shown:-${AG_ID[SEL_IDX]:-}}"
+        render
+        need_render=0
+        last_collect=-999
+      else
+        jump_to "$SEL_IDX"
+        FOCUSED=0
+        last_collect=-999
+      fi
       ;;
     click)
       idx=${ROW_AGENT[CLICK_ROW]:-}
       if [ -n "$idx" ]; then
         SEL_IDX=$idx
         SEL_KEY="${AG_ID[idx]}|${AG_TYPE[idx]}"
-        jump_to "$idx"
-        FOCUSED=0
-        last_collect=-999
+        if [ "$COCKPIT" = 1 ]; then
+          # 先に罫線を動かしてから入れ替える
+          render
+          need_render=0
+          cockpit_show_selected
+        else
+          jump_to "$idx"
+          FOCUSED=0
+          last_collect=-999
+        fi
       fi
       ;;
     refresh)
       last_collect=-999
       ;;
     preview)
-      FOCUSED=1
-      open_preview
-      need_render=1
+      # cockpit では右の枠で本物の pane が見えるので、ポップアップは使わない
+      if [ "$COCKPIT" != 1 ]; then
+        FOCUSED=1
+        open_preview
+        need_render=1
+      fi
       ;;
   esac
 done
