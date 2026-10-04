@@ -146,7 +146,11 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - ジャンプは `select-window -t <pane_id>` + `select-pane -t <pane_id>`（`scope=all` で別 session の Agent なら `switch-client` も行う）
 - 設定: `@agent_sidebar_width`（既定 32）、`@agent_sidebar_scope`（`session` | `all`）、`@agent_sidebar_icons`（`nerd` | `plain`）。`.tmux.conf` に定義
 - 見た目は Orca の worktree 一覧を意識したカード表示。window ごとの見出し（`── 6 dotfiles ───`）で区切り、各 Agent は背景色を敷いた 3〜4 行のカードで、左端のバーが状態色
-  - `project ……… 種別(右寄せ)` / 会話タイトル（あれば）/ ` ブランチ   親ディレクトリ` / `[ ⠋ WORKING ] 待機理由 ……… 継続時間`。pane 番号と状態アイコン（●等）は出さない
+  - 1 行目は **名前**、2 行目は project とブランチ、3 行目は状態。常に 3 行（`名前 ……… 種別(右寄せ)` / ` project   ブランチ` / `[ ⠋ WORKING ] 待機理由 ……… 継続時間`）。pane 番号と状態アイコン（●等）は出さない
+  - **名前の優先順位**: 会話タイトル（`/tmp/claude-title-<sessionId>.txt`。statusline が書く。`/rename` の名前もここに入る）→
+    トランスクリプトの `ai-title`（`~/.claude/projects/*/<sessionId>.jsonl` の `{"type":"ai-title","aiTitle":"…"}`。Claude Code 自身が書くので、
+    statusline が動いていないセッションでも取れる。末尾 300KB だけ読み、`/tmp/tmux-agent-sidebar-titles.txt` に 30 秒キャッシュ）→ セッション名（`~/.claude/sessions/<pid>.json` の `nameSource` が `derived` 以外のとき。
+    `derived` は「ディレクトリ名 + 英数字」で情報が無いので使わない）→ project（cwd 末尾）。名前が無いカードは 1 行目が project になり、2 行目は従来どおり `ブランチ   親ディレクトリ`
   - 状態は背景色付きのピル（WORKING=黄 / WAITING=赤 / DONE=緑 / IDLE=くすんだ橙 / UNKNOWN=灰）。working のピルの中でスピナーが回る（`read -t` が整数秒のため 1 秒 1 コマ）
   - 先頭行に状態別の件数（カードのバーと同じ色の `▎1 ▎1`）
   - **選択**（カーソル）と**現在地**（いま見ている pane）は別の表現にして混同を避ける
@@ -165,12 +169,12 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     - `allow-passthrough on`（既定は off）・Ghostty（Kitty graphics 対応）・アイコンが読めること、が条件。満たさなければ自動で `text` に戻る
     - 画像 ID は 250 / 251（他のアプリと衝突しにくい値）。tmux のパススルーは表示中の window の pane からしか端末へ届かない
   - アイコンは Nerd Font 前提（`@agent_sidebar_icons nerd`）。`plain` にすると記号なしになる
-  - タイトルは `/tmp/claude-title-<sessionId>.txt`、継続時間は `~/.claude/sessions/<pid>.json` の `statusUpdatedAt`、ブランチは cwd での `git branch --show-current`（10 秒キャッシュ。detached HEAD なら短縮 SHA）
-  - 行数はタイトルの有無で 3〜4 行に変わる（見出し・区切り行は別。window ごとに「見出し → [区切り → カード]… → 閉じの区切り」）。収まらない分は `+N more` にし、選択に追従してスクロールする
+  - 継続時間は `~/.claude/sessions/<pid>.json` の `statusUpdatedAt`、ブランチは cwd での `git branch --show-current`（10 秒キャッシュ。detached HEAD なら短縮 SHA）
+  - カードは常に 3 行（見出し・区切り行は別。window ごとに「見出し → [区切り → カード]… → 閉じの区切り」）。収まらない分は `+N more` にし、選択に追従してスクロールする
 - Claude: `claude agents --json`（約 0.2 秒）と各セッションの更新時刻を `/tmp/tmux-agent-sidebar-claude2.txt` に 3 秒キャッシュして全 sidebar で共有。pid の祖先をたどって pane に紐付ける。status は working / waiting / idle。未読の完了は `tmux-claude-agents-status` の状態ファイルを参照して done 表示
 - Codex: ps の引数（`codex` 本体、または `node .../codex`）で検出。状態を確実に判定する手段が無いため unknown 固定（推測しない）
-- 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|title|cwd`。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む
-- 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_ICON_DIR`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
+- 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|name|cwd`。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む
+- 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_ICON_DIR`、`AGENT_SIDEBAR_PROJECTS_DIR`、`AGENT_SIDEBAR_TITLE_CACHE`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
 
 **既知の制限**:
 - 別の Mac へ移したときは `~/.tmux/scripts/` へのリンクが必要（git では運ばれない）。「初期セットアップ」のループで `tmux/scripts/*` を全部リンクする。足りないと `C-t b` / `C-t c` が `no such file or directory: ~/.tmux/scripts/tmux-agent-sidebar-open` で失敗する

@@ -23,13 +23,17 @@
 #   特殊な文字」を置く。画像が普通の文字として扱われるので、window 切り替えや再描画でも残像が出ない。
 #   パススルーが無効・アイコンが無い・設定が text のときは、従来の文字表示のまま。
 # 下部に Claude Code の 5h / 1w レートリミット使用率（tmux-rate-limits と同じ /tmp/claude-rate-limits.json）を出す。
-# 表示する情報: window ごとの見出し / project（cwd 末尾）と種別 / 会話タイトル / 親ディレクトリ・git ブランチ / 状態と継続時間
-#   タイトル : /tmp/claude-title-<sessionId>.txt（statusline 機構が書き出す）
+# 表示する情報: window ごとの見出し / 名前(会話タイトル等。無ければ project) と種別 / project・git ブランチ / 状態と継続時間
+#   名前     : 会話タイトル(/tmp/claude-title-<sessionId>.txt。statusline 機構が書き出す。/rename の名前もここに入る)
+#              → 無ければトランスクリプトの ai-title(~/.claude/projects/*/<sessionId>.jsonl。Claude Code 自身が書く。
+#                statusline が動いていないセッションでも取れる。末尾だけ読み、TITLE_CACHE_TTL 秒キャッシュ)
+#              → 無ければセッション名(nameSource が derived 以外。derived は「ディレクトリ名+英数字」で情報が無い)
+#              → 無ければ project(cwd 末尾)
 #   継続時間 : ~/.claude/sessions/<pid>.json の statusUpdatedAt
 #   ブランチ : cwd で git を呼ぶ（GIT_TTL 秒キャッシュ）
 #
 # 内部モデル（collect が出力する 1 行 1 Agent）:
-#   R|session|window_idx|window_name|pane_idx|type|pane_id|active|project|status|detail|elapsed_sec|title|cwd
+#   R|session|window_idx|window_name|pane_idx|type|pane_id|active|project|status|detail|elapsed_sec|name|cwd
 # 検出(collect)と表示(render)は、この共通レコードだけを介して分離している。
 #
 # macOS 標準の bash 3.2 で動く書き方にしている（連想配列・${var,,} 等は使わない）。
@@ -51,6 +55,12 @@ SESSIONS_DIR="${AGENT_SIDEBAR_SESSIONS_DIR:-$HOME/.claude/sessions}"
 # statusline.sh が書き出す 5h/1w の使用率とリセット時刻（tmux-rate-limits も同じファイルを読む）
 RATE_LIMIT_FILE="${AGENT_SIDEBAR_RATE_LIMITS:-/tmp/claude-rate-limits.json}"
 GIT_TTL=10
+# トランスクリプトから拾った ai-title のキャッシュ("sessionId|title" の行)。形式は refresh_title_cache を参照
+TITLE_CACHE_FILE="${AGENT_SIDEBAR_TITLE_CACHE:-/tmp/tmux-agent-sidebar-titles.txt}"
+TITLE_CACHE_TTL=30
+PROJECTS_DIR="${AGENT_SIDEBAR_PROJECTS_DIR:-$HOME/.claude/projects}"
+# トランスクリプトは大きい(数 MB)ので、末尾のこのバイト数だけ読む。ai-title は何度も書き直されるので末尾に必ずある
+TRANSCRIPT_TAIL_BYTES=300000
 # tmux-claude-agents-status が書く "ppid:status:alerting" の状態ファイル（未読の完了判定に使う）
 ALERT_STATE_FILE="/tmp/tmux-claude-agents-state"
 
@@ -66,6 +76,8 @@ C_IDLE="${ESC}[38;5;216m"
 C_UNKNOWN="${ESC}[38;5;245m"
 C_ACTIVE="${ESC}[38;5;208m"
 C_TITLE_ROW="${ESC}[38;5;252m"
+# 2 行目に回った project(ディレクトリ名)の色。ブランチ(C_DIM)より少し明るくして、識別名として読めるようにする
+C_PROJ="${ESC}[38;5;250m"
 C_GROUP="${ESC}[38;5;173m"
 FG_DEFAULT="${ESC}[39m"
 BOLD_ON="${ESC}[1m"
@@ -161,16 +173,44 @@ refresh_claude_cache() {
   lines=$(printf '%s' "$json" | jq -r '
     .[] | ["C", .pid, .status, (.waitingFor // ""), (.cwd // ""), (.name // ""), (.sessionId // "")]
         | map(tostring | gsub("[|\\n\\t]"; " ")) | join("|")' 2>/dev/null) || return 0
-  # U|pid|statusUpdatedAt(ms) : 全セッションぶんを jq 1 回で読む
-  updates=$(jq -r 'select(.statusUpdatedAt != null) | "U|\(.pid)|\(.statusUpdatedAt)"' "$SESSIONS_DIR"/*.json 2>/dev/null)
+  # U|pid|statusUpdatedAt(ms)|nameSource : 全セッションぶんを jq 1 回で読む
+  updates=$(jq -r 'select(.statusUpdatedAt != null) | "U|\(.pid)|\(.statusUpdatedAt)|\(.nameSource // "")"' "$SESSIONS_DIR"/*.json 2>/dev/null)
   tmp="${CLAUDE_CACHE_FILE}.$$"
   printf '%s\n%s\n' "$lines" "$updates" > "$tmp" && mv "$tmp" "$CLAUDE_CACHE_FILE"
+}
+
+# 稼働中の各セッションのトランスクリプトから最新の ai-title を拾い、TITLE_CACHE_FILE に "sessionId|title" で書く。
+# TITLE_CACHE_TTL 秒に一度だけ実行する(複数の sidebar が同時に走らないよう、先に更新時刻を進める)
+refresh_title_cache() {
+  local now mtime tag pid st wf cwd name sid f f_ line title out="" tmp
+  now=$(date +%s)
+  mtime=$(stat -f %m "$TITLE_CACHE_FILE" 2>/dev/null || echo 0)
+  [ $((now - mtime)) -lt "$TITLE_CACHE_TTL" ] && return 0
+  touch "$TITLE_CACHE_FILE" 2>/dev/null
+
+  while IFS='|' read -r tag pid st wf cwd name sid; do
+    [ "$tag" = C ] && [ -n "$sid" ] || continue
+    f=""
+    # プロジェクトディレクトリ名は cwd の符号化なので、規則に頼らず sessionId で探す
+    for f_ in "$PROJECTS_DIR"/*/"$sid".jsonl; do
+      [ -r "$f_" ] && { f=$f_; break; }
+    done
+    [ -z "$f" ] && continue
+    line=$(tail -c "$TRANSCRIPT_TAIL_BYTES" "$f" 2>/dev/null | grep -a '"type":"ai-title"' | tail -n 1)
+    [ -z "$line" ] && continue
+    title=$(printf '%s' "$line" | jq -r '(.aiTitle // "") | gsub("[|\\n\\t]"; " ")' 2>/dev/null)
+    [ -n "$title" ] && out+="${sid}|${title}"$'\n'
+  done < "$CLAUDE_CACHE_FILE"
+
+  tmp="${TITLE_CACHE_FILE}.$$"
+  printf '%s' "$out" > "$tmp" && mv "$tmp" "$TITLE_CACHE_FILE"
 }
 
 read -r -d '' AWK_COLLECT <<'EOF' || true
 function base(p,   n, a) { n = split(p, a, "/"); return a[n] }
 
-# 会話タイトルのキャッシュ（statusline 機構が書く）を読む。未設定の既定タイトルは出さない
+# 会話タイトル。statusline 機構が書くキャッシュを優先し(/rename の名前も入る)、無ければトランスクリプトの ai-title。
+# 未設定の既定タイトルは出さない
 function title_of(sid,   f, t) {
   if (sid == "") return ""
   f = "/tmp/claude-title-" sid ".txt"
@@ -178,6 +218,7 @@ function title_of(sid,   f, t) {
   if ((getline t < f) <= 0) t = ""
   close(f)
   gsub(/[|	]/, " ", t)
+  if (t == "" || t == "新しい会話") t = (sid in ai_title) ? ai_title[sid] : ""
   return (t == "新しい会話") ? "" : t
 }
 
@@ -231,10 +272,17 @@ tag == "C" {
   c_pid[nc] = f[1]; c_status[nc] = f[2]; c_wait[nc] = f[3]; c_cwd[nc] = f[4]; c_name[nc] = f[5]; c_sid[nc] = f[6]
 }
 
-# U|pid|statusUpdatedAt(ms)
+# T|sessionId|title  （トランスクリプトの ai-title。refresh_title_cache が作る）
+tag == "T" {
+  k = index(rest, "|")
+  if (k > 1) ai_title[substr(rest, 1, k - 1)] = substr(rest, k + 1)
+}
+
+# U|pid|statusUpdatedAt(ms)|nameSource
 tag == "U" {
   split(rest, f, "|")
   updated_ms[f[1]] = f[2]
+  name_src[f[1]] = f[3]
 }
 
 # A|ppid:status:alerting
@@ -267,7 +315,10 @@ END {
     # 経過秒だけ渡し、表示用の整形は bash 側で行う
     elapsed = (c_pid[i] in updated_ms) ? now - int(updated_ms[c_pid[i]] / 1000) : ""
     if (elapsed != "" && elapsed < 0) elapsed = 0
-    add(pi, "Claude", project, status, c_wait[i], elapsed, title_of(c_sid[i]), cwd)
+    # 表示名: 会話タイトル → セッション名(derived 以外。nameSource が不明なら使わない) → 空(= project を使う)
+    display = title_of(c_sid[i])
+    if (display == "" && name_src[c_pid[i]] != "" && name_src[c_pid[i]] != "derived") display = c_name[i]
+    add(pi, "Claude", project, status, c_wait[i], elapsed, display, cwd)
   }
 
   # --- Codex（status は判定手段が無いため unknown 固定） ---
@@ -303,12 +354,14 @@ collect() {
   fi
 
   refresh_claude_cache
+  refresh_title_cache
   {
     tmux list-panes "${list_args[@]}" -F \
       '#{session_name}|#{window_id}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{@agent_sidebar}|#{window_active}|#{pane_active}|#{window_name}|#{pane_current_path}' 2>/dev/null |
       awk '{ print "P|" $0 }'
     ps -axo pid=,ppid=,args= | awk '{ print "S|" $0 }'
     cat "$CLAUDE_CACHE_FILE" 2>/dev/null
+    awk '{ print "T|" $0 }' "$TITLE_CACHE_FILE" 2>/dev/null
     awk '{ print "A|" $0 }' "$ALERT_STATE_FILE" 2>/dev/null
   } | awk -v self="$TMUX_PANE" -v now="$(date +%s)" "$AWK_COLLECT"
 }
@@ -576,22 +629,40 @@ put_agent() {
     name_on=$C_HERE
     ((selected)) || EDGE_L="${C_HERE}▶${C_RESET}${CARD_BG_NOW}"
   fi
-  trunc "${AG_PROJ[i]}" $((inner - lead_w - right_w - gap))
+  # 1 行目は名前(会話タイトル等)。無ければ project
+  trunc "${AG_TITLE[i]:-${AG_PROJ[i]}}" $((inner - lead_w - right_w - gap))
   printf -v pad '%*s' $((inner - lead_w - TRUNC_W - right_w)) ''
   card_row "${lead}${name_on}${REPLY}${BOLD_OFF}${FG_DEFAULT}${pad}${right}"
   EDGE_L=$edge_l_saved
 
-  # 会話タイトル（あれば）
-  if [ -n "${AG_TITLE[i]}" ]; then
-    trunc "${AG_TITLE[i]}" "$inner"
-    card_row "${C_TITLE_ROW}${REPLY}${FG_DEFAULT}"
-  fi
-
-  # ブランチ + 親ディレクトリ。入りきらなければディレクトリを落とす
+  # 2 行目。名前(会話タイトル等)があるときは「project  ブランチ」(project が名前に代わって下へ回る)、
+  # 無いときは 1 行目が project なので「ブランチ  親ディレクトリ」
   local line=""
   rest=$inner
   lw=0
-  if [ -n "${AG_BRANCH[i]}" ]; then
+  if [ -n "${AG_TITLE[i]}" ]; then
+    local pmax bcap bnat
+    if [ -n "${AG_BRANCH[i]}" ]; then
+      # ブランチに最低限の幅(最大 12 桁、狭いときは行の 1/3)を残し、残りを project に使う
+      trunc "${AG_BRANCH[i]}" 999
+      bnat=$TRUNC_W
+      bcap=$((rest / 3))
+      ((bcap > 12)) && bcap=12
+      ((bnat < bcap)) && bcap=$bnat
+      pmax=$((rest - ICON_W - 2 - ICON_W - bcap))
+      ((pmax < 4)) && pmax=4
+    else
+      pmax=$((rest - ICON_W))
+    fi
+    trunc "${AG_PROJ[i]}" "$pmax"
+    line="${C_PROJ}${ICON_DIR}${REPLY}${FG_DEFAULT}"
+    lw=$((ICON_W + TRUNC_W))
+    if [ -n "${AG_BRANCH[i]}" ] && ((rest - lw - 2 - ICON_W >= 3)); then
+      trunc "${AG_BRANCH[i]}" $((rest - lw - 2 - ICON_W))
+      line+="  ${C_DIM}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
+      lw=$((lw + 2 + ICON_W + TRUNC_W))
+    fi
+  elif [ -n "${AG_BRANCH[i]}" ]; then
     trunc "${AG_BRANCH[i]}" $((rest - ICON_W))
     tw=$TRUNC_W
     line="${C_DIM}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
@@ -906,9 +977,8 @@ parse_records() {
         fmt_elapsed "$elapsed"; AG_ELAPSED[AG_N]=$REPLY
         fmt_parent_dir "$cwd"; AG_DIR[AG_N]=$REPLY
         git_branch_of "$cwd"; AG_BRANCH[AG_N]=$REPLY
-        # project / 親ディレクトリ・ブランチ / 状態 の 3 行 + タイトルがあれば 1 行
+        # 名前 / project・ブランチ / 状態 の常に 3 行
         AG_ROWS[AG_N]=3
-        [ -n "$title" ] && AG_ROWS[AG_N]=4
         AG_N=$((AG_N + 1))
         ;;
     esac
@@ -993,7 +1063,7 @@ open_preview() {
 
   : > "$list_file"
   for ((i = 0; i < AG_N; i++)); do
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${AG_ID[i]}" "${AG_PROJ[i]}" "${AG_TYPE[i]}" "${AG_STATUS[i]}" "${AG_WIN[i]}" "${AG_WNAME[i]}" >> "$list_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${AG_ID[i]}" "${AG_TITLE[i]:-${AG_PROJ[i]}}" "${AG_TYPE[i]}" "${AG_STATUS[i]}" "${AG_WIN[i]}" "${AG_WNAME[i]}" >> "$list_file"
   done
   rm -f "$result_file" "$cur_file"
 
