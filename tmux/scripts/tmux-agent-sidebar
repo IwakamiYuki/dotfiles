@@ -26,7 +26,7 @@
 #   特殊な文字」を置く。画像が普通の文字として扱われるので、window 切り替えや再描画でも残像が出ない。
 #   パススルーが無効・アイコンが無い・設定が text のときは、従来の文字表示のまま。
 # 下部に Claude Code の 5h / 1w レートリミット使用率（tmux-rate-limits と同じ /tmp/claude-rate-limits.json）を出す。
-# 表示する情報: リポジトリごとの見出し(同じリポジトリの worktree は小見出しで区切る) / 名前(会話タイトル等。無ければ project)と種別 / 状態と継続時間
+# 表示する情報: リポジトリごとの見出し / 各カードに 名前(会話タイトル等。無ければ project)と種別・git ブランチ・状態と継続時間
 #   リポジトリ: cwd の git から判定(worktree は本体の .git を指すので同じリポジトリにまとまる)。git 管理外はディレクトリ名
 #   並び     : リポジトリ名 → worktree のパス → tmux の window / pane 番号(Agent の増減や cockpit での入れ替えで動かない)
 #   名前     : 会話タイトル(/tmp/claude-title-<sessionId>.txt。statusline 機構が書き出す。/rename の名前もここに入る)
@@ -593,45 +593,23 @@ git_info_of() {
 
 # window の見出し行（"── 6 dotfiles ────"）。scope=all のときは session 名も添える
 put_group_header() {
-  local i=$1 name branch="" count right right_w left_w room fill bw
-  name=${AG_REPO[i]}
+  local i=$1 count right right_w room fill_n fill
   count=${AG_RCOUNT[i]}
   right=" ${count} "
   right_w=${#right}
   ((row >= height)) && return 0
   row=$((row + 1))
   ROW_AGENT[row]=""
-  # 「── リポジトリ名 ⎇ ブランチ ──────── 件数」。ブランチは worktree が 1 つのリポジトリだけ(複数なら小見出しに出す)
+  # 「── リポジトリ名 ──────── 件数」。ブランチは各カードに出す(同じリポジトリでも worktree ごとにブランチが違うため)
   room=$((width - 1 - 3 - right_w - 1))
-  trunc "$name" "$room"
-  left_w=$((3 + TRUNC_W))
-  local head="${C_RULE}── ${C_GROUP}${BOLD_ON}${REPLY}${BOLD_OFF}"
-  if [ "${AG_WTMULTI[i]}" != 1 ] && [ -n "${AG_BRANCH[i]}" ]; then
-    bw=$((room - TRUNC_W - 1 - ICON_W))
-    if ((bw >= 3)); then
-      trunc "${AG_BRANCH[i]}" "$bw"
-      head+=" ${C_DIM}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
-      left_w=$((left_w + 1 + ICON_W + TRUNC_W))
-    fi
-  fi
+  trunc "${AG_REPO[i]}" "$room"
+  fill_n=$((width - 1 - 3 - TRUNC_W - 1 - right_w))
   # printf の幅が負だと絶対値ぶんの空白を出してしまうので、0 未満は 0 にする
-  local fill_n=$((width - 1 - left_w - 1 - right_w))
   ((fill_n < 0)) && fill_n=0
   printf -v fill '%*s' "$fill_n" ''
-  frame+="${ESC}[${row};1H${head} ${C_RULE}${fill// /─}${FG_DEFAULT}${C_DIM}${right}${ESC}[K${C_RESET}"
+  frame+="${ESC}[${row};1H${C_RULE}── ${C_GROUP}${BOLD_ON}${REPLY}${BOLD_OFF} ${C_RULE}${fill// /─}${FG_DEFAULT}${C_DIM}${right}${ESC}[K${C_RESET}"
 }
 
-# worktree の小見出し(「  ⎇ ブランチ」)。同じリポジトリに worktree が複数あるときだけ使う。
-# ブランチ名で区別できるので、ディレクトリ名は出さない(detached HEAD などでブランチが無いときだけ worktree のディレクトリ名)
-put_wt_header() {
-  local i=$1 label=${AG_BRANCH[i]}
-  [ -z "$label" ] && label=${AG_WT[i]##*/}
-  ((row >= height)) && return 0
-  row=$((row + 1))
-  ROW_AGENT[row]=""
-  trunc "$label" $((width - 1 - 2 - ICON_W))
-  frame+="${ESC}[${row};1H  ${C_DIM}${ICON_BRANCH}${C_TITLE_ROW}${REPLY}${ESC}[K${C_RESET}"
-}
 
 # カードの 1 行を積む。$1=中身(ANSI 付き)。中身の右側の余りは背景で埋める。
 # 左端は状態色のバー(選択中は罫線 │)、右端は選択中だけ罫線 │
@@ -727,14 +705,25 @@ put_agent() {
     name_on=$C_HERE
     ((selected)) || EDGE_L="${C_HERE}▶${C_RESET}${CARD_BG_NOW}"
   fi
-  # 1 行目は名前(会話タイトル等)。無ければ project。リポジトリ・ブランチは見出しに出すのでカードには出さない。
-  # cockpit のタブは、この行の行末に、右の枠を指す矢印を置く(矢印の色 = タブの色)
+  # 1 行目は名前(会話タイトル等)。無ければ project。リポジトリは見出しに出すのでカードには出さない
   trunc "${AG_TITLE[i]:-${AG_PROJ[i]}}" $((inner - lead_w - right_w - gap))
   printf -v pad '%*s' $((inner - lead_w - TRUNC_W - right_w)) ''
-  ((tabbed)) && ROW_TAIL="${ESC}[38;5;${tab_bg_n}m${TAB_ARROW}${C_RESET}"
   card_row "${lead}${name_on}${REPLY}${BOLD_OFF}${FG_DEFAULT}${pad}${right}"
-  ROW_TAIL=""
   EDGE_L=$edge_l_saved
+
+  # 2 行目はブランチ(同じリポジトリでも worktree ごとに違う)。git 管理外は親ディレクトリ。
+  # cockpit のタブは、この行(3 行の中段)の行末に、右の枠を指す矢印を置く(矢印の色 = タブの色)
+  local line=""
+  if [ -n "${AG_BRANCH[i]}" ]; then
+    trunc "${AG_BRANCH[i]}" $((inner - ICON_W))
+    line="${c_dim}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
+  else
+    trunc "${AG_DIR[i]}" $((inner - ICON_W))
+    line="${c_rule}${ICON_DIR}${REPLY}${FG_DEFAULT}"
+  fi
+  ((tabbed)) && ROW_TAIL="${ESC}[38;5;${tab_bg_n}m${TAB_ARROW}${C_RESET}"
+  card_row "$line"
+  ROW_TAIL=""
 
   # 状態ピル + 待機理由 ……… 継続時間(右寄せ)
   local pillw=$((${#label} + 2)) elw=${#elapsed}
@@ -872,11 +861,10 @@ build_footer() {
 }
 
 # FIT に「top 番目から表示できる Agent 数」を入れる。
-# 並び: 見出し →（worktree が複数なら小見出し →）[区切り → カード]… → 閉じの区切り（リポジトリごと）。区切りは選択時に罫線になる。
+# 並び: 見出し → [区切り → カード]… → 閉じの区切り（リポジトリごと）。区切りは選択時に罫線になる。
 #   各カード     : 区切り 1 + カードの行数
-#   最初の Agent  : さらにリポジトリの見出し 1（worktree が複数なら小見出し 1）
-#   別のリポジトリ: さらに「前のリポジトリの閉じの区切り 1 + 見出し 1（+ 小見出し 1）」
-#   別の worktree : さらに「閉じの区切り 1 + 小見出し 1」
+#   最初の Agent  : さらにリポジトリの見出し 1
+#   別のリポジトリ: さらに「前のリポジトリの閉じの区切り 1 + 見出し 1」
 #   最後に閉じの区切り 1 を必ず見込む
 # 全件が収まらない（または先頭を省いている）ときは「+N more」の 1 行ぶんを空けて数え直す
 compute_fit() {
@@ -889,15 +877,10 @@ compute_fit() {
     for ((i = top; i < AG_N; i++)); do
       need=$((${AG_ROWS[i]} + 1))
       if ((n == 0)); then
-        # 先頭の Agent: リポジトリの見出し(+ worktree が複数なら小見出し)
+        # 先頭の Agent: リポジトリの見出し
         need=$((need + 1))
-        [ "${AG_WTMULTI[i]}" = 1 ] && need=$((need + 1))
       elif [ "${AG_RKEY[i]}" != "${AG_RKEY[i - 1]}" ]; then
-        # 別のリポジトリ: 前のリポジトリの閉じの区切り + 見出し(+ 小見出し)
-        need=$((need + 2))
-        [ "${AG_WTMULTI[i]}" = 1 ] && need=$((need + 1))
-      elif [ "${AG_WT[i]}" != "${AG_WT[i - 1]}" ]; then
-        # 同じリポジトリの別の worktree: 閉じの区切り + 小見出し
+        # 別のリポジトリ: 前のリポジトリの閉じの区切り + 見出し
         need=$((need + 2))
       fi
       ((used + need + 1 > avail)) && break
@@ -986,18 +969,11 @@ render() {
     for ((i = TOP_IDX; i < AG_N && shown < FIT; i++)); do
       if ((shown == 0)); then
         put_group_header "$i"
-        [ "${AG_WTMULTI[i]}" = 1 ] && put_wt_header "$i"
         put_sep "" "$i"
       elif [ "${AG_RKEY[i]}" != "${AG_RKEY[i - 1]}" ]; then
-        # 別のリポジトリ: 前のリポジトリの閉じの区切り → 見出し →(小見出し →)区切り
+        # 別のリポジトリ: 前のリポジトリの閉じの区切り → 見出し → 区切り
         put_sep "$((i - 1))" ""
         put_group_header "$i"
-        [ "${AG_WTMULTI[i]}" = 1 ] && put_wt_header "$i"
-        put_sep "" "$i"
-      elif [ "${AG_WT[i]}" != "${AG_WT[i - 1]}" ]; then
-        # 同じリポジトリの別の worktree: 閉じの区切り → 小見出し → 区切り
-        put_sep "$((i - 1))" ""
-        put_wt_header "$i"
         put_sep "" "$i"
       else
         put_sep "$((i - 1))" "$i"
@@ -1076,7 +1052,7 @@ parse_records() {
   AG_N=0
   AG_SESS=(); AG_WIN=(); AG_WNAME=(); AG_PANE=(); AG_TYPE=(); AG_ID=(); AG_ACT=(); AG_PROJ=(); AG_STATUS=(); AG_DETAIL=()
   AG_ELAPSED=(); AG_TITLE=(); AG_DIR=(); AG_BRANCH=(); AG_ROWS=(); AG_REPO=(); AG_RKEY=(); AG_WT=()
-  AG_WTMULTI=(); AG_RCOUNT=()
+  AG_RCOUNT=()
   while IFS='|' read -r tag sess win wname pane type id act proj st det elapsed title cwd; do
     case $tag in
       M) MAIN_PANES=$sess; FOCUSED=${win:-0} ;;
@@ -1088,8 +1064,8 @@ parse_records() {
         fmt_parent_dir "$cwd"; AG_DIR[AG_N]=$REPLY
         git_info_of "$cwd"
         AG_REPO[AG_N]=$GI_REPO; AG_RKEY[AG_N]=$GI_RKEY; AG_WT[AG_N]=$GI_WT; AG_BRANCH[AG_N]=$GI_BRANCH
-        # 名前 / 状態 の 2 行(リポジトリ・ブランチは見出しに出す)
-        AG_ROWS[AG_N]=2
+        # 名前 / ブランチ / 状態 の 3 行
+        AG_ROWS[AG_N]=3
         AG_N=$((AG_N + 1))
         ;;
     esac
@@ -1097,18 +1073,13 @@ parse_records() {
 
   reorder_agents
 
-  # リポジトリごとのまとまり(連続した範囲)について、worktree が複数あるか・Agent の数を求める
+  # リポジトリごとのまとまり(連続した範囲)の Agent の数を求める(見出しの右端に出す)
   i=0
   while ((i < AG_N)); do
     s=$i
     e=$i
     while ((e + 1 < AG_N)) && [ "${AG_RKEY[e + 1]}" = "${AG_RKEY[s]}" ]; do e=$((e + 1)); done
-    local multi=0
-    for ((j = s + 1; j <= e; j++)); do
-      [ "${AG_WT[j]}" != "${AG_WT[s]}" ] && { multi=1; break; }
-    done
     for ((j = s; j <= e; j++)); do
-      AG_WTMULTI[j]=$multi
       AG_RCOUNT[j]=$((e - s + 1))
     done
     i=$((e + 1))
