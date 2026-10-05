@@ -158,7 +158,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - 見た目は Orca の worktree 一覧を意識したカード表示。 **リポジトリごと**の見出し（`── dotfiles ─────── 3`、右端は Agent の件数）で区切り、各 Agent は背景色を敷いた 3 行のカードで、左端のバーが状態色
   - **グルーピング**: cwd の git から判定する（`git rev-parse --path-format=absolute --show-toplevel --git-common-dir`）。worktree の `--git-common-dir` は本体の `.git` を指すので、同じリポジトリの worktree は 1 つのリポジトリにまとまる。サブディレクトリで動く Agent は、その worktree に含まれる。git 管理外はディレクトリ名で 1 グループ（home は `~`）。結果は cwd ごとに 10 秒キャッシュ
   - **worktree / ブランチ**: 見出しには出さず、**各カードの 2 行目**に出す（同じリポジトリでも worktree ごとにブランチが違うため。以前は worktree ごとの小見出しにしていたが、カードに移した）。同じ worktree の Agent は並び順で隣り合う。git 管理外のディレクトリは、ブランチの代わりに親ディレクトリを出す
-  - **並び順**: リポジトリ名 → リポジトリのパス → worktree のパス → 元の window 番号 → 元の pane 番号 → session。Agent の増減・cockpit での入れ替え・tmux の window の並び替えでは動かない（window 番号は見出しに出さない）
+  - **並び順**: リポジトリは **window 順**（そのリポジトリの Agent が居る最も若い元の window 番号、同じ window なら pane 番号の若い順。それも同じならリポジトリのパス）→ worktree のパス → 元の window 番号 → 元の pane 番号 → session。cockpit での入れ替え（j/k）では動かない（枠に入った Agent は元の window・pane 番号を使う）。一方、`Ctrl-t S` などで window を並び替えたり、若い番号の window に Agent が増えたりすると、リポジトリのまとまりごと動く（window 番号は見出しに出さない。以前は動かないようにリポジトリ名の ABC 順にしていた）
   - 1 行目は **名前**、2 行目は **ブランチ**、3 行目は状態。常に 3 行（`名前 ……… 種別(右寄せ)` / ` ブランチ` / `[ ⠋ WORKING ] 待機理由 ……… 継続時間`）。リポジトリは見出しに出すのでカードには出さない。pane 番号と状態アイコン（●等）も出さない
   - **名前の優先順位**: 会話タイトル（`/tmp/claude-title-<sessionId>.txt`。statusline が書く。`/rename` の名前もここに入る）→
     トランスクリプトの `ai-title`（`~/.claude/projects/*/<sessionId>.jsonl` の `{"type":"ai-title","aiTitle":"…"}`。Claude Code 自身が書くので、

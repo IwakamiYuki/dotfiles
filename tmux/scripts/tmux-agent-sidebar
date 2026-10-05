@@ -1034,17 +1034,27 @@ FOOTER_FRAME=""
 # AG_* 配列の名前(並べ替えで一括して入れ替えるため、一覧にしておく)
 AG_ARRAYS="AG_SESS AG_WIN AG_WNAME AG_PANE AG_TYPE AG_ID AG_ACT AG_PROJ AG_STATUS AG_DETAIL AG_ELAPSED AG_TITLE AG_DIR AG_BRANCH AG_ROWS AG_REPO AG_RKEY AG_WT"
 
-# 並べ替え: リポジトリ名 → リポジトリのパス → worktree のパス → window 番号 → pane 番号 → session。
+# 並べ替え: リポジトリ(そのリポジトリの Agent が居る最も若い window 番号・pane 番号の順。同じなら
+# リポジトリのパス) → worktree のパス → window 番号 → pane 番号 → session。
 # window・pane 番号は元の位置(cockpit に入っている Agent は元の番号)を使うので、j/k で入れ替えても並びは動かない。
+# (window を並び替えたり、若い番号の window に Agent が増えたりすれば、リポジトリのまとまりごと動く)
 reorder_agents() {
   local i j v kv n=$AG_N sep=$'\001' w p name k
-  local idx=() keys=() old=()
+  local idx=() keys=() old=() pos=() first=()
   ((n < 2)) && return 0
   for ((i = 0; i < n; i++)); do
     printf -v w '%05d' "${AG_WIN[i]:-0}" 2>/dev/null || w=00000
     printf -v p '%05d' "${AG_PANE[i]:-0}" 2>/dev/null || p=00000
-    keys[i]="${AG_REPO[i]}${sep}${AG_RKEY[i]}${sep}${AG_WT[i]}${sep}${w}${sep}${p}${sep}${AG_SESS[i]}"
+    pos[i]="${w}${sep}${p}"
     idx[i]=$i
+  done
+  # 各リポジトリの先頭位置(window → pane の最小)。LC_COLLATE=C の文字列比較で、ゼロ埋めした番号の順になる
+  for ((i = 0; i < n; i++)); do
+    first[i]=${pos[i]}
+    for ((j = 0; j < n; j++)); do
+      [ "${AG_RKEY[j]}" = "${AG_RKEY[i]}" ] && [[ ${pos[j]} < ${first[i]} ]] && first[i]=${pos[j]}
+    done
+    keys[i]="${first[i]}${sep}${AG_RKEY[i]}${sep}${AG_WT[i]}${sep}${pos[i]}${sep}${AG_SESS[i]}"
   done
   # 件数が少ないので、安定な挿入ソートで十分
   for ((i = 1; i < n; i++)); do
