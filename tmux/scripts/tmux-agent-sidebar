@@ -9,6 +9,7 @@
 #   マウスクリック           : クリックした Agent の window・pane へジャンプ   r : 即時更新
 #   cockpit window(prefix + B)の sidebar では、j/k で選択した Agent の本物の pane が右の枠に入る(tmux-agent-cockpit)。
 #                              Enter = 右の枠へフォーカス、マウスクリック = その Agent を枠に入れる(移動はしない)
+#   q                        : cockpit の sidebar だけ。cockpit を閉じる(Ctrl-C と同じ)
 #   p / Space                : 選択中の Agent の pane をポップアップでプレビュー
 #                              （中で j/k 切り替え・Enter 移動。tmux-agent-sidebar-preview）
 #   自動プレビュー(@agent_sidebar_auto_preview): key = j/k を押すとポップアップを開く(既定)、
@@ -946,13 +947,13 @@ render() {
 
   put_title_row
   # 2 行目は罫線。sidebar にフォーカスがあるときは操作ヒントに切り替える(フォーカス状態の目印にもなる)
-  if [ "$FOCUSED" = 1 ] && ((width >= 30)); then
-    # 色指定を含むため、表示幅で切り詰める put は通さず直接積む(幅は 30 以上のときだけ出す)
+  if [ "$FOCUSED" = 1 ] && ((width >= (COCKPIT == 1 ? 31 : 30))); then
+    # 色指定を含むため、表示幅で切り詰める put は通さず直接積む(ヒントの文字数 + 1 以上の幅があるときだけ出す)
     if ((row < height)); then
       row=$((row + 1))
       ROW_AGENT[row]=""
       if [ "$COCKPIT" = 1 ]; then
-        frame+="${ESC}[${row};1H${C_DIM} ${C_ACTIVE}j/k${C_DIM} select  ${C_ACTIVE}⏎/l/h${C_DIM} focus${ESC}[K${C_RESET}"
+        frame+="${ESC}[${row};1H${C_DIM} ${C_ACTIVE}j/k${C_DIM} move  ${C_ACTIVE}⏎/l/h${C_DIM} focus  ${C_ACTIVE}q${C_DIM} quit${ESC}[K${C_RESET}"
       else
         frame+="${ESC}[${row};1H${C_DIM} ${C_ACTIVE}j/k${C_DIM} select  ${C_ACTIVE}⏎/l${C_DIM} jump  ${C_ACTIVE}p${C_DIM} peek${ESC}[K${C_RESET}"
       fi
@@ -1268,6 +1269,7 @@ read_key() {
     j) KEY=down ;;
     k) KEY=up ;;
     r) KEY=refresh ;;
+    q) KEY=quit ;;
     p | " ") KEY=preview ;;
     # l / h も Enter と同じ(cockpit では右の枠へフォーカス、通常は Agent へ移動)
     "" | l | h) KEY=enter ;;
@@ -1490,6 +1492,11 @@ while :; do
       ;;
     refresh)
       last_collect=-999
+      ;;
+    quit)
+      # cockpit の sidebar では、q で cockpit を閉じる(Ctrl-C と同じ終了処理: Agent を元へ戻し、交換用の枠も消して window ごと閉じる)。
+      # 通常の sidebar では何もしない(閉じるのは Ctrl-C)
+      [ "$COCKPIT" = 1 ] && exit 0
       ;;
     preview)
       # cockpit では右の枠で本物の pane が見えるので、ポップアップは使わない
