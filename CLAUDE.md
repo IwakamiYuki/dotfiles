@@ -196,7 +196,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - `Ctrl-t B` → cockpit window を開く（あれば移動）。開くと、選択中の Agent が右の枠に入る
 - cockpit の sidebar で `j` / `k`（`↓` / `↑`、ホイール、クリック）→ 右の枠の Agent が切り替わる。`Enter` / `l` / `h` → 右の枠へフォーカス（戻るのは `Ctrl-t h`）
 - `Ctrl-t &` → cockpit window では **先に Agent を元へ戻してから**閉じる（通常の window は従来どおり確認つき kill-window）
-- sidebar を `Ctrl-C` で終了すると、枠の Agent を元へ戻し、不要になった交換用の枠も消して、**cockpit window ごと閉じる**
+- cockpit の sidebar で `q`（または `Ctrl-C`）→ 枠の Agent を元へ戻し、不要になった交換用の枠も消して、**cockpit window ごと閉じる**（通常の sidebar では `q` は何もしない。閉じるのは `Ctrl-C`）
 - 「いまアクティブな pane の Agent」(`▶`)は通常 2 秒ごとの収集で更新されるが、フォーカスが動く操作（Enter / フォーカスイベント）の直後は、動き先が分かっているので手元で先に反映してから収集をやり直す（約 30ms で変わる。以前は 1〜2 秒）
 
 **見た目（タブ）**: cockpit の sidebar では、選択中のカードを「タブ」にする（選択 = 右の枠に出ている Agent なので、通常 sidebar の罫線カーソルと現在地の `▶` を一つにまとめる）。
