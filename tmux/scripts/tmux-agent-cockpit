@@ -10,10 +10,11 @@
 # 危険な点: Agent が cockpit の中にいる間に cockpit window を閉じると、Agent も終了する。
 # tmux には「閉じる直前」のフックが無いので、閉じる経路ごとに先に戻す:
 #   close  : 戻してから window を閉じる（.tmux.conf で prefix + & を差し替えている）
-#   restore: cockpit の sidebar が終了するときに呼ぶ
+#   teardown: cockpit の sidebar が終了するときに呼ぶ。戻してから slot も消すので、cockpit window ごと無くなる
+#   restore: Agent を元へ戻すだけ（slot は cockpit に残る）
 #   heal   : 戻し忘れ・Agent の終了で壊れた状態を直す（sidebar 起動時と、Agent が消えたときに呼ぶ）
 #
-# Usage: tmux-agent-cockpit open | show <pane_id> | restore | close | heal
+# Usage: tmux-agent-cockpit open | show <pane_id> | restore | teardown | close | heal
 #
 # 状態は tmux の option に持つ:
 #   window @agent_cockpit=1 / @agent_cockpit_slot=<slot の pane_id> / @agent_cockpit_shown=<表示中の Agent の pane_id>
@@ -218,6 +219,21 @@ do_open() {
   [ -n "$sb" ] && tmux select-pane -t "$sb"
 }
 
+# sidebar の終了時: Agent を元へ戻し、不要になった slot も消す(slot だけの cockpit window が残らないように)。
+# Agent を戻せなかった(まだ枠にいる)ときは、何も消さない: slot を消すと枠の Agent まで巻き込むおそれがあるため
+do_teardown() {
+  local cock shown slot
+  cock=$(find_cockpit)
+  [ -z "$cock" ] && return 0
+  do_restore
+  shown=$(wopt "$cock" @agent_cockpit_shown)
+  [ -n "$shown" ] && return 0
+  slot=$(wopt "$cock" @agent_cockpit_slot)
+  if pane_exists "$slot" && [ "$(pane_window "$slot")" = "$cock" ]; then
+    tmux kill-pane -t "$slot"
+  fi
+}
+
 do_close() {
   local cock
   cock=$(find_cockpit)
@@ -230,7 +246,8 @@ case "${1:-open}" in
   open) do_open ;;
   show) do_show "${2:?pane_id}" ;;
   restore) do_restore ;;
+  teardown) do_teardown ;;
   close) do_close ;;
   heal) do_heal ;;
-  *) echo "Usage: $0 open | show <pane_id> | restore | close | heal" >&2; exit 2 ;;
+  *) echo "Usage: $0 open | show <pane_id> | restore | teardown | close | heal" >&2; exit 2 ;;
 esac

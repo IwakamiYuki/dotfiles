@@ -190,7 +190,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - `Ctrl-t B` → cockpit window を開く（あれば移動）。開くと、選択中の Agent が右の枠に入る
 - cockpit の sidebar で `j` / `k`（`↓` / `↑`、ホイール、クリック）→ 右の枠の Agent が切り替わる。`Enter` / `l` / `h` → 右の枠へフォーカス（戻るのは `Ctrl-t h`）
 - `Ctrl-t &` → cockpit window では **先に Agent を元へ戻してから**閉じる（通常の window は従来どおり確認つき kill-window）
-- sidebar を `Ctrl-C` で終了しても、枠の Agent は元へ戻る
+- sidebar を `Ctrl-C` で終了すると、枠の Agent を元へ戻し、不要になった交換用の枠も消して、**cockpit window ごと閉じる**
 - 「いまアクティブな pane の Agent」(`▶`)は通常 2 秒ごとの収集で更新されるが、フォーカスが動く操作（Enter / フォーカスイベント）の直後は、動き先が分かっているので手元で先に反映してから収集をやり直す（約 30ms で変わる。以前は 1〜2 秒）
 
 **見た目（タブ）**: cockpit の sidebar では、選択中のカードを「タブ」にする（選択 = 右の枠に出ている Agent なので、通常 sidebar の罫線カーソルと現在地の `▶` を一つにまとめる）。
@@ -205,7 +205,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   （枠に入っている Agent の元の window 番号・名前と pane 番号。sidebar は元の window の見出しの下に、元の並び順で出し続ける。
   pane 番号を記録しないと、cockpit 内の番号で並べ替わってしまい、j/k のたびにカードの順番が入れ替わる）
 - `tmux-window-name` は cockpit window と slot を計算から外す（Agent の入れ替えで window 名が変わらないように）
-- 制御は `tmux-agent-cockpit open | show <pane_id> | restore | close | heal`。`heal` は、枠の Agent が終了して slot が元の window に取り残されたときに slot を cockpit へ戻す
+- 制御は `tmux-agent-cockpit open | show <pane_id> | restore | teardown | close | heal`。`teardown` は sidebar の終了時に呼ばれ、`restore` で Agent を戻したあと slot を消す（Agent を戻せなかったときは、巻き込まないよう何も消さない）。`heal` は、枠の Agent が終了して slot が元の window に取り残されたときに slot を cockpit へ戻す
   （sidebar は起動時と、cockpit の main pane が 0 になったときに呼ぶ。直後に次の Agent が自動で枠に入る）
 - `show` は高速パスで動く: 状態の確認を `list-panes -a` の 1 回にまとめ、「元へ戻す → 元の位置を記録 → 入れ替え → 記録」を tmux の複合コマンド（`;` 区切り）1 回で実行する
   （以前は tmux を約 25 回呼んで約 130ms、今は約 26ms）。想定外の状態（slot が無い・表示中の pane が消えた・複合コマンドが途中で失敗）は、確実に直せる従来の処理（`do_show_slow`）に任せる。

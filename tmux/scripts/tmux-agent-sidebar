@@ -153,8 +153,9 @@ TIMEOUT_CMD=""
 command -v gtimeout >/dev/null 2>&1 && TIMEOUT_CMD="gtimeout 5"
 
 cleanup() {
-  # cockpit の sidebar が終了するとき、枠に入っている Agent を元の位置へ戻す(戻さないと、cockpit を閉じたときに Agent も終了する)
-  [ "${COCKPIT:-0}" = 1 ] && "$COCKPIT_BIN" restore >/dev/null 2>&1
+  # cockpit の sidebar が終了するとき、枠に入っている Agent を元の位置へ戻し(戻さないと、cockpit を閉じたときに
+  # Agent も終了する)、不要になった交換用の枠も消す(cockpit window ごと閉じる)
+  [ "${COCKPIT:-0}" = 1 ] && "$COCKPIT_BIN" teardown >/dev/null 2>&1
   # ポップアップ中に終了した場合に備えて、プレビュー用の一時ファイルを消す
   rm -f "/tmp/tmux-agent-sidebar-preview-$$".*
   printf '%s' "${ESC}[?1004l${ESC}[?1006l${ESC}[?1000l${ESC}[?25h${ESC}[?1049l"
