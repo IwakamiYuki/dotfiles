@@ -15,9 +15,10 @@ mkdir -p ~/.claude/icons
 ln -sf ~/dotfiles/claude/icons/claude-ai-icon.png ~/.claude/icons/claude-ai-icon.png
 ln -sf ~/dotfiles/claude/settings.json ~/.claude/settings.json
 ln -sf ~/dotfiles/claude/CLAUDE.md ~/.claude/CLAUDE.md
-# tmux/scripts/ 配下は全部リンクする（.tmux.conf が ~/.tmux/scripts/ を参照。漏れると C-t b 等が no such file で失敗する）
-mkdir -p ~/.tmux/scripts
-for f in ~/dotfiles/tmux/scripts/*; do ln -sf "$f" ~/.tmux/scripts/"$(basename "$f")"; done
+# tmux/scripts/ はディレクトリごとリンクする（.tmux.conf が ~/.tmux/scripts/ を参照。スクリプトが増えてもリンクの追加は不要）
+# 旧方式（ファイルごとのリンク）で ~/.tmux/scripts が実ディレクトリのときは、先に退避する: mv ~/.tmux/scripts ~/.tmux/scripts.bak
+mkdir -p ~/.tmux
+ln -sfn ~/dotfiles/tmux/scripts ~/.tmux/scripts
 mkdir -p ~/Library/Application\ Support/lazygit
 ln -sf ~/dotfiles/lazygit/config.yml ~/Library/Application\ Support/lazygit/config.yml
 mkdir -p ~/Library/Application\ Support/com.mitchellh.ghostty

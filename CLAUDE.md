@@ -32,9 +32,10 @@ ln -sf ~/dotfiles/.vimrc ~/.vimrc
 ln -sf ~/dotfiles/.tmux.conf ~/.tmux.conf
 ln -s ~/.vimrc ~/.ideavimrc
 ln -sf ~/dotfiles/.zshrc ~/.zshrc
-# tmux/scripts/ 配下は全部リンクする（.tmux.conf が ~/.tmux/scripts/ を参照。漏れると C-t b 等が no such file で失敗する）
-mkdir -p ~/.tmux/scripts
-for f in ~/dotfiles/tmux/scripts/*; do ln -sf "$f" ~/.tmux/scripts/"$(basename "$f")"; done
+# tmux/scripts/ はディレクトリごとリンクする（.tmux.conf が ~/.tmux/scripts/ を参照。スクリプトが増えてもリンクの追加は不要）
+# 旧方式（ファイルごとのリンク）で ~/.tmux/scripts が実ディレクトリのときは、先に退避する: mv ~/.tmux/scripts ~/.tmux/scripts.bak
+mkdir -p ~/.tmux
+ln -sfn ~/dotfiles/tmux/scripts ~/.tmux/scripts
 ln -sf ~/dotfiles/claude/agents ~/.claude/agents
 ln -sf ~/dotfiles/claude/commands ~/.claude/commands
 ln -sf ~/dotfiles/claude/scripts ~/.claude/scripts
@@ -177,7 +178,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_ICON_DIR`、`AGENT_SIDEBAR_ALERT_STATE`、`AGENT_SIDEBAR_PROJECTS_DIR`、`AGENT_SIDEBAR_TITLE_CACHE`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
 
 **既知の制限**:
-- 別の Mac へ移したときは `~/.tmux/scripts/` へのリンクが必要（git では運ばれない）。「初期セットアップ」のループで `tmux/scripts/*` を全部リンクする。足りないと `C-t b` / `C-t c` が `no such file or directory: ~/.tmux/scripts/tmux-agent-sidebar-open` で失敗する
+- 別の Mac へ移したときは `~/.tmux/scripts` へのリンクが必要（git では運ばれない）。「初期セットアップ」のとおりディレクトリごとリンクする（以前のファイルごとのリンクは、スクリプトの追加時に漏れていた）。リンクが無いと `C-t b` / `C-t c` が `no such file or directory: ~/.tmux/scripts/tmux-agent-sidebar-open` で失敗する
 - tmux-resurrect で復元すると、sidebar pane は空のシェル pane になる（`C-t b` を押す前に邪魔なら閉じる）
 - 既存 window へは自動追加しない（必要な window で `C-t b`）
 - 起動中のスクリプトを書き換えると bash が壊れた読み方をするため、スクリプトを更新したら sidebar は閉じて開き直す
