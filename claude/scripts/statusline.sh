@@ -4,6 +4,7 @@
 #
 # 表示項目：
 # 📝 会話タイトル - session_name（/rename の名前か AI 生成タイトル）。無ければ generate-title.sh で生成
+#                  プラン承認で付く英語のハイフンつなぎの名前は translate-title.sh で日本語にする
 # 🤖 モデル名 + effort - 使用中のモデルと reasoning effort（fast mode 時は ⚡）
 # 💬 コンテキスト使用量 - 入力トークン数 / ウィンドウサイズ と使用率
 # 🧊 プロンプトキャッシュ - warm なら失効時刻、切れていれば cold。cold 時の再キャッシュ量と miss 件数
@@ -139,9 +140,13 @@ make_bar() {
 
 # 会話タイトル: session_name を優先し、他スクリプト（hooks/notify-*.sh、tmux-claude-agents-jump）が
 # 読むキャッシュファイルにも書き出す。session_name が無い間は従来の AI 生成にフォールバック
+# プラン承認で付く英語のハイフンつなぎの名前は読みにくいので、translate-title.sh で日本語にして書き出す
 build_title() {
     local title="$session_name"
     if [ -n "$title" ] && [ -n "$session_id" ]; then
+        if [[ "$title" =~ ^[a-z0-9]+(-[a-z0-9]+)+$ ]]; then
+            title=$(bash ~/.claude/scripts/translate-title.sh "$session_id" "$title" "$transcript_path")
+        fi
         local cache_file="/tmp/claude-title-${session_id}.txt"
         if [ "$(cat "$cache_file" 2>/dev/null)" != "$title" ]; then
             echo "$title" > "$cache_file" 2>/dev/null

@@ -279,6 +279,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - `statusline.sh`: カスタムステータスライン（会話タイトル、モデル + effort、コンテキスト使用量、プロンプトキャッシュ状態と cold 時の再キャッシュ量、推定コスト、支出上限、PR とレビュー状態、処理時間、バージョン、レートリミット警告を表示）
 - `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
 - `generate-title.sh`: 会話タイトル生成（AI 生成）。codex CLI で会話全体を要約してタイトルを作成。失敗時は extract-title.sh にフォールバック
+- `translate-title.sh`: プラン承認で付く英語のハイフンつなぎのセッション名（例: `eve-account-takeover-redesign`）を codex で日本語に訳す（statusline から呼ぶ）
 - `debug-statusline-input.sh`: statusLine 入力データのデバッグ用
 - `fetch_pr_comments.sh`: PR コメント取得（表示専用）
 - `auto_reply_pr_comments.sh`: PR コメント自動対応（修正 + 返信）
@@ -288,6 +289,12 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 **会話タイトル機能について**:
 - **statusLine での表示**: 1 行表示の先頭に会話タイトルを表示。例: `📝 statusLine見直し | 🤖 Opus 5.5 xhigh | 💬 ... | 🧊 ~14:38 | ...`
 - **タイトルの取得元**: Claude Code が渡す `session_name`（`/rename` の名前か AI 生成タイトル）を優先し、キャッシュファイルにも書き出す。`session_name` が無い間のみ `generate-title.sh` で生成
+- **プラン承認後の英語名の翻訳**: Claude Code はプランを承認するとタイトルを `eve-account-takeover-redesign` のような英語のハイフンつなぎに付け替える（言語や形式を変える設定は無い）。
+  `session_name` が `^[a-z0-9]+(-[a-z0-9]+)+$` に合うときだけ `translate-title.sh` が日本語にする
+  - 訳が無い間はハイフンを空白にした名前を出し、バックグラウンドで codex に訳させる（約 10〜20 秒）。訳が出来たらキャッシュファイルを書き直すので、sidebar・通知にもそのまま反映される
+  - 名前だけだと意味を取り違える（"takeover" が「乗っ取り」になる等）ため、トランスクリプトの最後の `ExitPlanMode` のプラン本文（先頭 800 文字）を参考に渡す
+  - 訳は `/tmp/claude-title-ja-cache.txt`（`英語名|訳`）に保存し、同じ名前は訳し直さない。誤訳を直すときはこのファイルの該当行を消す
+  - statusline が動いていないセッションの sidebar（トランスクリプトの `ai-title` を使う）は英語のまま
 - **通知での表示**: タスク完了時の通知タイトルに AI 生成タイトルを含める。例: `✅ Claude Code [dotfiles] - statusLine実装調査`
 - **キャッシュ**: `/tmp/claude-title-<session_id>.txt` にキャッシュされ、同じセッション内での重複生成を回避
 - **環境変数**:
