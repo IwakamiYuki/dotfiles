@@ -1,0 +1,81 @@
+#!/bin/bash
+# tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id>)
+# リポジトリのディレクトリで新しい pane を作り、Claude Code / Codex を新規セッションで起動する(sidebar の n から呼ばれる)。
+#
+# - pane の置き場所: anchor(そのリポジトリの先頭に表示されている Agent)の pane がある window。
+#   anchor が cockpit の枠に入っているときは、元の window を交換用の枠(slot)の位置から割り出す
+#   (slot は枠に入った Agent の元の位置に居る)。割り出せなければ新しい window にする
+# - 新しい pane は anchor(または slot)を分割して作る。横幅が十分(SPLIT_H_MIN 以上)なら左右、狭ければ上下
+# - 起動はシェルを立ち上げてからコマンドを入力する。Agent が終了してもシェルが残り、tmux-agent-restart(R)がそのまま使える
+# - 起動するコマンドは tmux の option で変えられる(例: --dangerously-skip-permissions を付けたいとき)
+#     @agent_sidebar_claude_cmd（既定 claude）/ @agent_sidebar_codex_cmd（既定 codex）
+# - --focus: 作った pane へ移動する(通常の sidebar)
+#   --notify: 移動せず、sidebar の pane option @agent_new_pane に作った pane_id を書く。
+#             cockpit の sidebar が、Agent として検出されてから枠に入れる(cockpit の window から離れない)
+
+set -u
+
+SPLIT_H_MIN=120
+
+say() { tmux display-message "new: $*" 2>/dev/null; }
+die() { say "$*"; exit 1; }
+
+type=${1:-}; anchor=${2:-}; dir=${3:-}; mode=${4:-}; sidebar=${5:-}
+case $type in
+  claude | codex) ;;
+  *) echo "usage: tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id>)" >&2; exit 2 ;;
+esac
+case $mode in
+  --focus) ;;
+  --notify) [ -n "$sidebar" ] || exit 2 ;;
+  *) exit 2 ;;
+esac
+[ -d "$dir" ] || die "ディレクトリがありません ($dir)"
+
+cmd=$(tmux show-option -gqv "@agent_sidebar_${type}_cmd" 2>/dev/null)
+[ -n "$cmd" ] || cmd=$type
+
+# display-message は存在しない pane でもエラーにならないので、返ってきた pane_id の一致で確かめる
+info=$(tmux display-message -p -t "$anchor" '#{pane_id}|#{window_id}|#{@agent_cockpit}|#{pane_width}' 2>/dev/null)
+split_target=""
+width=0
+if [ "${info%%|*}" = "$anchor" ]; then
+  rest=${info#*|}
+  awin=${rest%%|*}; rest=${rest#*|}
+  acock=${rest%%|*}; width=${rest#*|}
+  if [ "$acock" = 1 ]; then
+    # cockpit の枠に入っている → 元の window は slot の位置
+    slot=$(tmux show-option -wqv -t "$awin" @agent_cockpit_slot 2>/dev/null)
+    sinfo=$(tmux display-message -p -t "$slot" '#{pane_id}|#{window_id}|#{pane_width}' 2>/dev/null)
+    if [ -n "$slot" ] && [ "${sinfo%%|*}" = "$slot" ]; then
+      srest=${sinfo#*|}
+      if [ "${srest%%|*}" != "$awin" ]; then
+        split_target=$slot
+        width=${srest#*|}
+      fi
+    fi
+  else
+    split_target=$anchor
+  fi
+fi
+
+if [ -n "$split_target" ]; then
+  dirflag=-v
+  [[ $width =~ ^[0-9]+$ ]] && ((width >= SPLIT_H_MIN)) && dirflag=-h
+  new=$(tmux split-window -d "$dirflag" -P -F '#{pane_id}' -c "$dir" -t "$split_target" 2>/dev/null)
+else
+  # 置き場所を割り出せなかった: anchor の session に新しい window を作る
+  new=$(tmux new-window -d -P -F '#{pane_id}' -c "$dir" 2>/dev/null)
+fi
+[ -n "$new" ] || die "pane を作れませんでした"
+
+tmux send-keys -t "$new" -l "$cmd"
+tmux send-keys -t "$new" Enter
+
+if [ "$mode" = "--focus" ]; then
+  tmux switch-client -t "$new" 2>/dev/null
+  tmux select-window -t "$new" \; select-pane -t "$new" 2>/dev/null
+else
+  tmux set-option -p -t "$sidebar" @agent_new_pane "$new" 2>/dev/null
+fi
+say "$type を起動しました (${dir##*/})"

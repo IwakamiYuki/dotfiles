@@ -133,6 +133,14 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - Agent の cwd がシェルの cwd と違うとき（worktree へ移った場合など）は、`cd <cwd> &&` を付けて再開する
   - **扱わないケース**: Agent が pane の直下で起動されていて、シェルが無い pane（終了すると pane ごと閉じるため）。戻った先が既知のシェル（zsh / bash / sh / dash / ksh / fish）でないときも、何も入力しない。Codex は未対応
   - 環境変数: `AGENT_RESTART_CLAUDE_CMD`（入力するコマンド名。既定 `claude`）
+- sidebar 上で `n` → 選択中のカードの **リポジトリで新しい pane を作り**、Claude Code / Codex を新規セッションで起動する（tmux のメニューで `c` = Claude / `x` = Codex を選ぶ。通常の sidebar・cockpit のどちらでも効く）
+  - `tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id>)` が処理する
+  - **ディレクトリ**: リポジトリの本体（worktree のカードを選んでいても、大本のディレクトリ。見出しのリポジトリと同じ `AG_RKEY`）。git 管理外のグループはそのディレクトリ
+  - **置き場所**: そのリポジトリの **先頭に表示されている Agent の window**（anchor の pane を分割する。幅が 120 以上なら左右、狭ければ上下）。anchor が cockpit の枠に入っているときは、元の window を交換用の枠（slot）の位置から割り出す（slot は枠に入った Agent の元の位置に居るため）。割り出せなければ新しい window にする
+  - シェルを立ち上げてからコマンドを入力するので、Agent が終了してもシェルが残り、`R`（再起動）がそのまま使える
+  - 通常の sidebar（`--focus`）は、作った pane へ移動する。cockpit（`--notify`）は cockpit の window から離れず、sidebar の pane option `@agent_new_pane` に pane_id を書く。sidebar が **Agent として検出されたら**（Claude は `claude agents --json` に載るまで数秒かかる。40 秒まで探す）選択して枠へ入れる
+  - 起動コマンドは tmux の option で変えられる: `@agent_sidebar_claude_cmd`（既定 `claude`）/ `@agent_sidebar_codex_cmd`（既定 `codex`）。たとえば `set -g @agent_sidebar_claude_cmd 'claude --dangerously-skip-permissions'`
+  - パスにクォートや `$` `#` `\` などを含むときは（tmux のコマンド文字列に埋め込むため）扱わない。まだ Agent が 1 つも居ないリポジトリは、sidebar に出ないので選べない
 - sidebar 上で `j` / `k`（`↓` / `↑`）→ 選択を動かして、そのまま **ポップアップでプレビュー**を開く（`@agent_sidebar_auto_preview`、後述）。マウスホイールは選択を動かすだけで、開かない
 - sidebar 上で `p`（または Space）→ 選択中の Agent の pane を **ポップアップでプレビュー**（`tmux-agent-sidebar-preview`）
   - 中身は `tmux capture-pane -e -p`（色つき・読み取り専用）を 1 秒ごとに更新。Agent には影響しない
@@ -370,6 +378,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 │   ├── tmux-agent-cockpit         # Agent cockpit の制御（open / show / restore / close / heal）
 │   ├── tmux-agent-cockpit-slot    # cockpit の右の枠に常駐する交換用 pane
 │   ├── tmux-agent-restart         # sidebar の R で呼ばれる Claude Code の再起動（終了 → --resume で入り直す）
+│   ├── tmux-agent-new             # sidebar の n で呼ばれる、リポジトリでの新規 pane + Claude / Codex の新規起動
 │   ├── tmux-window-reorder        # C-t S の window 並び替えポップアップ
 │   ├── tmux-rate-limits   # レートリミット使用率表示（現在はステータスバーから外し、sidebar の USAGE 欄が代替）
 │   └── ...                # その他スクリプト

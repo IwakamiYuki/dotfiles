@@ -1164,6 +1164,11 @@ PREVIEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-sidebar-preview"
 COCKPIT=0
 COCKPIT_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-cockpit"
 RESTART_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-restart"
+NEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-new"
+# tmux-agent-new が通知してきた「作ったばかりの pane」。Agent として検出されるまで探す秒数と合わせて持つ
+PENDING_ID=""
+PENDING_UNTIL=0
+PENDING_NEW_SEC=40
 cockpit_shown=""
 
 # 「いまアクティブな pane」の Agent(▶ とシアンの名前)は、通常 2 秒ごとの収集でしか更新されない。
@@ -1281,6 +1286,49 @@ restart_selected() {
   esac
 }
 
+# 選択中のカードのリポジトリで、新しい pane を作って Claude Code / Codex を新規セッションで起動する(メニューで種別を選ぶ)。
+# 置き場所は、そのリポジトリの先頭に表示されている Agent の window(cockpit の枠に入っていれば元の window)。
+# ディレクトリはリポジトリの本体(worktree でも大本のディレクトリ)。実際の処理は tmux-agent-new
+new_agent_menu() {
+  ((AG_N > 0)) || return 0
+  local s=$SEL_IDX dir anchor repo mode
+  while ((s > 0)) && [ "${AG_RKEY[s - 1]}" = "${AG_RKEY[SEL_IDX]}" ]; do s=$((s - 1)); done
+  anchor=${AG_ID[s]}
+  dir=${AG_RKEY[SEL_IDX]}
+  repo=${AG_REPO[SEL_IDX]}
+  if [ ! -d "$dir" ]; then
+    tmux display-message "new: ディレクトリがありません ($dir)" 2>/dev/null
+    return 0
+  fi
+  # パスは tmux のコマンド文字列に埋め込むので、引用符・展開に使う文字を含むものは扱わない
+  case $dir in
+    *[\'\"\\\$\`\#]* | *$'\n'*)
+      tmux display-message "new: このパスは扱えません ($dir)" 2>/dev/null
+      return 0
+      ;;
+  esac
+  if [ "$COCKPIT" = 1 ]; then mode="--notify '$TMUX_PANE'"; else mode="--focus"; fi
+  tmux display-menu -T "New agent: ${repo//\#/##}" -x C -y C \
+    "Claude" c "run-shell -b \"'$NEW_BIN' claude '$anchor' '$dir' $mode\"" \
+    "Codex" x "run-shell -b \"'$NEW_BIN' codex '$anchor' '$dir' $mode\"" 2>/dev/null
+}
+
+# cockpit で、新規に作った Agent が検出されたら選択して枠へ入れる。検出まで数秒かかるので、一定時間は探し続ける
+select_pending_agent() {
+  local i
+  for ((i = 0; i < AG_N; i++)); do
+    if [ "${AG_ID[i]}" = "$PENDING_ID" ]; then
+      SEL_IDX=$i
+      SEL_KEY="${AG_ID[i]}|${AG_TYPE[i]}"
+      PENDING_ID=""
+      [ "$COCKPIT" = 1 ] && cockpit_show_selected
+      return 0
+    fi
+  done
+  ((SECONDS >= PENDING_UNTIL)) && PENDING_ID=""
+  return 0
+}
+
 # 入力を 1 件読み、KEY に up / down / enter / refresh / click / other を、
 # クリックなら CLICK_ROW に行番号を入れる。タイムアウト時は KEY が空になる
 read_key() {
@@ -1293,6 +1341,7 @@ read_key() {
     k) KEY=up ;;
     r) KEY=refresh ;;
     R) KEY=restart ;;
+    n) KEY=new ;;
     q) KEY=quit ;;
     p | " ") KEY=preview ;;
     # l / h も Enter と同じ(cockpit では右の枠へフォーカス、通常は Agent へ移動)
@@ -1367,6 +1416,7 @@ opt_scope=""
 opt_type_icon=""
 opt_passthrough=""
 opt_cockpit=""
+new_pane=""
 AUTO_PREVIEW=key
 # ポップアップを閉じた時刻(SECONDS)。閉じた直後に届きうるフォーカスイベントで再び開かないための目安
 PREVIEW_END=-999
@@ -1378,8 +1428,8 @@ CLICK_ROW=0
 while :; do
   if ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}' 2>/dev/null)
-    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown <<< "$opts"
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}' 2>/dev/null)
+    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane <<< "$opts"
     [ "$opt_cockpit" = 1 ] && COCKPIT=1 || COCKPIT=0
     [ "$opt_scope" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
     [ -z "$AUTO_PREVIEW" ] && AUTO_PREVIEW=key
@@ -1396,6 +1446,12 @@ while :; do
     # tmux が応答しない（server 終了）場合は終了する
     [ -z "$records" ] && exit 0
     parse_records "$records"
+    if [ -n "$new_pane" ]; then
+      tmux set-option -pu -t "$TMUX_PANE" @agent_new_pane 2>/dev/null
+      PENDING_ID=$new_pane
+      PENDING_UNTIL=$((SECONDS + PENDING_NEW_SEC))
+    fi
+    [ -n "$PENDING_ID" ] && select_pending_agent
     read_limits
     # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる。
     # cockpit では、枠に入っていた Agent が終了しただけのことがあるので、交換用の枠を戻してから判断する
@@ -1519,6 +1575,9 @@ while :; do
       ;;
     restart)
       restart_selected
+      ;;
+    new)
+      new_agent_menu
       ;;
     quit)
       # cockpit の sidebar では、q で cockpit を閉じる(Ctrl-C と同じ終了処理: Agent を元へ戻し、交換用の枠も消して window ごと閉じる)。
