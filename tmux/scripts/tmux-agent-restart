@@ -1,0 +1,121 @@
+#!/bin/bash
+# tmux-agent-restart <pane_id> : pane の Claude Code を終了し、同じ pane のシェルで --resume つきに起動し直す。
+# バージョンアップや設定の反映のために再起動したいとき用(sidebar の R から呼ばれる)。
+#
+# 流れ: claude agents --json から pane の Agent(pid・sessionId・cwd)を特定
+#       → SIGTERM で終了 → 戻ったシェルに「claude <引き継ぐ引数> --resume <sessionId>」を入力して実行
+#
+# - 作業中でも止める(確認は呼び出し側の責務。sidebar が WORKING / WAITING のときに y/n を挟む)。
+#   会話は resume で戻るが、実行中の処理は失われる
+# - Agent が pane の直下で起動されている(シェルが無い)pane は、終了すると pane ごと閉じるので扱わない
+# - 戻った先が既知のシェルでなければ、何も入力しない(別のプログラムへキーを送らない)
+# - 引き継ぐ引数は許可リストだけ(ps から引用符つきの引数を正確に復元できないため。値は安全な文字のものに限る):
+#     フラグ: --dangerously-skip-permissions / --allow-dangerously-skip-permissions / --chrome / --no-chrome / --ide
+#     値つき: --model / --effort / --permission-mode / --fallback-model（`--flag value` と `--flag=value`）
+# - 環境変数: AGENT_SIDEBAR_CLAUDE_BIN（agents --json を出すコマンド）、AGENT_RESTART_CLAUDE_CMD（入力するコマンド名。既定 claude）
+#
+# 結果は tmux の display-message で出す。
+
+set -u
+
+CLAUDE_BIN="${AGENT_SIDEBAR_CLAUDE_BIN:-claude}"
+CLAUDE_CMD="${AGENT_RESTART_CLAUDE_CMD:-claude}"
+EXIT_WAIT_TICKS=50   # 0.2 秒 × 50 = 10 秒まで終了を待つ
+SAFE_VALUE='^[A-Za-z0-9._:/@+-]+$'
+
+say() { tmux display-message "restart: $*" 2>/dev/null; }
+die() { say "$*"; exit 1; }
+
+pane=${1:-}
+[ -n "$pane" ] || { echo "usage: tmux-agent-restart <pane_id>" >&2; exit 2; }
+
+# display-message は存在しない pane でもエラーにならないので、返ってきた pane_id の一致で確かめる
+info=$(tmux display-message -p -t "$pane" '#{pane_id}|#{pane_pid}' 2>/dev/null)
+[ "${info%%|*}" = "$pane" ] || die "pane が見つかりません ($pane)"
+pane_pid=${info#*|}
+
+# pid の祖先をたどって root(= pane のシェル)に着くか
+is_descendant() {
+  local p=$1 root=$2 n=0
+  while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null && ((n++ < 30)); do
+    [ "$p" = "$root" ] && return 0
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+  done
+  return 1
+}
+
+json=$("$CLAUDE_BIN" agents --json 2>/dev/null) || die "claude agents --json に失敗しました"
+
+agent_pid=""; agent_sid=""; agent_cwd=""
+while IFS='|' read -r pid sid cwd; do
+  [ -n "$pid" ] || continue
+  if is_descendant "$pid" "$pane_pid"; then
+    agent_pid=$pid; agent_sid=$sid; agent_cwd=$cwd
+    break
+  fi
+done < <(printf '%s' "$json" | jq -r '.[] | "\(.pid)|\(.sessionId // "")|\(.cwd // "")"' 2>/dev/null)
+
+[ -n "$agent_pid" ] || die "この pane に Claude Code が見つかりません"
+[ -n "$agent_sid" ] || die "sessionId が分からないので再開できません"
+[[ $agent_sid =~ ^[A-Za-z0-9-]+$ ]] || die "sessionId の形式が想定外です"
+[ "$agent_pid" != "$pane_pid" ] || die "シェルを介さずに起動された Agent は未対応です(終了すると pane が閉じます)"
+
+# 引き継ぐ引数(許可リストだけ)。ps の 1 語目は実行ファイルなので飛ばす
+keep=""
+dropped=0
+set -f
+set -- $(ps -ww -o args= -p "$agent_pid" 2>/dev/null)
+set +f
+shift 2>/dev/null
+while [ $# -gt 0 ]; do
+  a=$1; shift
+  case $a in
+    --dangerously-skip-permissions | --allow-dangerously-skip-permissions | --chrome | --no-chrome | --ide)
+      keep+=" $a" ;;
+    --model | --effort | --permission-mode | --fallback-model)
+      v=${1:-}
+      if [[ $v =~ $SAFE_VALUE ]]; then keep+=" $a $v"; shift; else dropped=$((dropped + 1)); fi ;;
+    --model=* | --effort=* | --permission-mode=* | --fallback-model=*)
+      v=${a#*=}
+      if [[ $v =~ $SAFE_VALUE ]]; then keep+=" $a"; else dropped=$((dropped + 1)); fi ;;
+    # 再開の指定は新しく付け直すので引き継がない(値つきの -r / --resume の値も読み飛ばす)
+    -r | --resume | --session-id | --from-pr) [ $# -gt 0 ] && [[ ${1:-} != -* ]] && shift ;;
+    -c | --continue | --resume=* | --session-id=* | --fork-session) ;;
+    *) dropped=$((dropped + 1)) ;;
+  esac
+done
+
+# SIGTERM で終了させる(Ctrl-C や /exit は入力欄の状態に左右されるため使わない)
+kill -TERM "$agent_pid" 2>/dev/null || die "終了できませんでした (pid $agent_pid)"
+ticks=0
+while kill -0 "$agent_pid" 2>/dev/null; do
+  ((++ticks > EXIT_WAIT_TICKS)) && die "10 秒待っても終了しませんでした (pid $agent_pid)。手動で終了してください"
+  sleep 0.2
+done
+sleep 0.3
+
+# 戻った先が既知のシェルのときだけ入力する
+cur=$(tmux display-message -p -t "$pane" '#{pane_id}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null)
+[ "${cur%%|*}" = "$pane" ] || die "再起動前に pane が閉じました。再開: claude --resume $agent_sid"
+rest=${cur#*|}
+cmd_name=${rest%%|*}
+cur_path=${rest#*|}
+cmd_name=${cmd_name#-}
+case ${cmd_name##*/} in
+  zsh | bash | sh | dash | ksh | fish) ;;
+  *) die "シェルに戻らなかったので入力しません ($cmd_name)。再開: claude --resume $agent_sid" ;;
+esac
+
+line="$CLAUDE_CMD$keep --resume $agent_sid"
+# Agent の cwd とシェルの cwd が違うとき(worktree へ移った場合など)は、同じ場所へ移ってから再開する
+if [ -n "$agent_cwd" ] && [ "$agent_cwd" != "$cur_path" ]; then
+  printf -v q '%q' "$agent_cwd"
+  line="cd $q && $line"
+fi
+
+tmux send-keys -t "$pane" -l "$line"
+tmux send-keys -t "$pane" Enter
+
+note=""
+((dropped > 0)) && note=" (引き継がなかった引数: ${dropped})"
+say "再起動しました (${agent_sid:0:8})$note"

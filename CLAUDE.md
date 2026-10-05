@@ -126,6 +126,13 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - ⚠️ `Ctrl-t a`（Claude 一覧ポップアップ）が使用済みのため、再表示キーは `b`
 - sidebar 上で `j` / `k`（`↓` / `↑`、マウスホイール）→ 選択を移動。選択中のカードはオレンジの角丸罫線で囲まれる（sidebar にフォーカスがあるときだけ表示。このとき 2 行目に操作ヒントも出る）
 - sidebar 上で `Enter` / `l` / `h`、または Agent の行を **クリック** → その Agent の window・pane へジャンプ（`r` で即時更新）
+- sidebar 上で `R`（大文字）→ 選択中の Claude Code を **再起動**（バージョンアップや設定の反映用。通常の sidebar・cockpit のどちらでも効く。ヒント行には出さない）
+  - `tmux-agent-restart <pane_id>` が、`claude agents --json` で pane の Agent（pid・sessionId・cwd）を特定 → `SIGTERM` で終了 → 戻ったシェルに `claude <引き継ぐ引数> --resume <sessionId>` を入力して実行する
+  - IDLE / DONE は確認なしで再起動。WORKING / WAITING のときは、tmux の確認プロンプト（`y/n`）を挟む（会話は resume で戻るが、実行中の処理は失われる）。結果は `display-message` に出る
+  - 引き継ぐ引数は許可リストだけ（`--dangerously-skip-permissions` / `--allow-dangerously-skip-permissions` / `--chrome` / `--no-chrome` / `--ide` / `--model` / `--effort` / `--permission-mode` / `--fallback-model`）。`ps` から引用符つきの引数を正確に復元できないため、`--append-system-prompt` などは引き継がない（落とした数を結果に出す）
+  - Agent の cwd がシェルの cwd と違うとき（worktree へ移った場合など）は、`cd <cwd> &&` を付けて再開する
+  - **扱わないケース**: Agent が pane の直下で起動されていて、シェルが無い pane（終了すると pane ごと閉じるため）。戻った先が既知のシェル（zsh / bash / sh / dash / ksh / fish）でないときも、何も入力しない。Codex は未対応
+  - 環境変数: `AGENT_RESTART_CLAUDE_CMD`（入力するコマンド名。既定 `claude`）
 - sidebar 上で `j` / `k`（`↓` / `↑`）→ 選択を動かして、そのまま **ポップアップでプレビュー**を開く（`@agent_sidebar_auto_preview`、後述）。マウスホイールは選択を動かすだけで、開かない
 - sidebar 上で `p`（または Space）→ 選択中の Agent の pane を **ポップアップでプレビュー**（`tmux-agent-sidebar-preview`）
   - 中身は `tmux capture-pane -e -p`（色つき・読み取り専用）を 1 秒ごとに更新。Agent には影響しない
@@ -362,6 +369,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 │   ├── tmux-agent-sidebar-preview # sidebar の p で開くポップアップ（pane のライブプレビュー）
 │   ├── tmux-agent-cockpit         # Agent cockpit の制御（open / show / restore / close / heal）
 │   ├── tmux-agent-cockpit-slot    # cockpit の右の枠に常駐する交換用 pane
+│   ├── tmux-agent-restart         # sidebar の R で呼ばれる Claude Code の再起動（終了 → --resume で入り直す）
 │   ├── tmux-window-reorder        # C-t S の window 並び替えポップアップ
 │   ├── tmux-rate-limits   # レートリミット使用率表示（現在はステータスバーから外し、sidebar の USAGE 欄が代替）
 │   └── ...                # その他スクリプト

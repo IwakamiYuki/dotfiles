@@ -1153,6 +1153,7 @@ PREVIEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-sidebar-preview"
 # cockpit window(prefix + B)の sidebar のとき 1。選択した Agent の pane を右の枠へ入れる
 COCKPIT=0
 COCKPIT_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-cockpit"
+RESTART_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-restart"
 cockpit_shown=""
 
 # 「いまアクティブな pane」の Agent(▶ とシアンの名前)は、通常 2 秒ごとの収集でしか更新されない。
@@ -1247,6 +1248,29 @@ open_preview() {
   size_dirty=1
 }
 
+# 選択中の Claude Code を再起動する(tmux-agent-restart に任せる)。
+# 作業中・許可待ちのときは中断されるので、tmux の確認プロンプト(y/n)を挟む。結果は display-message に出る
+restart_selected() {
+  local i=$SEL_IDX id name
+  ((AG_N > 0)) || return 0
+  id=${AG_ID[i]}
+  if [ "${AG_TYPE[i]}" != Claude ]; then
+    tmux display-message "restart: ${AG_TYPE[i]} の再起動は未対応です" 2>/dev/null
+    return 0
+  fi
+  case ${AG_STATUS[i]} in
+    working | waiting)
+      name=${AG_TITLE[i]:-${AG_PROJ[i]}}
+      # プロンプトの文字列は書式として展開されるので、# は二重にする
+      tmux confirm-before -p "${name//\#/##} は ${AG_STATUS[i]} です。中断して再起動しますか? (y/n)" \
+        "run-shell -b \"'$RESTART_BIN' '$id'\"" 2>/dev/null
+      ;;
+    *)
+      "$RESTART_BIN" "$id" >/dev/null 2>&1 &
+      ;;
+  esac
+}
+
 # 入力を 1 件読み、KEY に up / down / enter / refresh / click / other を、
 # クリックなら CLICK_ROW に行番号を入れる。タイムアウト時は KEY が空になる
 read_key() {
@@ -1258,6 +1282,7 @@ read_key() {
     j) KEY=down ;;
     k) KEY=up ;;
     r) KEY=refresh ;;
+    R) KEY=restart ;;
     q) KEY=quit ;;
     p | " ") KEY=preview ;;
     # l / h も Enter と同じ(cockpit では右の枠へフォーカス、通常は Agent へ移動)
@@ -1481,6 +1506,9 @@ while :; do
       ;;
     refresh)
       last_collect=-999
+      ;;
+    restart)
+      restart_selected
       ;;
     quit)
       # cockpit の sidebar では、q で cockpit を閉じる(Ctrl-C と同じ終了処理: Agent を元へ戻し、交換用の枠も消して window ごと閉じる)。
