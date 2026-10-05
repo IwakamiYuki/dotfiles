@@ -625,6 +625,17 @@ card_row() {
 # card_row が行末に置く文字列(通常は空)
 ROW_TAIL=""
 
+# 選択中のカードを橙の角丸罫線で囲むか。
+# 通常の sidebar: sidebar にフォーカスがあるとき(カーソル)。
+# cockpit: 右の枠にフォーカスがあるとき(sidebar にフォーカスがある間は、罫線ではなく橙の塗りつぶしのタブにする)
+box_cursor() {
+  if [ "$COCKPIT" = 1 ]; then
+    [ "$FOCUSED" != 1 ]
+  else
+    [ "$FOCUSED" = 1 ]
+  fi
+}
+
 # Agent 間・window 区切りの 1 行。直下のカードが選択中ならその上辺 ╭──╮、直上のカードが選択中なら下辺 ╰──╯、
 # どちらでもなければ空行。空行を罫線に兼用するので、選択しても行数は増えない
 put_sep() {
@@ -632,9 +643,11 @@ put_sep() {
   ((row >= height)) && return 0
   row=$((row + 1))
   ROW_AGENT[row]=""
-  if [ "$COCKPIT" != 1 ] && [ "$FOCUSED" = 1 ] && [ -n "$below" ] && [ "$below" = "$SEL_IDX" ]; then
+  local boxed=0
+  box_cursor && boxed=1
+  if ((boxed)) && [ -n "$below" ] && [ "$below" = "$SEL_IDX" ]; then
     frame+="${ESC}[${row};1H${C_SELECT}╭${BORDER_FILL}╮${C_RESET}${ESC}[K"
-  elif [ "$COCKPIT" != 1 ] && [ "$FOCUSED" = 1 ] && [ -n "$above" ] && [ "$above" = "$SEL_IDX" ]; then
+  elif ((boxed)) && [ -n "$above" ] && [ "$above" = "$SEL_IDX" ]; then
     frame+="${ESC}[${row};1H${C_SELECT}╰${BORDER_FILL}╯${C_RESET}${ESC}[K"
   else
     frame+="${ESC}[${row};1H${ESC}[K"
@@ -646,10 +659,12 @@ put_agent() {
   local status=${AG_STATUS[i]} type=${AG_TYPE[i]} detail=${AG_DETAIL[i]} elapsed=${AG_ELAPSED[i]}
   local inner=$CARD_INNER color pill_bg pill_fg label name_on="" selected=0 bg_normal bg_sel
   local right right_w lw rest tw dw avail pad detail_part=""
-  # cockpit の sidebar では、選択中のカードを「タブ」にする。選択 = 右の枠に出ている Agent なので、
-  # 罫線のカーソルと現在地の ▶ を一つにまとめ、濃い色で塗りつぶして右向きの矢印で右の枠を指す。
-  # 色でフォーカス位置を示す: sidebar にフォーカス(選んでいる最中)=シアン、右の枠にフォーカス(操作している最中・アクティブ)=橙
-  local tabbed=0 tab_bg_n tab_acc_n c_dim=$C_DIM c_proj=$C_PROJ c_rule=$C_RULE
+  # cockpit の sidebar では、選択中のカードを右の枠と結ぶ。選択 = 右の枠に出ている Agent なので、
+  # 罫線のカーソルと現在地の ▶ を一つにまとめ、右向きの矢印で右の枠を指す。
+  # 形でフォーカス位置を示し、橙で「ここに注目」を示す:
+  #   sidebar にフォーカス(選んでいる最中)  = 橙の塗りつぶしのタブ(状態色は隠れる)
+  #   右の枠にフォーカス(操作している最中) = 状態色のカードを橙の角丸罫線で囲む
+  local tabbed=0 tab_bg_n tab_acc_n arrow_n="" c_dim=$C_DIM c_proj=$C_PROJ c_rule=$C_RULE
 
   case $status in
     # 状態は左端のバーの色と状態ピルで示す。スピナーだけは working のピルの中で回す
@@ -660,14 +675,17 @@ put_agent() {
     *) color=$C_UNKNOWN; pill_bg=240; pill_fg=252; label="UNKNOWN"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
   esac
 
-  if [ "$COCKPIT" = 1 ]; then
-    [ "$i" = "$SEL_IDX" ] && tabbed=1
-  else
-    [ "$FOCUSED" = 1 ] && [ "$i" = "$SEL_IDX" ] && selected=1
+  if [ "$i" = "$SEL_IDX" ]; then
+    if box_cursor; then
+      selected=1
+    elif [ "$COCKPIT" = 1 ]; then
+      tabbed=1
+    fi
+    [ "$COCKPIT" = 1 ] && arrow_n=208
   fi
   CUR_IDX=$i
   if ((tabbed)); then
-    if [ "$FOCUSED" = 1 ]; then tab_bg_n=30; tab_acc_n=51; else tab_bg_n=130; tab_acc_n=208; fi
+    tab_bg_n=130; tab_acc_n=208; arrow_n=$tab_bg_n
     CARD_BG_NOW="${ESC}[48;5;${tab_bg_n}m"
     EDGE_L="${ESC}[38;5;${tab_acc_n}m█${C_RESET}${CARD_BG_NOW}"
     EDGE_R=" "
@@ -712,7 +730,7 @@ put_agent() {
   EDGE_L=$edge_l_saved
 
   # 2 行目はブランチ(同じリポジトリでも worktree ごとに違う)。git 管理外は親ディレクトリ。
-  # cockpit のタブは、この行(3 行の中段)の行末に、右の枠を指す矢印を置く(矢印の色 = タブの色)
+  # cockpit の選択中のカードは、この行(3 行の中段)の行末に、右の枠を指す矢印を置く(矢印の色 = タブの色。罫線のときは橙)
   local line=""
   if [ -n "${AG_BRANCH[i]}" ]; then
     trunc "${AG_BRANCH[i]}" $((inner - ICON_W))
@@ -721,7 +739,7 @@ put_agent() {
     trunc "${AG_DIR[i]}" $((inner - ICON_W))
     line="${c_rule}${ICON_DIR}${REPLY}${FG_DEFAULT}"
   fi
-  ((tabbed)) && ROW_TAIL="${ESC}[38;5;${tab_bg_n}m${TAB_ARROW}${C_RESET}"
+  [ -n "$arrow_n" ] && ROW_TAIL="${ESC}[38;5;${arrow_n}m${TAB_ARROW}${C_RESET}"
   card_row "$line"
   ROW_TAIL=""
 
