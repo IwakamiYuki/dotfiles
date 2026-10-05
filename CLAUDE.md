@@ -148,11 +148,11 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - 入力は `read -t 1` で待つ（データ更新は 2 秒ごと、キー入力・リサイズは 1 秒以内に反応）。クリックは SGR マウス報告（`ESC[?1000h` + `?1006h`）で受け取り、行→Agent の対応表で対象を決める。tmux の `mouse on` が前提
 - ジャンプは `select-window -t <pane_id>` + `select-pane -t <pane_id>`（`scope=all` で別 session の Agent なら `switch-client` も行う）
 - 設定: `@agent_sidebar_width`（既定 32）、`@agent_sidebar_scope`（`session` | `all`）、`@agent_sidebar_icons`（`nerd` | `plain`）。`.tmux.conf` に定義
-- 見た目は Orca の worktree 一覧を意識したカード表示。 **リポジトリごと**の見出し（`── dotfiles ─────── 3`、右端は Agent の件数）で区切り、各 Agent は背景色を敷いた 2 行のカードで、左端のバーが状態色
+- 見た目は Orca の worktree 一覧を意識したカード表示。 **リポジトリごと**の見出し（`── dotfiles ─────── 3`、右端は Agent の件数）で区切り、各 Agent は背景色を敷いた 3 行のカードで、左端のバーが状態色
   - **グルーピング**: cwd の git から判定する（`git rev-parse --path-format=absolute --show-toplevel --git-common-dir`）。worktree の `--git-common-dir` は本体の `.git` を指すので、同じリポジトリの worktree は 1 つのリポジトリにまとまる。サブディレクトリで動く Agent は、その worktree に含まれる。git 管理外はディレクトリ名で 1 グループ（home は `~`）。結果は cwd ごとに 10 秒キャッシュ
-  - **worktree**: 同じリポジトリに worktree が 2 つ以上あるときだけ、見出しの下に **小見出し**（`⎇ ブランチ名`）を出し、その worktree の Agent をまとめる。ディレクトリ名は出さない（ブランチ名で区別できる。detached HEAD などブランチが無いときだけディレクトリ名）。worktree が 1 つのリポジトリは、小見出しを作らず、見出しにブランチを出す（`── zeta-app ⎇ main ──── 1`）
+  - **worktree / ブランチ**: 見出しには出さず、**各カードの 2 行目**に出す（同じリポジトリでも worktree ごとにブランチが違うため。以前は worktree ごとの小見出しにしていたが、カードに移した）。同じ worktree の Agent は並び順で隣り合う。git 管理外のディレクトリは、ブランチの代わりに親ディレクトリを出す
   - **並び順**: リポジトリ名 → リポジトリのパス → worktree のパス → 元の window 番号 → 元の pane 番号 → session。Agent の増減・cockpit での入れ替え・tmux の window の並び替えでは動かない（window 番号は見出しに出さない）
-  - 1 行目は **名前**、2 行目は状態。常に 2 行（`名前 ……… 種別(右寄せ)` / `[ ⠋ WORKING ] 待機理由 ……… 継続時間`）。リポジトリ・ブランチは見出しに出すのでカードには出さない。pane 番号と状態アイコン（●等）も出さない
+  - 1 行目は **名前**、2 行目は **ブランチ**、3 行目は状態。常に 3 行（`名前 ……… 種別(右寄せ)` / ` ブランチ` / `[ ⠋ WORKING ] 待機理由 ……… 継続時間`）。リポジトリは見出しに出すのでカードには出さない。pane 番号と状態アイコン（●等）も出さない
   - **名前の優先順位**: 会話タイトル（`/tmp/claude-title-<sessionId>.txt`。statusline が書く。`/rename` の名前もここに入る）→
     トランスクリプトの `ai-title`（`~/.claude/projects/*/<sessionId>.jsonl` の `{"type":"ai-title","aiTitle":"…"}`。Claude Code 自身が書くので、
     statusline が動いていないセッションでも取れる。末尾 300KB だけ読み、`/tmp/tmux-agent-sidebar-titles.txt` に 30 秒キャッシュ）→ セッション名（`~/.claude/sessions/<pid>.json` の `nameSource` が `derived` 以外のとき。
@@ -176,7 +176,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     - 画像 ID は 250 / 251（他のアプリと衝突しにくい値）。tmux のパススルーは表示中の window の pane からしか端末へ届かない
   - アイコンは Nerd Font 前提（`@agent_sidebar_icons nerd`）。`plain` にすると記号なしになる
   - 継続時間は `~/.claude/sessions/<pid>.json` の `statusUpdatedAt`、ブランチは cwd での `git branch --show-current`（10 秒キャッシュ。detached HEAD なら短縮 SHA）
-  - カードは常に 2 行（見出し・区切り行は別。リポジトリごとに「見出し →（worktree が複数なら小見出し →）[区切り → カード]… → 閉じの区切り」）。収まらない分は `+N more` にし、選択に追従してスクロールする
+  - カードは常に 3 行（見出し・区切り行は別。リポジトリごとに「見出し → [区切り → カード]… → 閉じの区切り」）。収まらない分は `+N more` にし、選択に追従してスクロールする
 - Claude: `claude agents --json`（約 0.2 秒）と各セッションの更新時刻を `/tmp/tmux-agent-sidebar-claude2.txt` に 3 秒キャッシュして全 sidebar で共有。pid の祖先をたどって pane に紐付ける。status は working / waiting / idle。未読の完了は `tmux-claude-agents-status` の状態ファイルを参照して done 表示
 - Codex: ps の引数（`codex` 本体、または `node .../codex`）で検出。状態を確実に判定する手段が無いため unknown 固定（推測しない）
 - 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|name|cwd`。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む
