@@ -108,12 +108,15 @@ ICON_STYLE=nerd
 ICON_BRANCH=""
 ICON_DIR=""
 ICON_W=0
+TAB_ARROW="▶"
 apply_icon_style() {
   if [ "$ICON_STYLE" = plain ]; then
     ICON_BRANCH=""
     ICON_DIR=""
     ICON_W=0
+    TAB_ARROW="▶"
   else
+    TAB_ARROW=$'\xee\x82\xb0'     # U+E0B0 (Powerline の右向き矢印)
     ICON_BRANCH=$'\xee\x82\xa0 '  # U+E0A0 (git branch)
     ICON_DIR=$'\xef\x81\xbb '     # U+F07B (folder)
     ICON_W=2
@@ -571,8 +574,11 @@ card_row() {
   ROW_AGENT[row]=$CUR_IDX
   # 右の縁は桁を指定して描く。中身の表示幅($2)の見積もりが実際とずれても、縁の位置は動かない。
   # 先に ESC[K で行末まで背景を敷き、そのあとで縁を置く(縁の右 1 桁は既定の背景に戻す)
-  frame+="${ESC}[${row};1H${CARD_BG_NOW}${EDGE_L} $1${ESC}[K${ESC}[${row};$((width - 1))H${EDGE_R}${C_RESET}${ESC}[K"
+  # ROW_TAIL があれば、最後の桁(縁の右隣)にそれを置く(cockpit のタブの矢印)。無ければその桁を既定の背景に戻す
+  frame+="${ESC}[${row};1H${CARD_BG_NOW}${EDGE_L} $1${ESC}[K${ESC}[${row};$((width - 1))H${EDGE_R}${C_RESET}${ROW_TAIL:-${ESC}[K}"
 }
+# card_row が行末に置く文字列(通常は空)
+ROW_TAIL=""
 
 # Agent 間・window 区切りの 1 行。直下のカードが選択中ならその上辺 ╭──╮、直上のカードが選択中なら下辺 ╰──╯、
 # どちらでもなければ空行。空行を罫線に兼用するので、選択しても行数は増えない
@@ -581,9 +587,9 @@ put_sep() {
   ((row >= height)) && return 0
   row=$((row + 1))
   ROW_AGENT[row]=""
-  if [ "$FOCUSED" = 1 ] && [ -n "$below" ] && [ "$below" = "$SEL_IDX" ]; then
+  if [ "$COCKPIT" != 1 ] && [ "$FOCUSED" = 1 ] && [ -n "$below" ] && [ "$below" = "$SEL_IDX" ]; then
     frame+="${ESC}[${row};1H${C_SELECT}╭${BORDER_FILL}╮${C_RESET}${ESC}[K"
-  elif [ "$FOCUSED" = 1 ] && [ -n "$above" ] && [ "$above" = "$SEL_IDX" ]; then
+  elif [ "$COCKPIT" != 1 ] && [ "$FOCUSED" = 1 ] && [ -n "$above" ] && [ "$above" = "$SEL_IDX" ]; then
     frame+="${ESC}[${row};1H${C_SELECT}╰${BORDER_FILL}╯${C_RESET}${ESC}[K"
   else
     frame+="${ESC}[${row};1H${ESC}[K"
@@ -595,6 +601,10 @@ put_agent() {
   local status=${AG_STATUS[i]} type=${AG_TYPE[i]} detail=${AG_DETAIL[i]} elapsed=${AG_ELAPSED[i]}
   local inner=$CARD_INNER color pill_bg pill_fg label name_on="" selected=0 bg_normal bg_sel
   local right right_w lw rest tw dw avail pad detail_part=""
+  # cockpit の sidebar では、選択中のカードを「タブ」にする。選択 = 右の枠に出ている Agent なので、
+  # 罫線のカーソルと現在地の ▶ を一つにまとめ、濃い色で塗りつぶして右向きの矢印で右の枠を指す。
+  # 色でフォーカス位置を示す: sidebar にフォーカス(選んでいる最中)=シアン、右の枠にフォーカス(操作している最中・アクティブ)=橙
+  local tabbed=0 tab_bg_n tab_acc_n c_dim=$C_DIM c_proj=$C_PROJ c_rule=$C_RULE
 
   case $status in
     # 状態は左端のバーの色と状態ピルで示す。スピナーだけは working のピルの中で回す
@@ -605,9 +615,24 @@ put_agent() {
     *) color=$C_UNKNOWN; pill_bg=240; pill_fg=252; label="UNKNOWN"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
   esac
 
-  [ "$FOCUSED" = 1 ] && [ "$i" = "$SEL_IDX" ] && selected=1
+  if [ "$COCKPIT" = 1 ]; then
+    [ "$i" = "$SEL_IDX" ] && tabbed=1
+  else
+    [ "$FOCUSED" = 1 ] && [ "$i" = "$SEL_IDX" ] && selected=1
+  fi
   CUR_IDX=$i
-  if ((selected)); then
+  if ((tabbed)); then
+    if [ "$FOCUSED" = 1 ]; then tab_bg_n=30; tab_acc_n=51; else tab_bg_n=130; tab_acc_n=208; fi
+    CARD_BG_NOW="${ESC}[48;5;${tab_bg_n}m"
+    EDGE_L="${ESC}[38;5;${tab_acc_n}m█${C_RESET}${CARD_BG_NOW}"
+    EDGE_R=" "
+    # 塗りつぶしの上で読めるよう、補助の文字色を明るくする。IDLE のピルはタブの色と紛れるので灰色にする
+    c_dim="${ESC}[38;5;254m"
+    c_proj=$c_dim
+    c_rule=$c_dim
+    [ "$status" = idle ] && pill_bg=250
+    name_on="${BOLD_ON}${ESC}[38;5;255m"
+  elif ((selected)); then
     CARD_BG_NOW=$bg_sel
     EDGE_L="${C_SELECT}│${C_RESET}${CARD_BG_NOW}"
     EDGE_R="${C_SELECT}│${C_RESET}"
@@ -618,7 +643,7 @@ put_agent() {
   fi
   # 1 行目: project ……… 種別。いま見ている pane の Agent は、左端を ▶ にして project 名をシアンの太字にする
   # (選択中は左端が罫線 │ なので ▶ にはしない)
-  right="${C_DIM}${type}${FG_DEFAULT}"
+  right="${c_dim}${type}${FG_DEFAULT}"
   right_w=${#type}
   # 種別を画像で示せるときは、左端に 2 桁の画像 + 空白を置き、右寄せの文字は出さない(project 名の幅が増える)
   local lead="" lead_w=0 gap=1
@@ -631,7 +656,8 @@ put_agent() {
     gap=0
   fi
   local edge_l_saved=$EDGE_L
-  if [ "${AG_ACT[i]}" = 1 ]; then
+  # (cockpit ではタブで示すので、▶ とシアンの名前は使わない)
+  if [ "${AG_ACT[i]}" = 1 ] && [ "$COCKPIT" != 1 ]; then
     name_on=$C_HERE
     ((selected)) || EDGE_L="${C_HERE}▶${C_RESET}${CARD_BG_NOW}"
   fi
@@ -661,30 +687,33 @@ put_agent() {
       pmax=$((rest - ICON_W))
     fi
     trunc "${AG_PROJ[i]}" "$pmax"
-    line="${C_PROJ}${ICON_DIR}${REPLY}${FG_DEFAULT}"
+    line="${c_proj}${ICON_DIR}${REPLY}${FG_DEFAULT}"
     lw=$((ICON_W + TRUNC_W))
     if [ -n "${AG_BRANCH[i]}" ] && ((rest - lw - 2 - ICON_W >= 3)); then
       trunc "${AG_BRANCH[i]}" $((rest - lw - 2 - ICON_W))
-      line+="  ${C_DIM}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
+      line+="  ${c_dim}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
       lw=$((lw + 2 + ICON_W + TRUNC_W))
     fi
   elif [ -n "${AG_BRANCH[i]}" ]; then
     trunc "${AG_BRANCH[i]}" $((rest - ICON_W))
     tw=$TRUNC_W
-    line="${C_DIM}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
+    line="${c_dim}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
     lw=$((ICON_W + tw))
     rest=$((rest - lw))
     if ((rest >= ICON_W + 6)); then
       trunc "${AG_DIR[i]}" $((rest - 2 - ICON_W))
-      line+="  ${C_RULE}${ICON_DIR}${REPLY}${FG_DEFAULT}"
+      line+="  ${c_rule}${ICON_DIR}${REPLY}${FG_DEFAULT}"
       lw=$((lw + 2 + ICON_W + TRUNC_W))
     fi
   else
     trunc "${AG_DIR[i]}" $((rest - ICON_W))
-    line="${C_RULE}${ICON_DIR}${REPLY}${FG_DEFAULT}"
+    line="${c_rule}${ICON_DIR}${REPLY}${FG_DEFAULT}"
     lw=$((ICON_W + TRUNC_W))
   fi
+  # タブの中段の行末に、右の枠を指す矢印を置く(矢印の色 = タブの色)
+  ((tabbed)) && ROW_TAIL="${ESC}[38;5;${tab_bg_n}m${TAB_ARROW}${C_RESET}"
   card_row "$line"
+  ROW_TAIL=""
 
   # 状態ピル + 待機理由 ……… 継続時間(右寄せ)
   local pillw=$((${#label} + 2)) elw=${#elapsed}
@@ -694,10 +723,10 @@ put_agent() {
   if [ -n "$detail" ] && ((avail >= 4)); then
     trunc "$detail" "$avail"
     dw=$((TRUNC_W + 1))
-    detail_part=" ${C_DIM}${REPLY}${FG_DEFAULT}"
+    detail_part=" ${c_dim}${REPLY}${FG_DEFAULT}"
   fi
   printf -v pad '%*s' $((inner - pillw - dw - elw)) ''
-  card_row "${ESC}[48;5;${pill_bg};38;5;${pill_fg};1m ${label} ${BOLD_OFF}${FG_DEFAULT}${CARD_BG_NOW}${detail_part}${pad}${C_DIM}${elapsed}${FG_DEFAULT}"
+  card_row "${ESC}[48;5;${pill_bg};38;5;${pill_fg};1m ${label} ${BOLD_OFF}${FG_DEFAULT}${CARD_BG_NOW}${detail_part}${pad}${c_dim}${elapsed}${FG_DEFAULT}"
 
   CUR_IDX=""
 }
