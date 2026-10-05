@@ -5,7 +5,7 @@
 # j / k で前後の Agent に切り替え、Enter でその pane へ移動する。
 #
 # Usage: tmux-agent-sidebar-preview <list_file> <start_index> <result_file> [sidebar_pid]
-#   list_file   : 1 行 1 Agent の TSV（pane_id, project, type, status, window_index, window_name）
+#   list_file   : 1 行 1 Agent の TSV（pane_id, name, type, status, (未使用), "リポジトリ · ブランチ"）
 #   start_index : 最初に表示する行（0 始まり）
 #   result_file : 終了時に「最後に見ていた添字」と「移動したか(jumped/stay)」を書く。
 #                 sidebar はこのファイルの出現でポップアップの終了を検知し、選択位置を引き継ぐ
@@ -95,7 +95,8 @@ draw() {
 
   status_color "${P_STATUS[IDX]}"
   color=$REPLY
-  label=" ${P_PROJ[IDX]}  ${P_TYPE[IDX]} · ${P_WIN[IDX]}:${P_WNAME[IDX]}  ${color}${P_STATUS[IDX]}${ESC}[39m"
+  # P_WNAME には「リポジトリ · ブランチ」が入っている
+  label=" ${P_PROJ[IDX]}  ${P_TYPE[IDX]} · ${P_WNAME[IDX]}  ${color}${P_STATUS[IDX]}${ESC}[39m"
   pos="$((IDX + 1))/$N "
   frame+="${ESC}[1;1H${ESC}[1;38;5;208m${label}${ESC}[0m${ESC}[K"
   # 右端に「n/N」を寄せる(左側は表示幅が読めないため、ESC[nG で桁を指定する)
