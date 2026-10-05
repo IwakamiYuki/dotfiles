@@ -64,7 +64,7 @@ PROJECTS_DIR="${AGENT_SIDEBAR_PROJECTS_DIR:-$HOME/.claude/projects}"
 # トランスクリプトは大きい(数 MB)ので、末尾のこのバイト数だけ読む。ai-title は何度も書き直されるので末尾に必ずある
 TRANSCRIPT_TAIL_BYTES=300000
 # tmux-claude-agents-status が書く "ppid:status:alerting" の状態ファイル（未読の完了判定に使う）
-ALERT_STATE_FILE="/tmp/tmux-claude-agents-state"
+ALERT_STATE_FILE="${AGENT_SIDEBAR_ALERT_STATE:-/tmp/tmux-claude-agents-state}"
 
 ESC=$'\033'
 C_RESET="${ESC}[0m"
@@ -74,7 +74,9 @@ C_DIM="${ESC}[38;5;245m"
 C_WORKING="${ESC}[38;5;226m"
 C_WAITING="${ESC}[38;5;196m"
 C_DONE="${ESC}[38;5;46m"
-C_IDLE="${ESC}[38;5;216m"
+# IDLE(入力待ち)は DONE(完了・未読)と同じ緑系だが、落ち着いた緑にする。
+# DONE だけ鮮やかな緑 + カードの背景の色味にして、「新しい結果がある」を IDLE と区別する
+C_IDLE="${ESC}[38;5;108m"
 C_UNKNOWN="${ESC}[38;5;245m"
 C_ACTIVE="${ESC}[38;5;208m"
 C_TITLE_ROW="${ESC}[38;5;252m"
@@ -89,10 +91,14 @@ CARD_BG="${ESC}[48;5;236m"
 # 注意が必要な状態(WAITING / DONE)のカードは背景に色味を付けて、一覧の中で目に入るようにする。
 # 選択中(角丸の罫線で囲む)はそれぞれ一段明るい色にする
 CARD_BG_WAITING="${ESC}[48;5;52m"
-CARD_BG_DONE="${ESC}[48;5;22m"
+# IDLE(入力待ち)と DONE(完了・未読)は、どちらも緑の色味。DONE のほうを強い緑にして、
+# 「新しい結果がある」を IDLE と区別する
+CARD_BG_IDLE="${ESC}[48;5;22m"
+CARD_BG_DONE="${ESC}[48;5;28m"
 CARD_BG_SELECTED="${ESC}[48;5;238m"
 CARD_BG_WAITING_SELECTED="${ESC}[48;5;88m"
-CARD_BG_DONE_SELECTED="${ESC}[48;5;28m"
+CARD_BG_IDLE_SELECTED="${ESC}[48;5;28m"
+CARD_BG_DONE_SELECTED="${ESC}[48;5;34m"
 # 選択中のカードを囲む罫線の色(テーマのオレンジ)
 C_SELECT="${ESC}[1;38;5;208m"
 # 「いま見ている pane」の Agent は、左端の ▶ と project 名をシアンの太字にする(選択のオレンジとは別の色にして混同を避ける)
@@ -612,7 +618,7 @@ put_agent() {
     working) color=$C_WORKING; pill_bg=220; pill_fg=232; label="${SPINNER[SECONDS % ${#SPINNER[@]}]} WORKING"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
     waiting) color=$C_WAITING; pill_bg=196; pill_fg=255; label="WAITING"; bg_normal=$CARD_BG_WAITING; bg_sel=$CARD_BG_WAITING_SELECTED ;;
     done) color=$C_DONE; pill_bg=41; pill_fg=232; label="DONE"; bg_normal=$CARD_BG_DONE; bg_sel=$CARD_BG_DONE_SELECTED ;;
-    idle) color=$C_IDLE; pill_bg=137; pill_fg=232; label="IDLE"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
+    idle) color=$C_IDLE; pill_bg=71; pill_fg=232; label="IDLE"; bg_normal=$CARD_BG_IDLE; bg_sel=$CARD_BG_IDLE_SELECTED ;;
     *) color=$C_UNKNOWN; pill_bg=240; pill_fg=252; label="UNKNOWN"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
   esac
 
@@ -627,11 +633,10 @@ put_agent() {
     CARD_BG_NOW="${ESC}[48;5;${tab_bg_n}m"
     EDGE_L="${ESC}[38;5;${tab_acc_n}m█${C_RESET}${CARD_BG_NOW}"
     EDGE_R=" "
-    # 塗りつぶしの上で読めるよう、補助の文字色を明るくする。IDLE のピルはタブの色と紛れるので灰色にする
+    # 塗りつぶしの上で読めるよう、補助の文字色を明るくする
     c_dim="${ESC}[38;5;254m"
     c_proj=$c_dim
     c_rule=$c_dim
-    [ "$status" = idle ] && pill_bg=250
     name_on="${BOLD_ON}${ESC}[38;5;255m"
   elif ((selected)); then
     CARD_BG_NOW=$bg_sel

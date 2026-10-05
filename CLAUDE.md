@@ -151,7 +151,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     トランスクリプトの `ai-title`（`~/.claude/projects/*/<sessionId>.jsonl` の `{"type":"ai-title","aiTitle":"…"}`。Claude Code 自身が書くので、
     statusline が動いていないセッションでも取れる。末尾 300KB だけ読み、`/tmp/tmux-agent-sidebar-titles.txt` に 30 秒キャッシュ）→ セッション名（`~/.claude/sessions/<pid>.json` の `nameSource` が `derived` 以外のとき。
     `derived` は「ディレクトリ名 + 英数字」で情報が無いので使わない）→ project（cwd 末尾）。名前が無いカードは 1 行目が project になり、2 行目は従来どおり `ブランチ   親ディレクトリ`
-  - 状態は背景色付きのピル（WORKING=黄 / WAITING=赤 / DONE=緑 / IDLE=くすんだ橙 / UNKNOWN=灰）。working のピルの中でスピナーが回る（`read -t` が整数秒のため 1 秒 1 コマ）
+  - 状態は背景色付きのピル（WORKING=黄 / WAITING=赤 / DONE=緑 / IDLE=落ち着いた緑 / UNKNOWN=灰）。IDLE（入力待ち）と DONE（完了・未読）は同じ緑系で、どちらもカード全体に緑の色味を付ける（WAITING の赤と同じ作り）。DONE のほうを強い緑（背景 28、IDLE は 22）・鮮やかなピルにして、「新しい結果がある」を区別する。working のピルの中でスピナーが回る（`read -t` が整数秒のため 1 秒 1 コマ）
   - 先頭行に状態別の件数（カードのバーと同じ色の `▎1 ▎1`）
   - **選択**（カーソル）と**現在地**（いま見ている pane）は別の表現にして混同を避ける
     - 選択: カードを **オレンジの角丸罫線 `╭─╮ │ │ ╰─╯` で丸ごと囲む**。カード間の区切り行を罫線に兼用するので行数は増えない（区切り行は選択時に上辺/下辺になる）
@@ -159,7 +159,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - 文字幅は `char_width`（UTF-8 のバイトからコードポイントを復元して判定。East Asian Ambiguous の `’ “ — → ▶` や罫線は 1 桁、CJK・絵文字は 2 桁）で数える。
     以前は ASCII 以外を一律 2 桁と数えていて、`’` や `—` を含む行で右端の罫線が左へずれていた。
     さらにカードの右端の縁は `ESC[row;colH` で桁を指定して描くので、幅の見積もりがずれても縁の位置は動かない
-  - 注意が必要な状態はカードの背景に色味を付ける（WAITING=暗い赤、DONE=暗い緑。選択中は一段明るい）
+  - 状態に応じてカードの背景に色味を付ける（WAITING=暗い赤、DONE=強い緑、IDLE=暗い緑。選択中は一段明るい）
   - 下部に固定の `── USAGE ──` 欄で Claude Code の 5h / 1w レートリミット使用率（バー + % + リセットまでの残り時間。色は `tmux-rate-limits` と同じ段階で 80% 以上は赤）を表示。元データは `statusline.sh` が書く `/tmp/claude-rate-limits.json`。端末の高さが 14 未満、またはファイルが無いときは出さない
   - **種別アイコン（画像）** `@agent_sidebar_type_icon`: `text`（既定。project 名の右に `Claude` / `Codex` の文字）| `image`（project 名の左に 2 桁 × 1 行の画像。project 名の幅が増える）
     - 画像は `tmux/assets/agent-icons/{claude,codex}.png`（出所は同ディレクトリの `NOTICE.md`。Simple Icons の SVG を色付け・PNG 化したもの）
@@ -174,7 +174,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - Claude: `claude agents --json`（約 0.2 秒）と各セッションの更新時刻を `/tmp/tmux-agent-sidebar-claude2.txt` に 3 秒キャッシュして全 sidebar で共有。pid の祖先をたどって pane に紐付ける。status は working / waiting / idle。未読の完了は `tmux-claude-agents-status` の状態ファイルを参照して done 表示
 - Codex: ps の引数（`codex` 本体、または `node .../codex`）で検出。状態を確実に判定する手段が無いため unknown 固定（推測しない）
 - 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|name|cwd`。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む
-- 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_ICON_DIR`、`AGENT_SIDEBAR_PROJECTS_DIR`、`AGENT_SIDEBAR_TITLE_CACHE`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
+- 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_ICON_DIR`、`AGENT_SIDEBAR_ALERT_STATE`、`AGENT_SIDEBAR_PROJECTS_DIR`、`AGENT_SIDEBAR_TITLE_CACHE`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
 
 **既知の制限**:
 - 別の Mac へ移したときは `~/.tmux/scripts/` へのリンクが必要（git では運ばれない）。「初期セットアップ」のループで `tmux/scripts/*` を全部リンクする。足りないと `C-t b` / `C-t c` が `no such file or directory: ~/.tmux/scripts/tmux-agent-sidebar-open` で失敗する
@@ -196,7 +196,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 **見た目（タブ）**: cockpit の sidebar では、選択中のカードを「タブ」にする（選択 = 右の枠に出ている Agent なので、通常 sidebar の罫線カーソルと現在地の `▶` を一つにまとめる）。
 - 濃い色で塗りつぶし、左端に明るい縁（`█`）、中段の行末に右の枠を指す矢印（Nerd Font の Powerline `U+E0B0`。`@agent_sidebar_icons plain` のときは `▶`）を置く。矢印の色はタブの色
 - 色でフォーカス位置を示す: sidebar にフォーカス（選んでいる最中）= **シアン**（背景 30・縁 51）、右の枠にフォーカス（操作している最中・アクティブ）= **橙**（背景 130・縁 208。tmux 全体のテーマ色と同じ）
-- 塗りつぶしの上で読めるよう補助の文字色を明るくし、IDLE のピルは灰色にする。通常の window の sidebar は従来どおり罫線のカーソル
+- 塗りつぶしの上で読めるよう補助の文字色を明るくする。通常の window の sidebar は従来どおり罫線のカーソル
 
 **仕組み**:
 - 右の枠には「交換用 pane（slot、`tmux-agent-cockpit-slot`）」が 1 つだけある。Agent を選ぶと、その Agent の pane と slot を `swap-pane` で入れ替える
