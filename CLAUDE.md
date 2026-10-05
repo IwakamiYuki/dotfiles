@@ -96,6 +96,8 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 **主要キーバインド**:
 - `Ctrl-t |` / `Ctrl-t -` → 縦/横分割
 - `Ctrl-t h/j/k/l` → Vim スタイルペイン移動
+- `Ctrl-t s` → pane 番号を表示し、押した番号の pane と現在の pane を入れ替え（標準の session 切り替え `choose-tree` は上書き）
+- `Ctrl-t S` → window の並び替えポップアップ（`tmux-window-reorder`）。`j`/`k` で選択、`J`/`K` で選択中の window を上下へ移動（`swap-window -d` で即座に反映）、`Enter` で開く、`q` で閉じる、`Esc` で開く前の並びに戻して閉じる
 - `Ctrl-t g` → Lazygit 起動
 - `Ctrl-t m` → Claude powered コミットメッセージ生成
 - `Ctrl-t T` → Claude Code の /todos 表示（Ctrl+t との競合を回避）
@@ -349,6 +351,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 │   ├── tmux-agent-sidebar-preview # sidebar の p で開くポップアップ（pane のライブプレビュー）
 │   ├── tmux-agent-cockpit         # Agent cockpit の制御（open / show / restore / close / heal）
 │   ├── tmux-agent-cockpit-slot    # cockpit の右の枠に常駐する交換用 pane
+│   ├── tmux-window-reorder        # C-t S の window 並び替えポップアップ
 │   ├── tmux-rate-limits   # レートリミット使用率表示（現在はステータスバーから外し、sidebar の USAGE 欄が代替）
 │   └── ...                # その他スクリプト
 ├── lazygit/config.yml     # Lazygit 設定

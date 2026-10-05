@@ -1,0 +1,210 @@
+#!/bin/bash
+
+# tmux-window-reorder: prefix + S で開くポップアップ。現在の session の window を一覧表示し、
+# j / k で選んだ window を J / K で上下に並び替える。
+#
+# Usage: tmux-window-reorder --popup <client_name> <window_id>   （キーバインドから呼ぶ。ポップアップを開く）
+#        tmux-window-reorder <window_id>                         （ポップアップの中身）
+#   client_name : ポップアップを出すクライアント（#{client_name}）
+#   window_id   : ポップアップを開いた window（#{window_id}）。その window の session を対象にし、
+#                 一覧で ▶ を付け、最初のカーソル位置にする
+#
+# display-popup の -h は #{...} を展開しない（"height invalid" になる）ため、window 数に合わせた高さは
+# --popup でここで計算してから display-popup を呼ぶ。
+#
+# 操作: j / ↓ = 下へ  k / ↑ = 上へ  J / K = 選択中の window を下 / 上へ移動
+#       Enter = 選択中の window を開いて閉じる  q = そのまま閉じる  Esc = 開く前の並びに戻して閉じる
+#
+# 並び替えは押すたびに `swap-window -d` で即座に反映する（ステータスバーの並びもその場で変わる）。
+# window は番号ではなく window_id で追う。番号の並び（位置）は固定で、位置に入る window だけが入れ替わる。
+# macOS 標準の bash 3.2 で動く書き方にしている。
+
+set -u
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+unset LC_ALL
+export LC_CTYPE=en_US.UTF-8 LC_COLLATE=C
+
+ESC=$'\033'
+TAB=$'\t'
+HEADER_ROWS=3
+POPUP_WIDTH=64
+# 枠の上下 2 行
+POPUP_BORDER_ROWS=2
+
+# window 数 + 見出し + 枠の高さでポップアップを開く。端末に収まらないときは 90% に抑える（中身がスクロールする）
+open_popup() {
+  local client=$1 win=$2 n ch h max
+  read -r n ch < <(tmux display-message -p -c "$client" -t "$win" '#{session_windows} #{client_height}')
+  h=$((${n:-1} + HEADER_ROWS + POPUP_BORDER_ROWS))
+  max=$((${ch:-24} * 9 / 10))
+  ((h > max)) && h=$max
+  exec tmux display-popup -c "$client" -E -w "$POPUP_WIDTH" -h "$h" "$0 $win"
+}
+
+if [ "${1:-}" = "--popup" ]; then
+  open_popup "${2:?client_name}" "${3:?window_id}"
+fi
+
+ORIGIN_WIN=${1:?window_id}
+SESSION=$(tmux display-message -p -t "$ORIGIN_WIN" '#{session_id}' 2>/dev/null)
+[ -z "$SESSION" ] && exit 0
+
+# 位置 p（0 始まり）ごとの window。W_POS は位置の window 番号で、並び替えても変わらない
+W_POS=(); W_ID=(); W_NAME=(); W_PANES=()
+N=0
+CUR=0
+ORIG_ID=()
+
+# window 一覧を読み直す。カーソルは window_id で引き継ぐ（無ければ近い位置に留める）
+load_windows() {
+  local keep=${1:-} idx id name panes
+  W_POS=(); W_ID=(); W_NAME=(); W_PANES=()
+  N=0
+  # -F の \t はタブに展開されないため、実際のタブ文字で区切る
+  while IFS=$TAB read -r idx id panes name; do
+    [ -z "$id" ] && continue
+    W_POS[N]=$idx; W_ID[N]=$id; W_PANES[N]=$panes; W_NAME[N]=$name
+    [ "$id" = "$keep" ] && CUR=$N
+    N=$((N + 1))
+  done < <(tmux list-windows -t "$SESSION" -F "#{window_index}${TAB}#{window_id}${TAB}#{window_panes}${TAB}#{window_name}" 2>/dev/null)
+  ((CUR >= N)) && CUR=$((N - 1))
+  ((CUR < 0)) && CUR=0
+}
+
+load_windows "$ORIGIN_WIN"
+((N == 0)) && exit 0
+ORIG_ID=("${W_ID[@]}")
+
+cleanup() {
+  printf '%s' "${ESC}[?7h${ESC}[?25h${ESC}[0m"
+  stty echo 2>/dev/null
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM HUP
+
+stty -echo 2>/dev/null
+# カーソルを隠し、自動折り返しを切る(長い window 名は右端でクリップされる)
+printf '%s' "${ESC}[?25l${ESC}[?7l"
+
+# 位置 a と b の window を入れ替える。tmux 側が失敗したら（外で window が増減した等）一覧を読み直す
+swap_positions() {
+  local a=$1 b=$2 t
+  if ! tmux swap-window -d -s "${W_ID[a]}" -t "${W_ID[b]}" 2>/dev/null; then
+    load_windows "${W_ID[CUR]}"
+    return 1
+  fi
+  t=${W_ID[a]}; W_ID[a]=${W_ID[b]}; W_ID[b]=$t
+  t=${W_NAME[a]}; W_NAME[a]=${W_NAME[b]}; W_NAME[b]=$t
+  t=${W_PANES[a]}; W_PANES[a]=${W_PANES[b]}; W_PANES[b]=$t
+}
+
+# 選択中の window を $1（+1 / -1）方向へ 1 つ動かし、カーソルも追従させる
+move_selected() {
+  local to=$((CUR + $1))
+  ((to < 0 || to >= N)) && return
+  swap_positions "$CUR" "$to" && CUR=$to
+}
+
+# 開いたときの並びに戻す。各位置に元の window を順に入れていく（途中で消えた window は飛ばす）
+restore_order() {
+  local p q
+  load_windows "${W_ID[CUR]}"
+  for ((p = 0; p < ${#ORIG_ID[@]} && p < N; p++)); do
+    [ "${W_ID[p]}" = "${ORIG_ID[p]}" ] && continue
+    for ((q = p + 1; q < N; q++)); do
+      if [ "${W_ID[q]}" = "${ORIG_ID[p]}" ]; then
+        swap_positions "$p" "$q"
+        break
+      fi
+    done
+  done
+}
+
+draw() {
+  local h w p row top visible frame="" pos marker line
+  read -r h w < <(stty size 2>/dev/null)
+  h=${h:-20}
+  w=${w:-60}
+
+  pos="$((CUR + 1))/$N "
+  frame+="${ESC}[1;1H${ESC}[1;38;5;208m Windows${ESC}[0m${ESC}[K"
+  frame+="${ESC}[1;$((w - ${#pos} + 1))H${ESC}[38;5;245m${pos}${ESC}[0m"
+  frame+="${ESC}[2;1H${ESC}[38;5;245m j/k 選択  J/K 移動  Enter 開く  q 閉じる  Esc 戻す${ESC}[0m${ESC}[K"
+  frame+="${ESC}[3;1H${ESC}[K"
+
+  # 収まらないときは、カーソルが見える範囲にスクロールする
+  visible=$((h - HEADER_ROWS))
+  ((visible < 1)) && visible=1
+  top=0
+  ((CUR >= visible)) && top=$((CUR - visible + 1))
+
+  row=$HEADER_ROWS
+  for ((p = top; p < N && p < top + visible; p++)); do
+    row=$((row + 1))
+    marker=" "
+    [ "${W_ID[p]}" = "$ORIGIN_WIN" ] && marker="${ESC}[38;5;51m▶${ESC}[39m"
+    line=" ${marker} $(printf '%3s' "${W_POS[p]}")  ${W_NAME[p]}  ${ESC}[38;5;245m· ${W_PANES[p]} pane${ESC}[39m"
+    if ((p == CUR)); then
+      # 選択行は sidebar の cockpit タブと同じ橙で塗る（ESC[K は現在の背景色で行末まで塗る）
+      frame+="${ESC}[${row};1H${ESC}[48;5;130;1;38;5;231m${line}${ESC}[K${ESC}[0m"
+    else
+      frame+="${ESC}[${row};1H${line}${ESC}[0m${ESC}[K"
+    fi
+  done
+  ((row < h)) && frame+="${ESC}[$((row + 1));1H${ESC}[J"
+  printf '%s' "$frame"
+}
+
+# 1 件の入力を KEY に正規化する(down / up / move_down / move_up / enter / quit / revert / other)
+read_key() {
+  local c seq=""
+  KEY=""
+  IFS= read -rsn1 c || { KEY=quit; return 0; }
+  case $c in
+    j) KEY=down ;;
+    k) KEY=up ;;
+    J) KEY=move_down ;;
+    K) KEY=move_up ;;
+    q) KEY=quit ;;
+    "") KEY=enter ;;
+    $'\033')
+      # 単独の Esc と矢印キー(ESC [ A 等)を区別する。続きが来なければ単独の Esc とみなす
+      IFS= read -rsn1 -t 1 c || { KEY=revert; return 0; }
+      if [ "$c" = "[" ] || [ "$c" = "O" ]; then
+        while IFS= read -rsn1 -t 1 c; do
+          seq+=$c
+          case $c in [@-~]) break ;; esac
+        done
+        case $seq in
+          A) KEY=up ;;
+          B) KEY=down ;;
+          *) KEY=other ;;
+        esac
+      else
+        KEY=other
+      fi
+      ;;
+    *) KEY=other ;;
+  esac
+}
+
+while :; do
+  draw
+  read_key
+  case $KEY in
+    down) ((CUR < N - 1)) && CUR=$((CUR + 1)) ;;
+    up) ((CUR > 0)) && CUR=$((CUR - 1)) ;;
+    move_down) move_selected 1 ;;
+    move_up) move_selected -1 ;;
+    enter)
+      tmux select-window -t "${W_ID[CUR]}" 2>/dev/null
+      exit 0
+      ;;
+    revert)
+      restore_order
+      exit 0
+      ;;
+    quit) exit 0 ;;
+  esac
+done
