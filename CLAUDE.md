@@ -118,7 +118,7 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画するだけの軽量スクリプト。
 
 **キー**:
-- `Ctrl-t c` → 新規 window を作り、左端に sidebar を追加（フォーカスは main pane）
+- `Ctrl-t c` → 新規 window を作る（sidebar は自動では付けない。Agent の一覧・選択は cockpit の sidebar が担うため。以前は自動で付けていたが、window の数だけ sidebar のプロセスが増えるため、やめた）
 - `Ctrl-t b` → 現在の window に sidebar を追加。すでにあれば二重起動せず sidebar へフォーカス
 - sidebar 上で `Ctrl-C` → sidebar だけ終了して pane が閉じる。main pane は残る
 - ⚠️ `Ctrl-t a`（Claude 一覧ポップアップ）が使用済みのため、再表示キーは `b`
@@ -178,7 +178,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_ICON_DIR`、`AGENT_SIDEBAR_ALERT_STATE`、`AGENT_SIDEBAR_PROJECTS_DIR`、`AGENT_SIDEBAR_TITLE_CACHE`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
 
 **既知の制限**:
-- 別の Mac へ移したときは `~/.tmux/scripts` へのリンクが必要（git では運ばれない）。「初期セットアップ」のとおりディレクトリごとリンクする（以前のファイルごとのリンクは、スクリプトの追加時に漏れていた）。リンクが無いと `C-t b` / `C-t c` が `no such file or directory: ~/.tmux/scripts/tmux-agent-sidebar-open` で失敗する
+- 別の Mac へ移したときは `~/.tmux/scripts` へのリンクが必要（git では運ばれない）。「初期セットアップ」のとおりディレクトリごとリンクする（以前のファイルごとのリンクは、スクリプトの追加時に漏れていた）。リンクが無いと `C-t b` / `C-t B` が `no such file or directory: ~/.tmux/scripts/tmux-agent-sidebar-open` で失敗する
 - tmux-resurrect で復元すると、sidebar pane は空のシェル pane になる（`C-t b` を押す前に邪魔なら閉じる）
 - 既存 window へは自動追加しない（必要な window で `C-t b`）
 - 起動中のスクリプトを書き換えると bash が壊れた読み方をするため、スクリプトを更新したら sidebar は閉じて開き直す
