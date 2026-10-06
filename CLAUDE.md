@@ -261,6 +261,13 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - 機密ファイルの誤コミットを防止
 - 補助ツール: `scripts/safe-git-add.sh` で手動実行時も同様の検証を提供
 
+**hooks: default ブランチへの push を ask にする**
+- `hooks/guard-default-branch-push.py`（PreToolUse）。`git push` は allow だが、push 先が default ブランチのときだけ確認を出す
+- 権限ルールはコマンド文字列にしか当たらず、master 上の素の `git push` を区別できないため、フックで実際の push 先を判定する
+- default ブランチは `origin/HEAD` から求める（未設定なら main / master）。現在のブランチ・upstream・refspec（`HEAD:master`、`:master`、`+x:master`）・`--all` / `--mirror` を見る。`cd x && git push` や `git -C x push` も追う
+- 判定に失敗したときは何も出さず、通常の権限判定に任せる（force push などは settings.json の ask / deny が引き続き効く）
+- テスト: `cd claude/hooks/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`
+
 **OpenAI Codex CLI 統合**:
 - `claude/commands/` は `~/.codex/prompts/` にもリンク
 - Codex CLI では `/prompts:serena`、`/prompts:wiki` で実行

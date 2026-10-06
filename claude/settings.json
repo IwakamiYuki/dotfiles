@@ -131,6 +131,10 @@
           {
             "type": "command",
             "command": "bash ~/.claude/scripts/validate-bash.sh"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/guard-default-branch-push.py"
           }
         ]
       }
