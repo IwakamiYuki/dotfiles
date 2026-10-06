@@ -41,6 +41,17 @@ find_sidebar() {
   tmux list-panes -t "$1" -F '#{pane_id} #{@agent_sidebar}' 2>/dev/null | awk '$2 == 1 { print $1; exit }'
 }
 
+# sidebar を設定の幅(@agent_sidebar_width、既定 32)へ戻す。
+# slot を split-window / join-pane で足すと、既定では sidebar と slot が 1:1 に分かれてしまうため
+fit_sidebar() {
+  local sb w
+  sb=$(find_sidebar "$1")
+  [ -n "$sb" ] || return 0
+  w=$(tmux show-option -gqv @agent_sidebar_width 2>/dev/null)
+  case $w in '' | *[!0-9]*) w=32 ;; esac
+  tmux resize-pane -t "$sb" -x "$w" 2>/dev/null
+}
+
 # slot が無ければ（誤って閉じた等）作り直す。slot の pane_id を REPLY に入れる
 ensure_slot() {
   local cock=$1 slot sb
@@ -54,6 +65,7 @@ ensure_slot() {
   slot=$(tmux split-window -d -h -t "$sb" -P -F '#{pane_id}' "'$BIN_DIR/tmux-agent-cockpit-slot'") || return 1
   tmux set-option -p -t "$slot" @agent_cockpit_slot_pane 1
   tmux set-option -w -t "$cock" @agent_cockpit_slot "$slot"
+  fit_sidebar "$cock"
   REPLY=$slot
 }
 
@@ -96,6 +108,7 @@ heal_orphan_slot() {
   [ -z "$target" ] && target=$(tmux list-panes -t "$cock" -F '#{pane_id}' 2>/dev/null | head -n 1)
   if [ -n "$target" ]; then
     tmux join-pane -d -h -s "$slot" -t "$target"
+    fit_sidebar "$cock"
   else
     tmux kill-pane -t "$slot"
   fi
