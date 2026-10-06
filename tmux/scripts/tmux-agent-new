@@ -10,8 +10,9 @@
 # - 起動するコマンドは tmux の option で変えられる(例: --dangerously-skip-permissions を付けたいとき)
 #     @agent_sidebar_claude_cmd（既定 claude）/ @agent_sidebar_codex_cmd（既定 codex）
 # - --focus: 作った pane へ移動する(通常の sidebar)
-#   --notify: 移動せず、sidebar の pane option @agent_new_pane に作った pane_id を書く。
-#             cockpit の sidebar が、Agent として検出されてから枠に入れる(cockpit の window から離れない)
+#   --notify: cockpit 用。作った pane をすぐ cockpit の右の枠へ入れ、フォーカスもそこへ移す(すぐ入力できる)。
+#             さらに sidebar の pane option @agent_new_pane に pane_id を書く。sidebar は Agent として検出されたら
+#             カードを選択する(検出まで数秒かかるため、それまでは選択の表示を出さない)
 
 set -u
 
@@ -77,5 +78,8 @@ if [ "$mode" = "--focus" ]; then
   tmux select-window -t "$new" \; select-pane -t "$new" 2>/dev/null
 else
   tmux set-option -p -t "$sidebar" @agent_new_pane "$new" 2>/dev/null
+  # 枠へ入れたあと、そこへフォーカスを移す(sidebar が選ばれたままにならない)
+  "$(cd "$(dirname "$0")" && pwd)/tmux-agent-cockpit" show "$new" >/dev/null 2>&1
+  tmux select-window -t "$new" \; select-pane -t "$new" 2>/dev/null
 fi
 say "$type を起動しました (${dir##*/})"

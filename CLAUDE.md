@@ -138,7 +138,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - **ディレクトリ**: リポジトリの本体（worktree のカードを選んでいても、大本のディレクトリ。見出しのリポジトリと同じ `AG_RKEY`）。git 管理外のグループはそのディレクトリ
   - **置き場所**: そのリポジトリの **先頭に表示されている Agent の window**（anchor の pane を分割する。幅が 120 以上なら左右、狭ければ上下）。anchor が cockpit の枠に入っているときは、元の window を交換用の枠（slot）の位置から割り出す（slot は枠に入った Agent の元の位置に居るため）。割り出せなければ新しい window にする
   - シェルを立ち上げてからコマンドを入力するので、Agent が終了してもシェルが残り、`R`（再起動）がそのまま使える
-  - 通常の sidebar（`--focus`）は、作った pane へ移動する。cockpit（`--notify`）は cockpit の window から離れず、sidebar の pane option `@agent_new_pane` に pane_id を書く。sidebar が **Agent として検出されたら**（Claude は `claude agents --json` に載るまで数秒かかる。40 秒まで探す）選択して枠へ入れる
+  - 通常の sidebar（`--focus`）は、作った pane へ移動する。cockpit（`--notify`）は、作った pane を **すぐ右の枠へ入れ、フォーカスもそこへ移す**（sidebar が選ばれたままにならず、すぐ入力できる）。さらに sidebar の pane option `@agent_new_pane` に pane_id を書き、sidebar は **Agent として検出されたら**（Claude は `claude agents --json` に載るまで数秒かかる。40 秒まで探す）そのカードを選択する。検出までは右の枠の中身と選択が合わないので、選択の表示（タブ・罫線）を出さない
   - 起動コマンドは tmux の option で変えられる: `@agent_sidebar_claude_cmd`（既定 `claude`）/ `@agent_sidebar_codex_cmd`（既定 `codex`）。たとえば `set -g @agent_sidebar_claude_cmd 'claude --dangerously-skip-permissions'`
   - パスにクォートや `$` `#` `\` などを含むときは（tmux のコマンド文字列に埋め込むため）扱わない。まだ Agent が 1 つも居ないリポジトリは、sidebar に出ないので選べない
 - sidebar 上で `j` / `k`（`↓` / `↑`）→ 選択を動かして、そのまま **ポップアップでプレビュー**を開く（`@agent_sidebar_auto_preview`、後述）。マウスホイールは選択を動かすだけで、開かない

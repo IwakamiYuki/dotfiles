@@ -629,6 +629,8 @@ ROW_TAIL=""
 # 通常の sidebar: sidebar にフォーカスがあるとき(カーソル)。
 # cockpit: 右の枠にフォーカスがあるとき(sidebar にフォーカスがある間は、罫線ではなく橙の塗りつぶしのタブにする)
 box_cursor() {
+  # cockpit で、作ったばかりの Agent を検出待ちの間は、右の枠の中身と選択が合わないので選択の表示を出さない
+  [ -n "$PENDING_ID" ] && return 1
   if [ "$COCKPIT" = 1 ]; then
     [ "$FOCUSED" != 1 ]
   else
@@ -678,7 +680,7 @@ put_agent() {
   if [ "$i" = "$SEL_IDX" ]; then
     if box_cursor; then
       selected=1
-    elif [ "$COCKPIT" = 1 ]; then
+    elif [ "$COCKPIT" = 1 ] && [ -z "$PENDING_ID" ]; then
       tabbed=1
     fi
     [ "$COCKPIT" = 1 ] && arrow_n=208
