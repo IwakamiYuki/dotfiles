@@ -20,6 +20,9 @@
 #            未読の完了(done)は tmux-claude-agents-status が書く状態ファイルを参照する。
 #   Codex  : ps の引数（codex 本体、または node 経由の codex スクリプト）で検出し、祖先の pane に紐付ける。
 #            状態を確実に判定する手段が無いため status は常に unknown（推測しない）。
+#   Shell  : Agent が 1 つも居ないリポジトリにある、空いているシェル(zsh 等)の pane。「+ New agent」の欄として出し、
+#            n で、その pane のシェルへ Claude / Codex を入力して起動する(tmux-agent-new --here)。
+#            home のシェル・コマンド実行中の pane は対象外。同じリポジトリには欄を 1 つだけ出す(prune_shells)。
 #
 # 種別(Claude / Codex)を画像で示す(@agent_sidebar_type_icon image): Kitty graphics protocol の Unicode placeholders を使う。
 #   画像データは tmux のパススルー(allow-passthrough on)で端末へ一度送って登録し、カードには「画像の置き場所を示す
@@ -28,7 +31,8 @@
 # 下部に Claude Code の 5h / 1w レートリミット使用率（tmux-rate-limits と同じ /tmp/claude-rate-limits.json）を出す。
 # 表示する情報: リポジトリごとの見出し / 各カードに 名前(会話タイトル等。無ければ project)と種別・git ブランチ・状態と継続時間
 #   リポジトリ: cwd の git から判定(worktree は本体の .git を指すので同じリポジトリにまとまる)。git 管理外はディレクトリ名
-#   並び     : リポジトリ名 → worktree のパス → tmux の window / pane 番号(Agent の増減や cockpit での入れ替えで動かない)
+#   並び     : リポジトリ(最も若い window / pane 番号の順) → worktree のパス → window / pane 番号(cockpit での入れ替えでは動かない。
+#              window の並び替えや、若い番号の window への Agent 追加ではリポジトリごと動く。詳細は reorder_agents)
 #   名前     : 会話タイトル(/tmp/claude-title-<sessionId>.txt。statusline 機構が書き出す。/rename の名前もここに入る)
 #              → 無ければトランスクリプトの ai-title(~/.claude/projects/*/<sessionId>.jsonl。Claude Code 自身が書く。
 #                statusline が動いていないセッションでも取れる。末尾だけ読み、TITLE_CACHE_TTL 秒キャッシュ)
@@ -249,6 +253,7 @@ function pane_of(pid,   i) {
 }
 
 function add(pi, type, project, status, detail, elapsed, title, cwd,   active) {
+  if (type != "Shell") has_agent[pi] = 1
   active = (p_win_active[pi] == 1 && p_active[pi] == 1 && p_sess[pi] == cur_sess) ? 1 : 0
   n++
   rec[n] = "R|" p_sess[pi] "|" p_win[pi] "|" p_wname[pi] "|" p_pane[pi] "|" type "|" p_id[pi] "|" active "|" project "|" status "|" detail "|" elapsed "|" title "|" cwd
@@ -261,7 +266,7 @@ function add(pi, type, project, status, detail, elapsed, title, cwd,   active) {
   rest = substr($0, 3)
 }
 
-# P|session|window_id|window_idx|pane_idx|pane_id|pane_pid|sidebar|win_active|pane_active|window_name|origin_widx|origin_wname|origin_pidx|path
+# P|session|window_id|window_idx|pane_idx|pane_id|pane_pid|sidebar|win_active|pane_active|window_name|origin_widx|origin_wname|origin_pidx|slot|command|path
 # origin_* は、cockpit に入れられている Agent の「元の window 番号・名前・pane 番号」。あれば見出しの window と並び順をそちらにする
 tag == "P" {
   split(rest, f, "|")
@@ -269,8 +274,9 @@ tag == "P" {
   p_sess[np] = f[1]; p_wid[np] = f[2]; p_win[np] = f[3]; p_pane[np] = f[4]
   p_id[np] = f[5]; p_sidebar[np] = f[7]; p_win_active[np] = f[8]; p_active[np] = f[9]; p_wname[np] = f[10]
   if (f[11] != "") { p_win[np] = f[11]; p_wname[np] = f[12]; p_pane[np] = f[13] }
+  p_slot[np] = f[14]; p_cmd[np] = f[15]
   p_path[np] = rest
-  sub(/^([^|]*\|){13}/, "", p_path[np])
+  sub(/^([^|]*\|){15}/, "", p_path[np])
   if (f[5] == self) { cur_sess = f[1]; self_wid = f[2]; self_focus = (f[8] == 1 && f[9] == 1) ? 1 : 0 }
   # sidebar pane 自身（と他の sidebar）は Agent 検出の対象から外す
   if (f[7] != 1) pane_by_pid[f[6]] = np
@@ -311,6 +317,9 @@ tag == "A" {
 }
 
 END {
+  split("zsh bash sh dash ksh fish", sh_list, " ")
+  for (i in sh_list) shells[sh_list[i]] = 1
+
   # sidebar と同じ window に、sidebar 以外の pane が残っているか（0 なら呼び出し側が終了する）
   main_panes = -1
   if (self_wid != "") {
@@ -351,6 +360,16 @@ END {
     add(pi, "Codex", project, "unknown", "", "", "", p_path[pi])
   }
 
+  # --- Shell（Agent の居ない、空いているシェルの pane） ---
+  # 「このディレクトリで Agent を新規起動できる」候補。Agent が居るリポジトリとの重複は bash 側(prune_shells)で落とす。
+  # home のシェルは対象外(C-t c が新しい window を home で開くため、候補だらけになる)
+  for (pi = 1; pi <= np; pi++) {
+    if (has_agent[pi] || p_sidebar[pi] == 1 || p_slot[pi] != "") continue
+    if (!(p_cmd[pi] in shells)) continue
+    if (p_path[pi] == "" || p_path[pi] == home) continue
+    add(pi, "Shell", base(p_path[pi]), "shell", "", "", "", p_path[pi])
+  }
+
   # session → window → pane の順に並べる（件数が少ないので単純な挿入ソート）
   for (i = 2; i <= n; i++) {
     r = rec[i]; s = skey[i]; k = nkey[i]
@@ -376,13 +395,13 @@ collect() {
   refresh_title_cache
   {
     tmux list-panes "${list_args[@]}" -F \
-      '#{session_name}|#{window_id}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{@agent_sidebar}|#{window_active}|#{pane_active}|#{window_name}|#{@agent_origin_widx}|#{@agent_origin_wname}|#{@agent_origin_pidx}|#{pane_current_path}' 2>/dev/null |
+      '#{session_name}|#{window_id}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{@agent_sidebar}|#{window_active}|#{pane_active}|#{window_name}|#{@agent_origin_widx}|#{@agent_origin_wname}|#{@agent_origin_pidx}|#{@agent_cockpit_slot_pane}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null |
       awk '{ print "P|" $0 }'
     ps -axo pid=,ppid=,args= | awk '{ print "S|" $0 }'
     cat "$CLAUDE_CACHE_FILE" 2>/dev/null
     awk '{ print "T|" $0 }' "$TITLE_CACHE_FILE" 2>/dev/null
     awk '{ print "A|" $0 }' "$ALERT_STATE_FILE" 2>/dev/null
-  } | awk -v self="$TMUX_PANE" -v now="$(date +%s)" "$AWK_COLLECT"
+  } | awk -v self="$TMUX_PANE" -v now="$(date +%s)" -v home="$HOME" "$AWK_COLLECT"
 }
 
 # --- 表示 ---------------------------------------------------------------
@@ -596,6 +615,8 @@ put_group_header() {
   local i=$1 count right right_w room fill_n fill
   count=${AG_RCOUNT[i]}
   right=" ${count} "
+  # 空きシェルだけのリポジトリ(Agent が 0)は件数を出さない
+  ((count == 0)) && right=" "
   right_w=${#right}
   ((row >= height)) && return 0
   row=$((row + 1))
@@ -656,8 +677,59 @@ put_sep() {
   fi
 }
 
+# Agent の居ない空きシェルの欄(1 行)。そのリポジトリでまだ Agent が起動していないことを、背景なしの点線の縁で示す。
+# 選択して n を押すと、その pane のシェルへ Claude / Codex を入力して起動する(tmux-agent-new --here)。
+# 選択・現在地・cockpit のタブの見せ方は、通常のカード(put_agent)と同じ
+put_idle() {
+  local i=$1 inner=$CARD_INNER selected=0 tabbed=0 arrow_n="" name_on=$C_DIM hint_c=$C_ACTIVE pad
+  if [ "$i" = "$SEL_IDX" ]; then
+    if box_cursor; then
+      selected=1
+    elif [ "$COCKPIT" = 1 ] && [ -z "$PENDING_ID" ]; then
+      tabbed=1
+    fi
+    [ "$COCKPIT" = 1 ] && arrow_n=208
+  fi
+  CUR_IDX=$i
+  if ((tabbed)); then
+    arrow_n=130
+    CARD_BG_NOW="${ESC}[48;5;130m"
+    EDGE_L="${ESC}[38;5;208m█${C_RESET}${CARD_BG_NOW}"
+    EDGE_R=" "
+    name_on="${BOLD_ON}${ESC}[38;5;255m"
+    hint_c=$name_on
+  elif ((selected)); then
+    CARD_BG_NOW=$CARD_BG_SELECTED
+    EDGE_L="${C_SELECT}│${C_RESET}${CARD_BG_NOW}"
+    EDGE_R="${C_SELECT}│${C_RESET}"
+  else
+    CARD_BG_NOW=""
+    EDGE_L="${C_RULE}┆${FG_DEFAULT}"
+    EDGE_R=" "
+    # いま見ている pane(= このシェル)なら、通常のカードと同じ ▶ とシアンで示す
+    if [ "${AG_ACT[i]}" = 1 ] && [ "$COCKPIT" != 1 ]; then
+      name_on=$C_HERE
+      EDGE_L="${C_HERE}▶${C_RESET}"
+    fi
+  fi
+  # 「+ New agent ……… n」。幅が足りなければ n のヒントを落とす
+  local label="+ New agent"
+  if ((inner >= ${#label} + 3)); then
+    printf -v pad '%*s' $((inner - ${#label} - 1)) ''
+    label="${name_on}${label}${BOLD_OFF}${FG_DEFAULT}${pad}${hint_c}n${FG_DEFAULT}"
+  else
+    trunc "$label" "$inner"
+    label="${name_on}${REPLY}${BOLD_OFF}${FG_DEFAULT}"
+  fi
+  [ -n "$arrow_n" ] && ROW_TAIL="${ESC}[38;5;${arrow_n}m${TAB_ARROW}${C_RESET}"
+  card_row "$label"
+  ROW_TAIL=""
+  CUR_IDX=""
+}
+
 put_agent() {
   local i=$1
+  [ "${AG_TYPE[i]}" = Shell ] && { put_idle "$i"; return 0; }
   local status=${AG_STATUS[i]} type=${AG_TYPE[i]} detail=${AG_DETAIL[i]} elapsed=${AG_ELAPSED[i]}
   local inner=$CARD_INNER color pill_bg pill_fg label name_on="" selected=0 bg_normal bg_sel
   local right right_w lw rest tw dw avail pad detail_part=""
@@ -923,8 +995,8 @@ put_title_row() {
   row=$((row + 1))
   ROW_AGENT[row]=""
   # 左側は「▎AGENTS 」の 8 桁 + 件数の桁数
-  printf -v pad '%*s' $((width - 1 - 8 - ${#AG_N} - sumw)) ''
-  frame+="${ESC}[${row};1H${C_ACTIVE}▎${C_TITLE}AGENTS ${C_DIM}${AG_N}${FG_DEFAULT}${pad}${summary}${ESC}[K${C_RESET}"
+  printf -v pad '%*s' $((width - 1 - 8 - ${#N_AGENTS} - sumw)) ''
+  frame+="${ESC}[${row};1H${C_ACTIVE}▎${C_TITLE}AGENTS ${C_DIM}${N_AGENTS}${FG_DEFAULT}${pad}${summary}${ESC}[K${C_RESET}"
 }
 
 render() {
@@ -1027,6 +1099,7 @@ FIT=1
 N_WORK=0
 N_WAIT=0
 N_DONE=0
+N_AGENTS=0
 size_dirty=1
 term_h=24
 footer_rows=0
@@ -1077,8 +1150,38 @@ reorder_agents() {
   done
 }
 
+# Agent の居ない空きシェル(type=Shell)の候補を絞る。残すのは「Agent が 1 つも居ないリポジトリ」の、先頭の 1 つだけ。
+# (Agent が居るリポジトリには、普通のカードの n で新規起動できる。同じリポジトリに空きシェルが複数あっても欄は 1 つ)
+# 呼び出し時点では collect の並び(session → window → pane)なので、「先頭」は若い window・pane の空きシェルになる
+prune_shells() {
+  local i j n=$AG_N name k=0 keep=() old=() has_real
+  for ((i = 0; i < n; i++)); do
+    if [ "${AG_TYPE[i]}" = Shell ]; then
+      has_real=0
+      for ((j = 0; j < n; j++)); do
+        if [ "${AG_TYPE[j]}" != Shell ] && [ "${AG_RKEY[j]}" = "${AG_RKEY[i]}" ]; then has_real=1; break; fi
+      done
+      ((has_real)) && continue
+      for ((j = 0; j < k; j++)); do
+        [ "${AG_TYPE[keep[j]]}" = Shell ] && [ "${AG_RKEY[keep[j]]}" = "${AG_RKEY[i]}" ] && continue 2
+      done
+    fi
+    keep[k]=$i
+    k=$((k + 1))
+  done
+  ((k == n)) && return 0
+  for name in $AG_ARRAYS; do
+    eval "old=(\"\${$name[@]}\")"
+    eval "$name=()"
+    for ((j = 0; j < k; j++)); do
+      eval "$name[j]=\"\${old[keep[j]]}\""
+    done
+  done
+  AG_N=$k
+}
+
 parse_records() {
-  local tag sess win wname pane type id act proj st det elapsed title cwd i j s e
+  local tag sess win wname pane type id act proj st det elapsed title cwd i j s e cnt
   AG_N=0
   AG_SESS=(); AG_WIN=(); AG_WNAME=(); AG_PANE=(); AG_TYPE=(); AG_ID=(); AG_ACT=(); AG_PROJ=(); AG_STATUS=(); AG_DETAIL=()
   AG_ELAPSED=(); AG_TITLE=(); AG_DIR=(); AG_BRANCH=(); AG_ROWS=(); AG_REPO=(); AG_RKEY=(); AG_WT=()
@@ -1094,13 +1197,14 @@ parse_records() {
         fmt_parent_dir "$cwd"; AG_DIR[AG_N]=$REPLY
         git_info_of "$cwd"
         AG_REPO[AG_N]=$GI_REPO; AG_RKEY[AG_N]=$GI_RKEY; AG_WT[AG_N]=$GI_WT; AG_BRANCH[AG_N]=$GI_BRANCH
-        # 名前 / ブランチ / 状態 の 3 行
-        AG_ROWS[AG_N]=3
+        # 名前 / ブランチ / 状態 の 3 行。Shell(Agent の居ない空きシェル)は「新規起動」欄の 1 行
+        if [ "$type" = Shell ]; then AG_ROWS[AG_N]=1; else AG_ROWS[AG_N]=3; fi
         AG_N=$((AG_N + 1))
         ;;
     esac
   done <<< "$1"
 
+  prune_shells
   reorder_agents
 
   # リポジトリごとのまとまり(連続した範囲)の Agent の数を求める(見出しの右端に出す)
@@ -1109,14 +1213,20 @@ parse_records() {
     s=$i
     e=$i
     while ((e + 1 < AG_N)) && [ "${AG_RKEY[e + 1]}" = "${AG_RKEY[s]}" ]; do e=$((e + 1)); done
+    # 見出しの件数は Agent だけ数える(空きシェルの欄は数えない。空きシェルだけのリポジトリは 0)
+    cnt=0
     for ((j = s; j <= e; j++)); do
-      AG_RCOUNT[j]=$((e - s + 1))
+      [ "${AG_TYPE[j]}" = Shell ] || cnt=$((cnt + 1))
+    done
+    for ((j = s; j <= e; j++)); do
+      AG_RCOUNT[j]=$cnt
     done
     i=$((e + 1))
   done
 
-  N_WORK=0; N_WAIT=0; N_DONE=0
+  N_WORK=0; N_WAIT=0; N_DONE=0; N_AGENTS=0
   for ((i = 0; i < AG_N; i++)); do
+    [ "${AG_TYPE[i]}" = Shell ] || N_AGENTS=$((N_AGENTS + 1))
     case ${AG_STATUS[i]} in
       working) N_WORK=$((N_WORK + 1)) ;;
       waiting) N_WAIT=$((N_WAIT + 1)) ;;
@@ -1129,6 +1239,12 @@ parse_records() {
   for ((i = 0; i < AG_N; i++)); do
     [ "${AG_ID[i]}|${AG_TYPE[i]}" = "$SEL_KEY" ] && { found=$i; break; }
   done
+  # 空きシェルで Agent を起動すると type が Shell → Claude に変わるので、見つからなければ pane_id だけで探す
+  if [ -z "$found" ] && [ -n "$SEL_KEY" ]; then
+    for ((i = 0; i < AG_N; i++)); do
+      [ "${AG_ID[i]}" = "${SEL_KEY%%|*}" ] && { found=$i; break; }
+    done
+  fi
   if [ -z "$found" ]; then
     found=0
     for ((i = 0; i < AG_N; i++)); do
@@ -1271,6 +1387,10 @@ restart_selected() {
   local i=$SEL_IDX id name
   ((AG_N > 0)) || return 0
   id=${AG_ID[i]}
+  if [ "${AG_TYPE[i]}" = Shell ]; then
+    tmux display-message "restart: Agent が起動していません(n で新規起動)" 2>/dev/null
+    return 0
+  fi
   if [ "${AG_TYPE[i]}" != Claude ]; then
     tmux display-message "restart: ${AG_TYPE[i]} の再起動は未対応です" 2>/dev/null
     return 0
@@ -1293,11 +1413,17 @@ restart_selected() {
 # ディレクトリはリポジトリの本体(worktree でも大本のディレクトリ)。実際の処理は tmux-agent-new
 new_agent_menu() {
   ((AG_N > 0)) || return 0
-  local s=$SEL_IDX dir anchor repo mode
+  local s=$SEL_IDX dir anchor repo mode here=""
   while ((s > 0)) && [ "${AG_RKEY[s - 1]}" = "${AG_RKEY[SEL_IDX]}" ]; do s=$((s - 1)); done
   anchor=${AG_ID[s]}
   dir=${AG_RKEY[SEL_IDX]}
   repo=${AG_REPO[SEL_IDX]}
+  # 空きシェルの欄: その pane のシェルへそのまま入力して起動する(pane を分割しない。cwd はシェルの今の場所)
+  if [ "${AG_TYPE[SEL_IDX]}" = Shell ]; then
+    anchor=${AG_ID[SEL_IDX]}
+    dir=${AG_WT[SEL_IDX]}
+    here=" --here"
+  fi
   if [ ! -d "$dir" ]; then
     tmux display-message "new: ディレクトリがありません ($dir)" 2>/dev/null
     return 0
@@ -1311,8 +1437,8 @@ new_agent_menu() {
   esac
   if [ "$COCKPIT" = 1 ]; then mode="--notify '$TMUX_PANE'"; else mode="--focus"; fi
   tmux display-menu -T "New agent: ${repo//\#/##}" -x C -y C \
-    "Claude" c "run-shell -b \"'$NEW_BIN' claude '$anchor' '$dir' $mode\"" \
-    "Codex" x "run-shell -b \"'$NEW_BIN' codex '$anchor' '$dir' $mode\"" 2>/dev/null
+    "Claude" c "run-shell -b \"'$NEW_BIN' claude '$anchor' '$dir' $mode$here\"" \
+    "Codex" x "run-shell -b \"'$NEW_BIN' codex '$anchor' '$dir' $mode$here\"" 2>/dev/null
 }
 
 # cockpit で、新規に作った Agent が検出されたら選択して枠へ入れる。検出まで数秒かかるので、一定時間は探し続ける
