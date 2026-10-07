@@ -124,7 +124,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - `Ctrl-t b` → 現在の window に sidebar を追加。すでにあれば二重起動せず sidebar へフォーカス
 - sidebar 上で `Ctrl-C` → sidebar だけ終了して pane が閉じる。main pane は残る
 - ⚠️ `Ctrl-t a`（Claude 一覧ポップアップ）が使用済みのため、再表示キーは `b`
-- sidebar 上で `j` / `k`（`↓` / `↑`、マウスホイール）→ 選択を移動。選択中のカードはオレンジの角丸罫線で囲まれる（sidebar にフォーカスがあるときだけ表示。このとき 2 行目に操作ヒントも出る）
+- sidebar 上で `j` / `k`（`↓` / `↑`、マウスホイール）→ 選択を移動。`j` / `k`（`↓` / `↑`）はそのまま **ポップアップでプレビュー**も開く（`@agent_sidebar_auto_preview`、後述）。マウスホイールは移動だけで、開かない。選択中のカードはオレンジの角丸罫線で囲まれる（sidebar にフォーカスがあるときだけ表示。このとき 2 行目に操作ヒントも出る）
 - sidebar 上で `Enter` / `l` / `h`、または Agent の行を **クリック** → その Agent の window・pane へジャンプ（`r` で即時更新）
 - sidebar 上で `R`（大文字）→ 選択中の Claude Code を **再起動**（バージョンアップや設定の反映用。通常の sidebar・cockpit のどちらでも効く。ヒント行には出さない）
   - `tmux-agent-restart <pane_id>` が、`claude agents --json` で pane の Agent（pid・sessionId・cwd）を特定 → `SIGTERM` で終了 → 戻ったシェルに `claude <引き継ぐ引数> --resume <sessionId>` を入力して実行する
@@ -140,8 +140,13 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - シェルを立ち上げてからコマンドを入力するので、Agent が終了してもシェルが残り、`R`（再起動）がそのまま使える
   - 通常の sidebar（`--focus`）は、作った pane へ移動する。cockpit（`--notify`）は、作った pane を **すぐ右の枠へ入れ、フォーカスもそこへ移す**（sidebar が選ばれたままにならず、すぐ入力できる）。さらに sidebar の pane option `@agent_new_pane` に pane_id を書き、sidebar は **Agent として検出されたら**（Claude は `claude agents --json` に載るまで数秒かかる。40 秒まで探す）そのカードを選択する。検出までは右の枠の中身と選択が合わないので、選択の表示（タブ・罫線）を出さない
   - 起動コマンドは tmux の option で変えられる: `@agent_sidebar_claude_cmd`（既定 `claude`）/ `@agent_sidebar_codex_cmd`（既定 `codex`）。たとえば `set -g @agent_sidebar_claude_cmd 'claude --dangerously-skip-permissions'`
-  - パスにクォートや `$` `#` `\` などを含むときは（tmux のコマンド文字列に埋め込むため）扱わない。まだ Agent が 1 つも居ないリポジトリは、sidebar に出ないので選べない
-- sidebar 上で `j` / `k`（`↓` / `↑`）→ 選択を動かして、そのまま **ポップアップでプレビュー**を開く（`@agent_sidebar_auto_preview`、後述）。マウスホイールは選択を動かすだけで、開かない
+  - パスにクォートや `$` `#` `\` などを含むときは（tmux のコマンド文字列に埋め込むため）扱わない
+  - **Agent が 1 つも居ないリポジトリ（空きシェルの欄）**: そのリポジトリに **空いているシェルの pane**（zsh / bash / sh / dash / ksh / fish が前面で動いていて、Agent が居ない）があれば、見出しの下に `┆ + New agent   n` の 1 行の欄を出す（背景なしの点線の縁。種別は内部で `Shell`）
+    - 選択して `n` を押すと、**その pane のシェルへそのまま入力して**起動する（`tmux-agent-new ... --here`。pane は分割しない。cwd はシェルの今の場所）。`Enter` / クリックはその pane へジャンプ。`R` は「Agent が起動していません」と出す
+    - 対象外: home のシェル（`C-t c` が home で window を開くため、候補だらけになる）、コマンド実行中の pane（vim など）、sidebar、cockpit の slot。同じリポジトリに空きシェルが複数あっても欄は 1 つ（若い window・pane のもの）。Agent が 1 つでも居るリポジトリには出さない（通常のカードの `n` を使う）
+    - 起動の直前に `tmux-agent-new` が、anchor がまだ空きシェルか確かめる（実行中のコマンドへ入力してしまわないため）。違えば何もしない
+    - 見出しの件数と先頭行の `AGENTS` は Agent だけ数える（欄は数えない）。Agent が起動して欄がカードに変わっても、選択は pane_id で引き継ぐ（`@agent_new_pane` は使わない）
+    - cockpit では、欄を選ぶと、その空きシェルの本物の pane が右の枠に入る。そこで `n` を押すと、枠の中のシェルで起動する
 - sidebar 上で `p`（または Space）→ 選択中の Agent の pane を **ポップアップでプレビュー**（`tmux-agent-sidebar-preview`）
   - 中身は `tmux capture-pane -e -p`（色つき・読み取り専用）を 1 秒ごとに更新。Agent には影響しない
   - ポップアップ内で `j` / `k`（`↓` / `↑`、Tab）→ 前後の Agent に切り替え、`Enter` → その pane へ移動、`q` / Esc / `p` / Space → 閉じる
@@ -194,7 +199,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - カードは常に 3 行（見出し・区切り行は別。リポジトリごとに「見出し → [区切り → カード]… → 閉じの区切り」）。収まらない分は `+N more` にし、選択に追従してスクロールする
 - Claude: `claude agents --json`（約 0.2 秒）と各セッションの更新時刻を `/tmp/tmux-agent-sidebar-claude2.txt` に 3 秒キャッシュして全 sidebar で共有。pid の祖先をたどって pane に紐付ける。status は working / waiting / idle。未読の完了は `tmux-claude-agents-status` の状態ファイルを参照して done 表示
 - Codex: ps の引数（`codex` 本体、または `node .../codex`）で検出。状態を確実に判定する手段が無いため unknown 固定（推測しない）
-- 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|name|cwd`。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む
+- 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|name|cwd`（`type` は `Claude` / `Codex` / `Shell`）。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む
 - 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_ICON_DIR`、`AGENT_SIDEBAR_ALERT_STATE`、`AGENT_SIDEBAR_PROJECTS_DIR`、`AGENT_SIDEBAR_TITLE_CACHE`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
 
 **既知の制限**:
