@@ -1,0 +1,98 @@
+:root {
+  --bg: #161412;
+  --panel: #1f1b17;
+  --card: #29241f;
+  --card-sel: #3a2f22;
+  --line: #3a342d;
+  --text: #e8e2d9;
+  --dim: #8a8378;
+  --accent: #ff8700;
+  --working: #f0c000;
+  --waiting: #ff5f5f;
+  --done: #3ddc84;
+  --idle: #7fb08a;
+  --unknown: #8a8378;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Hiragino Sans", "Noto Sans Mono CJK JP", monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); overflow: hidden; }
+body {
+  /* ソフトキーボードが出ても、入力欄が隠れないように高さを合わせる。--vvh は app.js が visual viewport の高さを入れる
+     （ピンチズーム中は入れない）。Android の Chrome は viewport の interactive-widget=resizes-content で 100dvh ごと縮む */
+  display: flex; flex-direction: column; height: 100dvh; height: var(--vvh, 100dvh);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Segoe UI", sans-serif;
+  -webkit-text-size-adjust: 100%;
+  padding-top: env(safe-area-inset-top);
+}
+button { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; touch-action: manipulation; }
+button:active { background: var(--card-sel); }
+button:disabled { opacity: .4; }
+[hidden] { display: none !important; }
+
+#bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+#menu { font-size: 20px; line-height: 1; padding: 8px 12px; border-color: var(--accent); color: var(--accent); }
+#who { min-width: 0; flex: 1; }
+#head { display: flex; align-items: center; gap: 8px; }
+#name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#sub { color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#tools { display: flex; gap: 6px; padding: 6px 12px; overflow-x: auto; background: var(--bg); border-bottom: 1px solid var(--line); }
+#tools button { flex: none; font-size: 13px; padding: 4px 10px; }
+#tools button.on { border-color: var(--accent); color: var(--accent); }
+
+#view { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+#screen { margin: 0; padding: 8px 10px 16px; font: 11px/1.25 var(--mono); color: #d8d2c8; white-space: pre; width: max-content; min-width: 100%; tab-size: 8; }
+
+#foot { background: var(--panel); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+#keys { display: flex; gap: 6px; padding: 6px 12px 0; overflow-x: auto; }
+#keys button { flex: none; min-width: 42px; font-family: var(--mono); font-size: 14px; padding: 8px 10px; }
+#composer { display: flex; gap: 8px; align-items: flex-end; padding: 8px 12px; }
+#text { flex: 1; min-height: 40px; max-height: 140px; resize: none; font: 16px/1.4 inherit; font-family: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+#text:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+/* 入力欄に文字があるときは「入力」、空のときは「⏎」(Enter)。ラベルが変わっても幅が動かないよう、最小幅を決める */
+#send { background: var(--accent); color: #1a1208; border-color: var(--accent); font-weight: 700; padding: 10px 14px; min-width: 62px; }
+#sendEnter { flex: none; padding: 10px 12px; font-weight: 700; white-space: nowrap; border-color: var(--accent); color: var(--accent); }
+body.ro #foot { display: none; }
+
+.pill { flex: none; font-size: 11px; font-weight: 700; letter-spacing: .03em; padding: 1px 7px; border-radius: 999px; color: #111; background: var(--unknown); }
+.pill.working { background: var(--working); }
+.pill.waiting { background: var(--waiting); color: #fff; }
+.pill.done { background: var(--done); }
+.pill.idle { background: var(--idle); }
+
+#drawer { position: fixed; z-index: 20; top: 0; bottom: 0; left: 0; width: min(88vw, 360px); display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); transform: translateX(-102%); transition: transform .18s ease; padding-top: env(safe-area-inset-top); }
+body.drawer #drawer { transform: none; }
+#scrim { position: fixed; z-index: 10; inset: 0; background: rgba(0, 0, 0, .55); opacity: 0; pointer-events: none; transition: opacity .18s ease; }
+body.drawer #scrim { opacity: 1; pointer-events: auto; }
+#drawerHead { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; color: var(--accent); letter-spacing: .08em; }
+#list { flex: 1; overflow-y: auto; padding: 0 10px 10px; }
+#drawerFoot { padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+
+.group { display: flex; justify-content: space-between; margin: 14px 4px 6px; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+.group .count { color: var(--dim); }
+.card { display: block; width: 100%; text-align: left; margin-bottom: 6px; padding: 8px 10px; border-left: 4px solid var(--unknown); }
+.card.st-working { border-left-color: var(--working); }
+.card.st-waiting { border-left-color: var(--waiting); background: #3a2020; }
+.card.st-done { border-left-color: var(--done); background: #1f3a2a; }
+.card.st-idle { border-left-color: var(--idle); background: #232b25; }
+.card.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
+.card .row1 { display: flex; justify-content: space-between; gap: 8px; }
+.card .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .kind { flex: none; color: var(--dim); font-size: 12px; }
+.card .row2 { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .row3 { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 12px; }
+.card .det { flex: 1; min-width: 0; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .el { color: var(--dim); }
+.empty { color: var(--dim); text-align: center; margin-top: 32px; }
+
+#login { position: fixed; z-index: 30; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--bg); }
+#loginForm { width: min(100%, 360px); display: flex; flex-direction: column; gap: 12px; }
+#loginForm h1 { margin: 0; color: var(--accent); font-size: 20px; }
+#loginForm p { margin: 0; color: var(--dim); font-size: 13px; }
+#loginForm input { font-size: 16px; padding: 10px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+#loginForm button { background: var(--accent); color: #1a1208; border-color: var(--accent); font-weight: 700; padding: 10px; }
+#loginMsg { color: var(--waiting) !important; min-height: 1.4em; }
+
+#toast { position: fixed; z-index: 40; left: 50%; bottom: calc(150px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: 90vw; padding: 8px 14px; border-radius: 8px; background: #000c; border: 1px solid var(--line); font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .15s; }
+#toast.show { opacity: 1; }

@@ -1,0 +1,1262 @@
+#!/usr/bin/env python3
+"""tmux-agent-web: スマホのブラウザから、この Mac の tmux 上の Claude Code / Codex を確認・操作する小さな Web サーバー。
+
+    tmux-agent-web [--host IP] [--port N] [--read-only] [--idle-timeout 分] [--allow-host 名前] [--copy] [--state-file パス]
+
+入り切りは sidebar の w（tmux-agent-web-toggle 経由）。起動すると状態ファイル（pid・ポート・URL。~/.cache/tmux-agent-web/state.json）を
+書き、終了（Ctrl+C / SIGTERM）で消す。すでに起動していれば二重には起動しない。
+
+画面左のメニューに Agent の一覧（sidebar と同じ検出）、メインに選んだ Agent の pane、下に入力欄とクイックキーを出す。
+
+設計の要点:
+  - 表示は `capture-pane` の読み取りだけ、入力は `paste-buffer` / `send-keys` だけ。swap-pane・リサイズ・window の切り替えは
+    しないので、Mac 側の画面（cockpit を含む）に影響しない。tmux-agent-sidebar には手を入れない（起動中のスクリプトを
+    書き換えると bash が壊れた読み方をするため、検出は Python で同じ方式を再実装している）。
+  - 操作できる pane は「検出された Agent」だけ（他の pane の id を指定しても 404）。
+  - 待ち受けは自宅 LAN の特定の IP だけ。0.0.0.0・公開 IP は拒否する。平文 HTTP なので、信頼できる Wi-Fi でだけ使う。
+  - 認証: 起動のたびに作るトークン（URL の # 以降に載る）→ HttpOnly / SameSite=Strict の Cookie。
+    Host / Origin 検証（DNS rebinding・CSRF 対策）、クライアント IP の制限、ログイン失敗のレート制限つき。
+
+環境変数: TMUX_AGENT_WEB_TOKEN（トークンを固定。20 文字以上）、TMUX_AGENT_WEB_SOCKET（tmux のソケットパス。テスト用）、
+  TMUX_AGENT_WEB_CLAUDE_BIN / AGENT_SIDEBAR_SESSIONS_DIR / AGENT_SIDEBAR_PROJECTS_DIR / AGENT_SIDEBAR_ALERT_STATE
+  （sidebar と同じ名前。いずれもテスト用）
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import hmac
+import http.cookies
+import http.server
+import ipaddress
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import socket
+import ssl
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Dict, FrozenSet, List, Optional, Tuple
+
+NAME = "tmux-agent-web"
+DEFAULT_PORT = 8765
+COOKIE_NAME = "tmux_agent_web"
+SESSION_DAYS = 30
+SESSION_TTL = SESSION_DAYS * 86400
+MIN_TOKEN_LENGTH = 20
+MAX_BODY_BYTES = 64 * 1024
+MAX_TEXT_CHARS = 8000
+MAX_HISTORY_LINES = 5000
+# paste の直後の Enter が、Claude Code に「貼り付けの一部」と解釈されないための待ち
+PASTE_ENTER_DELAY = 0.15
+AGENT_CACHE_TTL = 1.5
+CLAUDE_CACHE_TTL = 3.0
+GIT_CACHE_TTL = 10.0
+TITLE_CACHE_TTL = 30.0
+TRANSCRIPT_TAIL_BYTES = 300_000
+SUBPROCESS_TIMEOUT = 5
+
+os.environ["PATH"] = os.pathsep.join(
+    [str(Path.home() / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", "")]
+)
+
+ASSETS = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/ansi.js": ("ansi.js", "text/javascript; charset=utf-8"),
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+    # ホーム画面・タブ用（秘密を含まないので、ログインなしで配信する。ブラウザは Cookie なしで取りに来る）
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
+    "/icon.svg": ("icon.svg", "image/svg+xml"),
+    "/icon-48.png": ("icon-48.png", "image/png"),
+    "/icon-192.png": ("icon-192.png", "image/png"),
+    "/icon-512.png": ("icon-512.png", "image/png"),
+    "/icon-maskable-512.png": ("icon-maskable-512.png", "image/png"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+    "/favicon.ico": ("icon-48.png", "image/png"),
+}
+
+# 'unsafe-inline' は style だけ（ANSI の色を style 属性で付けるため）。script はファイルのみ
+# manifest-src / worker-src は default-src 'none' に従って止まるので、明示する（manifest が取得されないと「アプリをインストール」が出ない）
+CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+    "img-src 'self' data:; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
+
+# ブラウザから送れるキー。tmux の send-keys に渡す名前へ写す（単一の y / n / 数字は別扱い）
+KEYS = {
+    "Enter": "Enter", "Escape": "Escape", "Tab": "Tab", "BTab": "BTab", "Space": "Space", "BSpace": "BSpace",
+    "Up": "Up", "Down": "Down", "Left": "Left", "Right": "Right", "PageUp": "PageUp", "PageDown": "PageDown",
+    "C-c": "C-c", "C-o": "C-o", "C-r": "C-r",
+}
+# 「/」は Claude Code のスラッシュコマンドのメニューを開く（スマホの日本語キーボードでは打ちにくい）
+LITERAL_KEYS = frozenset("yn123456789/")
+
+# 待ち受け・接続を許す範囲。ipaddress の is_private はドキュメント用の範囲（203.0.113.0/24 等）まで含むので使わず、明示する
+LAN_NETWORKS = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",  # RFC 1918
+        "127.0.0.0/8",  # ループバック
+        "169.254.0.0/16",  # リンクローカル
+        "100.64.0.0/10",  # CGNAT（Tailscale の 100.x もここ）
+    )
+)
+
+
+# --- 設定 ---------------------------------------------------------------------
+
+
+@dataclass
+class Config:
+    tmux_socket: str = ""
+    claude_bin: str = "claude"
+    sessions_dir: str = str(Path.home() / ".claude/sessions")
+    projects_dir: str = str(Path.home() / ".claude/projects")
+    alert_state: str = "/tmp/tmux-claude-agents-state"
+    title_dir: str = "/tmp"
+    token: str = ""
+    read_only: bool = False
+    quiet: bool = False
+    session_ttl: int = SESSION_TTL
+    sessions_path: str = ""  # ログイン済みの記録の保存先（空ならメモリだけ。起動し直すと再認証になる）
+    tls_cert: str = ""  # サーバー証明書と鍵（両方あれば HTTPS で待ち受ける）
+    tls_key: str = ""
+    assets_dir: str = str(Path(os.path.realpath(__file__)).parent.parent / "assets" / "agent-web")
+
+
+def config_from_env() -> Config:
+    e = os.environ.get
+    base = Config()
+    return Config(
+        tmux_socket=e("TMUX_AGENT_WEB_SOCKET", ""),
+        claude_bin=e("TMUX_AGENT_WEB_CLAUDE_BIN") or e("AGENT_SIDEBAR_CLAUDE_BIN") or base.claude_bin,
+        sessions_dir=e("AGENT_SIDEBAR_SESSIONS_DIR", base.sessions_dir),
+        projects_dir=e("AGENT_SIDEBAR_PROJECTS_DIR", base.projects_dir),
+        alert_state=e("AGENT_SIDEBAR_ALERT_STATE", base.alert_state),
+    )
+
+
+# --- tmux / ps の出力を読む ---------------------------------------------------------
+
+
+@dataclass
+class Pane:
+    session: str
+    window_id: str
+    window: int
+    index: int
+    pane_id: str
+    pid: int
+    sidebar: bool
+    window_active: bool
+    active: bool
+    window_name: str
+    origin_window: Optional[int]
+    origin_name: str
+    origin_index: Optional[int]
+    slot: bool
+    command: str
+    cols: int
+    rows: int
+    path: str
+
+
+PANE_FORMAT = "|".join(
+    "#{%s}" % f
+    for f in (
+        "session_name", "window_id", "window_index", "pane_index", "pane_id", "pane_pid", "@agent_sidebar",
+        "window_active", "pane_active", "window_name", "@agent_origin_widx", "@agent_origin_wname",
+        "@agent_origin_pidx", "@agent_cockpit_slot_pane", "pane_current_command", "pane_width", "pane_height",
+        "pane_current_path",
+    )
+)
+PANE_FIELD_COUNT = 18
+
+
+def _int(value: str, default: Optional[int] = 0) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_panes(text: str) -> List[Pane]:
+    """`list-panes -a -F PANE_FORMAT` の出力。path は最後の欄なので '|' を含んでもよい。"""
+    panes = []
+    for line in text.splitlines():
+        f = line.split("|", PANE_FIELD_COUNT - 1)
+        if len(f) < PANE_FIELD_COUNT:
+            continue
+        panes.append(
+            Pane(
+                session=f[0], window_id=f[1], window=_int(f[2]), index=_int(f[3]), pane_id=f[4], pid=_int(f[5]),
+                sidebar=f[6] == "1", window_active=f[7] == "1", active=f[8] == "1", window_name=f[9],
+                origin_window=_int(f[10], None), origin_name=f[11], origin_index=_int(f[12], None),
+                slot=f[13] != "", command=f[14], cols=_int(f[15]), rows=_int(f[16]), path=f[17],
+            )
+        )
+    return panes
+
+
+def parse_ps(text: str) -> Dict[int, Tuple[int, str]]:
+    """`ps -axo pid=,ppid=,args=` の出力 → {pid: (ppid, args)}"""
+    procs = {}
+    for line in text.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        procs[int(parts[0])] = (int(parts[1]), parts[2] if len(parts) > 2 else "")
+    return procs
+
+
+def pane_of(pid: int, pane_by_pid: Dict[int, Pane], procs: Dict[int, Tuple[int, str]]) -> Optional[Pane]:
+    """pid から祖先をたどり、最初に見つかった pane_pid の pane を返す。"""
+    for _ in range(64):
+        if pid in pane_by_pid:
+            return pane_by_pid[pid]
+        entry = procs.get(pid)
+        if not entry or entry[0] in (0, 1):
+            return None
+        pid = entry[0]
+    return None
+
+
+# --- Agent の検出 ---------------------------------------------------------------
+
+
+@dataclass
+class GitInfo:
+    repo_key: str
+    repo: str
+    worktree: str
+    branch: str
+
+
+def claude_status(raw: str, alerting: bool) -> str:
+    if raw == "busy":
+        return "working"
+    if raw == "waiting":
+        return "waiting"
+    if raw == "idle":
+        return "done" if alerting else "idle"
+    return "unknown"
+
+
+def _base(path: str) -> str:
+    return os.path.basename(path.rstrip("/")) or path
+
+
+def build_agents(
+    panes: List[Pane],
+    procs: Dict[int, Tuple[int, str]],
+    claude: List[dict],
+    alerting: Dict[int, bool],
+    *,
+    now: float,
+    title_of: Callable[[str], str],
+    meta_of: Callable[[int], Tuple[Optional[int], str]],
+    git_of: Callable[[str], GitInfo],
+) -> List[dict]:
+    """sidebar の collect と同じ方式で Agent を pane に紐付け、リポジトリ → worktree → window → pane の順に並べる。"""
+    by_pid = {p.pid: p for p in panes if not p.sidebar}
+    found = []  # (pane, type, status, detail, elapsed, name, cwd)
+
+    for c in claude:
+        pid = _int(str(c.get("pid", "")), None)
+        p = pane_of(pid, by_pid, procs) if pid is not None else None
+        if p is None:
+            continue
+        updated_ms, name_source = meta_of(pid)
+        elapsed = max(0, int(now - updated_ms / 1000)) if updated_ms else None
+        name = title_of(str(c.get("sessionId") or ""))
+        if not name and name_source not in ("", "derived"):
+            name = str(c.get("name") or "")
+        parent = procs.get(pid, (0, ""))[0]
+        status = claude_status(str(c.get("status", "")), bool(alerting.get(parent)))
+        found.append((p, "Claude", status, str(c.get("waitingFor") or ""), elapsed, name, str(c.get("cwd") or p.path)))
+
+    codex_seen = set()
+    for pid, (_, args) in procs.items():
+        argv = args.split()
+        if not argv:
+            continue
+        first, second = _base(argv[0]), _base(argv[1]) if len(argv) > 1 else ""
+        if not (first == "codex" or (first.startswith("node") and second == "codex")):
+            continue
+        p = pane_of(pid, by_pid, procs)
+        if p is None or p.pane_id in codex_seen:
+            continue
+        codex_seen.add(p.pane_id)
+        found.append((p, "Codex", "unknown", "", None, "", p.path))
+
+    agents = []
+    for p, kind, status, detail, elapsed, name, cwd in found:
+        g = git_of(cwd)
+        win = p.origin_window if p.origin_window is not None else p.window
+        idx = p.origin_index if p.origin_index is not None else p.index
+        agents.append(
+            {
+                "id": _int(p.pane_id.lstrip("%")), "pane": p.pane_id, "type": kind, "status": status,
+                "detail": detail, "name": name or _base(cwd), "repo": g.repo, "repoKey": g.repo_key,
+                "branch": g.branch, "worktree": g.worktree, "cwd": cwd, "elapsed": elapsed,
+                "window": f"{p.session}:{win}.{idx}", "active": p.active and p.window_active,
+                "cols": p.cols, "rows": p.rows, "_win": win, "_idx": idx,
+            }
+        )
+
+    first_seen: Dict[str, Tuple[int, int, str]] = {}
+    for a in agents:
+        key = (a["_win"], a["_idx"], a["repoKey"])
+        if a["repoKey"] not in first_seen or key < first_seen[a["repoKey"]]:
+            first_seen[a["repoKey"]] = key
+    agents.sort(key=lambda a: (first_seen[a["repoKey"]], a["worktree"], a["_win"], a["_idx"]))
+    for a in agents:
+        del a["_win"], a["_idx"]
+    return agents
+
+
+# --- 外部の情報源（claude / git / トランスクリプト / 状態ファイル） ------------------------
+
+
+def _run(cmd: List[str], *, input_text: Optional[str] = None, timeout: float = SUBPROCESS_TIMEOUT):
+    return subprocess.run(
+        cmd, input=input_text.encode() if input_text is not None else None,
+        capture_output=True, timeout=timeout,
+    )
+
+
+def _out(proc) -> str:
+    return proc.stdout.decode("utf-8", errors="replace")
+
+
+SESSION_ID_RE = re.compile(r"^[0-9A-Za-z-]{8,64}$")
+
+
+class TitleResolver:
+    """会話タイトル: statusline が書く /tmp/claude-title-<sid>.txt → トランスクリプトの ai-title。"""
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self._cache: Dict[str, Tuple[float, str]] = {}
+
+    def title_of(self, sid: str) -> str:
+        if not SESSION_ID_RE.match(sid or ""):
+            return ""
+        title = ""
+        try:
+            title = Path(self.cfg.title_dir, f"claude-title-{sid}.txt").read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        title = title.replace("|", " ").replace("\t", " ")
+        if not title or title == "新しい会話":
+            title = self._ai_title(sid)
+        return "" if title == "新しい会話" else title
+
+    def _ai_title(self, sid: str) -> str:
+        hit = self._cache.get(sid)
+        if hit and time.time() - hit[0] < TITLE_CACHE_TTL:
+            return hit[1]
+        title = ""
+        for path in Path(self.cfg.projects_dir).glob(f"*/{sid}.jsonl"):
+            try:
+                with open(path, "rb") as f:
+                    f.seek(0, os.SEEK_END)
+                    f.seek(max(0, f.tell() - TRANSCRIPT_TAIL_BYTES))
+                    tail = f.read().decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in reversed(tail.splitlines()):
+                if '"type":"ai-title"' in line:
+                    try:
+                        title = str(json.loads(line).get("aiTitle") or "")
+                    except ValueError:
+                        continue
+                    break
+            break
+        self._cache[sid] = (time.time(), title)
+        return title
+
+
+class Collector:
+    """tmux / ps / claude から Agent 一覧を作る（短時間キャッシュ）。操作の入口（capture / paste / key）も持つ。"""
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.titles = TitleResolver(cfg)
+        self._lock = threading.Lock()
+        self._agents: Tuple[float, List[dict]] = (0.0, [])
+        self._claude: Tuple[float, List[dict]] = (0.0, [])
+        self._git: Dict[str, Tuple[float, GitInfo]] = {}
+
+    # tmux
+    def tmux(self, *args: str, input_text: Optional[str] = None):
+        cmd = ["tmux"] + (["-S", self.cfg.tmux_socket] if self.cfg.tmux_socket else []) + list(args)
+        return _run(cmd, input_text=input_text)
+
+    # 一覧
+    def agents(self, max_age: float = AGENT_CACHE_TTL) -> List[dict]:
+        with self._lock:
+            if time.time() - self._agents[0] < max_age:
+                return self._agents[1]
+            agents = self._collect()
+            self._agents = (time.time(), agents)
+            return agents
+
+    def find(self, number: int) -> Optional[dict]:
+        for a in self.agents(max_age=3.0):
+            if a["id"] == number:
+                return a
+        return None
+
+    def _collect(self) -> List[dict]:
+        panes = parse_panes(_out(self.tmux("list-panes", "-a", "-F", PANE_FORMAT)))
+        procs = parse_ps(_out(_run(["ps", "-axo", "pid=,ppid=,args="])))
+        return build_agents(
+            panes, procs, self._claude_agents(), self._alerting(), now=time.time(),
+            title_of=self.titles.title_of, meta_of=self._meta_of, git_of=self._git_of,
+        )
+
+    def _claude_agents(self) -> List[dict]:
+        if time.time() - self._claude[0] < CLAUDE_CACHE_TTL:
+            return self._claude[1]
+        try:
+            data = json.loads(_out(_run([self.cfg.claude_bin, "agents", "--json"])))
+            if isinstance(data, list):
+                self._claude = (time.time(), [d for d in data if isinstance(d, dict)])
+                return self._claude[1]
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+        self._claude = (time.time(), self._claude[1])  # 失敗時は前回の値を残す
+        return self._claude[1]
+
+    def _alerting(self) -> Dict[int, bool]:
+        """tmux-claude-agents-status が書く "ppid:status:alerting" の行。"""
+        alerting = {}
+        try:
+            for line in Path(self.cfg.alert_state).read_text().splitlines():
+                parts = line.split(":")
+                if len(parts) >= 3 and parts[0].isdigit():
+                    alerting[int(parts[0])] = parts[2] == "1"
+        except OSError:
+            pass
+        return alerting
+
+    def _meta_of(self, pid: int) -> Tuple[Optional[int], str]:
+        try:
+            d = json.loads(Path(self.cfg.sessions_dir, f"{pid}.json").read_text())
+            return _int(str(d.get("statusUpdatedAt")), None), str(d.get("nameSource") or "")
+        except (OSError, ValueError, AttributeError):
+            return None, ""
+
+    def _git_of(self, cwd: str) -> GitInfo:
+        hit = self._git.get(cwd)
+        if hit and time.time() - hit[0] < GIT_CACHE_TTL:
+            return hit[1]
+        info = self._git_lookup(cwd)
+        self._git[cwd] = (time.time(), info)
+        return info
+
+    def _git_lookup(self, cwd: str) -> GitInfo:
+        home = str(Path.home())
+        fallback = GitInfo(repo_key=cwd, repo="~" if cwd == home else _base(cwd), worktree=cwd, branch="")
+        try:
+            r = _run(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"], timeout=2)
+            lines = _out(r).splitlines()
+            if r.returncode != 0 or len(lines) < 2:
+                return fallback
+            top, common = lines[0], lines[1]
+            repo = os.path.dirname(common) if os.path.basename(common) == ".git" else common
+            branch = _out(_run(["git", "-C", cwd, "branch", "--show-current"], timeout=2)).strip()
+            if not branch:
+                branch = _out(_run(["git", "-C", cwd, "rev-parse", "--short", "HEAD"], timeout=2)).strip()
+            return GitInfo(repo_key=repo, repo=_base(repo), worktree=top, branch=branch)
+        except (OSError, subprocess.TimeoutExpired):
+            return fallback
+
+    # 読み取り・入力（tmux へ渡すのは検証済みの pane 番号とキー名だけ）
+    def capture(self, number: int, history: int) -> str:
+        args = ["capture-pane", "-p", "-e", "-t", f"%{number}"]
+        if history > 0:
+            args += ["-S", f"-{history}"]
+        text = _out(self.tmux(*args))
+        return text.rstrip("\n")
+
+    def paste(self, number: int, text: str, enter: bool) -> None:
+        """文字を pane へ入れる（enter なら続けて Enter も押す）。
+
+        1 行の文字は、キーボードで **打った** のと同じ形で届ける（paste-buffer の -p なし）。Claude Code の / やスキルの補完メニューは、
+        打ったときに出て、貼り付けでは出ないため。改行を含む文字だけ、貼り付け（bracketed paste）の形にする（途中の改行で送信されないように）。
+        文字は load-buffer の標準入力で渡すので、「;」で終わる・「-」で始まる文字も、tmux の引数としては解釈されない（send-keys -l だと崩れる）。
+        """
+        target = f"%{number}"
+        if text:
+            buf = f"{NAME}-{secrets.token_hex(4)}"
+            bracketed = "\n" in text or "\r" in text
+            self.tmux("load-buffer", "-b", buf, "-", input_text=text)
+            self.tmux("paste-buffer", *(["-p"] if bracketed else []), "-d", "-b", buf, "-t", target)
+            if enter:
+                time.sleep(PASTE_ENTER_DELAY)
+        if enter:
+            self.tmux("send-keys", "-t", target, "Enter")
+
+    def key(self, number: int, name: str, literal: bool) -> None:
+        args = ["send-keys", "-t", f"%{number}"]
+        args += ["-l", "--", name] if literal else [name]
+        self.tmux(*args)
+
+
+# --- 入力の検証・認証 ---------------------------------------------------------------
+
+
+def pane_number(value) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,7}", value):
+        number = int(value)
+    else:
+        return None
+    return number if 0 <= number < 10_000_000 else None
+
+
+def tmux_key(value) -> Optional[Tuple[str, bool]]:
+    """許可したキー名だけを (tmux に渡す名前, リテラルか) で返す。"""
+    if not isinstance(value, str):
+        return None
+    if value in KEYS:
+        return KEYS[value], False
+    if len(value) == 1 and value in LITERAL_KEYS:
+        return value, True
+    return None
+
+
+def _is_lan_address(ip: ipaddress._BaseAddress) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv4Address):
+        return any(ip in net for net in LAN_NETWORKS)
+    return ip.is_loopback or ip.is_link_local
+
+
+def validate_bind_host(host: str) -> Optional[str]:
+    """待ち受けてよい IP なら None、だめなら理由を返す。IPv4 の特定アドレスだけ（0.0.0.0 は不可）。"""
+    try:
+        ip = ipaddress.IPv4Address(host)
+    except ValueError:
+        return f"{host!r} は IPv4 アドレスではありません（0.0.0.0 や :: は使えません。LAN の IP を指定してください）"
+    if not _is_lan_address(ip):
+        return f"{host} は LAN / ループバックのアドレスではありません（公開 IP には待ち受けません）"
+    return None
+
+
+def client_ip_allowed(address: str) -> bool:
+    try:
+        return _is_lan_address(ipaddress.ip_address(address.split("%")[0]))
+    except ValueError:
+        return False
+
+
+def _hostname(host_header: Optional[str]) -> str:
+    host = (host_header or "").strip().lower()
+    if host.startswith("["):  # IPv6 は扱わない
+        return ""
+    return host.rsplit(":", 1)[0] if ":" in host else host
+
+
+def host_allowed(host_header: Optional[str], allowed: FrozenSet[str]) -> bool:
+    name = _hostname(host_header)
+    return bool(name) and name in allowed
+
+
+def origin_ok(origin: str, host_header: str, scheme: str = "http") -> bool:
+    """Origin が、このサーバー自身（同じ scheme・ホスト・ポート）か。https のサイトに http の Origin で来たものは拒否する。"""
+    return origin.lower() == f"{scheme}://{host_header}".lower()
+
+
+def validate_token(token: str) -> Optional[str]:
+    if len(token) < MIN_TOKEN_LENGTH:
+        return f"トークンは {MIN_TOKEN_LENGTH} 文字以上にしてください"
+    return None
+
+
+def write_private_json(path: str, data: dict) -> None:
+    """本人だけが読めるファイル(0600)・ディレクトリ(0700)へ、置き換え 1 回で JSON を書く（読む側が書きかけを見ない）。"""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+class Auth:
+    """トークンの照合と、ログイン済みの記録（セッション）。
+
+    記録は store_path のファイルにも残し、サーバーを起動し直してもログインが続くようにする（有効期間は session_ttl。延長はしない）。
+    ファイルに入れるのは Cookie の **sha256 だけ**（ファイルが漏れても、そのままでは Cookie として使えない）。
+    ファイルが外から変わった（削除 = 全端末のログアウト）ときは、次の確認で読み直す。
+    """
+
+    MAX_SESSIONS = 32
+
+    def __init__(self, token: str, session_ttl: float = SESSION_TTL, store_path: Optional[str] = None):
+        self._token = token.encode()
+        self._ttl = session_ttl
+        self._store = store_path
+        self._sessions: Dict[str, float] = {}  # sha256(Cookie の値) → 期限（epoch 秒）
+        self._seen = None  # 最後に読んだ / 書いたときのファイルの (mtime_ns, size)
+        self._lock = threading.Lock()
+        if self._store:
+            with self._lock:
+                self._load()
+
+    @staticmethod
+    def _digest(sid: str) -> str:
+        return hashlib.sha256(sid.encode()).hexdigest()
+
+    def _stat(self):
+        try:
+            st = os.stat(self._store)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    # 以下の _load / _sync / _save は、ロックを取った状態で呼ぶ
+    def _load(self) -> None:
+        self._seen = self._stat()
+        sessions = {}
+        try:
+            now = time.time()
+            for key, expires in json.loads(Path(self._store).read_text()).get("sessions", {}).items():
+                if isinstance(key, str) and isinstance(expires, (int, float)) and expires > now:
+                    sessions[key] = float(expires)
+        except (OSError, ValueError, AttributeError):
+            pass  # 無い・壊れている場合は、記録なしとして扱う
+        self._sessions = sessions
+
+    def _sync(self) -> None:
+        if self._store and self._stat() != self._seen:
+            self._load()
+
+    def _save(self) -> None:
+        if not self._store:
+            return
+        write_private_json(self._store, {"sessions": self._sessions})
+        self._seen = self._stat()
+
+    def check_token(self, candidate) -> bool:
+        if not isinstance(candidate, str) or not candidate:
+            return False
+        return hmac.compare_digest(candidate.encode(), self._token)
+
+    def new_session(self) -> str:
+        sid = secrets.token_urlsafe(32)
+        now = time.time()
+        with self._lock:
+            self._sync()
+            self._sessions = {k: v for k, v in self._sessions.items() if v > now}
+            while len(self._sessions) >= self.MAX_SESSIONS:  # 期限の近いものから捨てる
+                del self._sessions[min(self._sessions, key=self._sessions.get)]
+            self._sessions[self._digest(sid)] = now + self._ttl
+            self._save()
+        return sid
+
+    def valid_session(self, sid) -> bool:
+        if not isinstance(sid, str):
+            return False
+        with self._lock:
+            self._sync()
+            expires = self._sessions.get(self._digest(sid))
+        return expires is not None and expires > time.time()
+
+    def drop_session(self, sid) -> None:
+        if not isinstance(sid, str):
+            return
+        with self._lock:
+            self._sync()
+            if self._sessions.pop(self._digest(sid), None) is not None:
+                self._save()
+
+
+def sessions_path_for(state_path: str) -> str:
+    return os.path.join(os.path.dirname(state_path), "sessions.json")
+
+
+def revoke_sessions(path: str) -> None:
+    """全端末のログインを取り消す（記録を消す。動いているサーバーも次のリクエストで気づく）。"""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+class RateLimiter:
+    """ログイン失敗が続いた IP を、指数的に延びる時間だけ締め出す。"""
+
+    def __init__(self, max_failures: int = 5):
+        self.max_failures = max_failures
+        self._failures: Dict[str, Tuple[int, float]] = {}
+        self._lock = threading.Lock()
+
+    def blocked(self, ip: str) -> int:
+        with self._lock:
+            _, until = self._failures.get(ip, (0, 0.0))
+        return max(0, int(until - time.time() + 0.999))
+
+    def fail(self, ip: str) -> None:
+        with self._lock:
+            count, until = self._failures.get(ip, (0, 0.0))
+            count += 1
+            if count >= self.max_failures:
+                until = time.time() + min(60 * 2 ** (count - self.max_failures), 900)
+            self._failures[ip] = (count, until)
+
+    def reset(self, ip: str) -> None:
+        with self._lock:
+            self._failures.pop(ip, None)
+
+
+# --- HTTP ---------------------------------------------------------------------
+
+
+class Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address, cfg: Config, allowed_hosts: FrozenSet[str]):
+        super().__init__(address, Handler)
+        self.cfg = cfg
+        self.scheme = "https" if cfg.tls_cert else "http"
+        self._tls = None
+        if cfg.tls_cert:
+            self._tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self._tls.minimum_version = ssl.TLSVersion.TLSv1_2
+            self._tls.load_cert_chain(cfg.tls_cert, cfg.tls_key)
+        self.allowed_hosts = frozenset(h.lower() for h in allowed_hosts)
+        self.auth = Auth(cfg.token, cfg.session_ttl, cfg.sessions_path or None)
+        self.limiter = RateLimiter()
+        self.collector = Collector(cfg)
+        self.last_activity = time.time()
+        self.assets = {}
+        for route, (filename, ctype) in ASSETS.items():
+            path = Path(cfg.assets_dir, filename)
+            if path.is_file():
+                self.assets[route] = (path.read_bytes(), ctype)
+
+
+    def handle_error(self, request, client_address):
+        # CA を信頼していないクライアントの TLS 失敗・切断・タイムアウトは日常的なので、トレースバックを出さない
+        if isinstance(sys.exc_info()[1], (ssl.SSLError, ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
+def make_server(host: str, port: int, cfg: Config, allowed_hosts: FrozenSet[str]) -> Server:
+    return Server((host, port), cfg, allowed_hosts)
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = NAME
+    sys_version = ""
+    protocol_version = "HTTP/1.1"
+    timeout = 30  # 使われていない keep-alive 接続を閉じる
+
+    def setup(self):
+        """同じポートで HTTP と HTTPS の両方を受け付ける: 接続の最初の 1 バイトが 0x16（TLS の ClientHello）なら TLS、それ以外は平文の HTTP。
+
+        見分けは接続ごとのスレッドで行う（accept のループで待つと、何も送らない予備の接続（ブラウザが張る）で、他の接続が止まる）。
+        """
+        self.tls_connection = False
+        context = getattr(self.server, "_tls", None)
+        if context is not None:
+            self.request.settimeout(10)  # 何も送らない・応答しないクライアントに、スレッドを握らせない
+            first = self.request.recv(1, socket.MSG_PEEK)
+            if not first:
+                raise ConnectionError("何も送らずに切断されました")
+            if first == b"\x16":
+                self.request = context.wrap_socket(self.request, server_side=True)  # ここでハンドシェイク（元のソケットは detach される）
+                self.tls_connection = True
+        super().setup()
+
+    def finish(self):
+        try:
+            super().finish()
+        finally:
+            if self.tls_connection:
+                self.request.close()  # ラップ後のソケットは、サーバー側の後始末（元のソケットを閉じる）では閉じられない
+
+    def log_message(self, fmt, *args):  # クエリ・Cookie・トークンは出さない
+        pass
+
+    def log_request(self, code="-", size="-"):
+        if self.server.cfg.quiet:
+            return
+        path = urllib.parse.urlsplit(self.path).path
+        sys.stderr.write(f"{time.strftime('%H:%M:%S')} {self.client_address[0]} {self.command} {path} {code}\n")
+
+    # 応答
+    def _send(self, status: int, body: bytes = b"", ctype: str = "application/json", headers=None):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Frame-Options", "DENY")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != "HEAD" and status not in (204, 304):
+            self.wfile.write(body)
+
+    def _json(self, status: int, data=None, headers=None):
+        body = b"" if data is None else json.dumps(data, ensure_ascii=False).encode()
+        self._send(status, body, headers=headers)
+
+    # 入口の検査（すべてのリクエストに適用）
+    def _admit(self, post: bool) -> bool:
+        if not client_ip_allowed(self.client_address[0]):
+            self._json(403, {"error": "forbidden"})
+            return False
+        host = self.headers.get("Host")
+        if not host_allowed(host, self.server.allowed_hosts):
+            self._json(403, {"error": "unexpected host"})
+            return False
+        origin = self.headers.get("Origin")
+        if post and not origin:
+            self._json(403, {"error": "origin required"})
+            return False
+        if origin and not origin_ok(origin, host, self._scheme()):
+            self._json(403, {"error": "bad origin"})
+            return False
+        if post and self.headers.get("X-Requested-With") != NAME:
+            self._json(403, {"error": "missing header"})
+            return False
+        return True
+
+    def _scheme(self) -> str:
+        """この接続の scheme（同じポートに HTTP と HTTPS の両方が来るので、接続ごとに決まる）。"""
+        return "https" if self.tls_connection else "http"
+
+    def _secure(self) -> str:
+        return "; Secure" if self.tls_connection else ""
+
+    def _session(self) -> Optional[str]:
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        try:
+            jar = http.cookies.SimpleCookie(raw)
+        except http.cookies.CookieError:
+            return None
+        morsel = jar.get(COOKIE_NAME)
+        return morsel.value if morsel else None
+
+    def _authed(self) -> bool:
+        if self.server.auth.valid_session(self._session()):
+            self.server.last_activity = time.time()
+            return True
+        self._json(401, {"error": "unauthorized"})
+        return False
+
+    def _read_raw_body(self) -> bool:
+        """本文は検査より先に読み切る。読まずに返すと、keep-alive 接続で本文が次のリクエストとして解釈される。"""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        self._raw = b""
+        if 0 <= length <= MAX_BODY_BYTES:
+            self._raw = self.rfile.read(length) if length else b""
+            return True
+        self.close_connection = True
+        self._json(413 if length > MAX_BODY_BYTES else 400, {"error": "bad body"})
+        return False
+
+    def _body(self) -> Optional[dict]:
+        if not self._raw:
+            self._json(400, {"error": "bad body"})
+            return None
+        try:
+            data = json.loads(self._raw)
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            self._json(400, {"error": "bad json"})
+            return None
+        return data
+
+    # GET
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        if not self._admit(post=False):
+            return
+        url = urllib.parse.urlsplit(self.path)
+        if url.path == "/healthz":
+            return self._json(200, {"ok": True, "name": NAME})
+        asset = self.server.assets.get(url.path)
+        if asset:
+            return self._send(200, asset[0], asset[1])
+        if url.path == "/api/agents":
+            if self._authed():
+                self._json(200, {"agents": self.server.collector.agents(), "readOnly": self.server.cfg.read_only,
+                                 "now": int(time.time())})
+            return
+        if url.path == "/api/pane":
+            if self._authed():
+                self._get_pane(urllib.parse.parse_qs(url.query))
+            return
+        self._json(404, {"error": "not found"})
+
+    def _get_pane(self, query):
+        number = pane_number(query.get("id", [""])[0])
+        history = _int(query.get("lines", ["0"])[0], 0)
+        if number is None or history is None or not 0 <= history <= MAX_HISTORY_LINES:
+            return self._json(400, {"error": "bad request"})
+        agent = self.server.collector.find(number)
+        if agent is None:
+            return self._json(404, {"error": "no such agent"})
+        text = self.server.collector.capture(number, history)
+        rev = hashlib.sha1(f"{agent['cols']}x{agent['rows']}\n{text}".encode()).hexdigest()[:16]
+        if query.get("rev", [""])[0] == rev:
+            return self._json(200, {"same": True, "rev": rev})
+        self._json(200, {"text": text, "rev": rev, "cols": agent["cols"], "rows": agent["rows"]})
+
+    # POST
+    def do_POST(self):
+        if not self._read_raw_body() or not self._admit(post=True):
+            return
+        path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/login":
+            return self._login()
+        if path in ("/api/send", "/api/key", "/api/logout"):
+            if not self._authed():
+                return
+            if path == "/api/logout":
+                self.server.auth.drop_session(self._session())
+                return self._json(204, headers={"Set-Cookie": f"{COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{self._secure()}"})
+            return self._drive(path)
+        self._json(404, {"error": "not found"})
+
+    def _login(self):
+        ip = self.client_address[0]
+        wait = self.server.limiter.blocked(ip)
+        if wait:
+            return self._json(429, {"error": "too many attempts"}, headers={"Retry-After": str(wait)})
+        data = self._body()
+        if data is None:
+            return
+        if not self.server.auth.check_token(data.get("token")):
+            self.server.limiter.fail(ip)
+            return self._json(401, {"error": "invalid token"})
+        self.server.limiter.reset(ip)
+        sid = self.server.auth.new_session()
+        cookie = f"{COOKIE_NAME}={sid}; Path=/; Max-Age={self.server.cfg.session_ttl}; HttpOnly; SameSite=Strict{self._secure()}"
+        self.server.last_activity = time.time()
+        self._json(204, headers={"Set-Cookie": cookie})
+
+    def _drive(self, path: str):
+        if self.server.cfg.read_only:
+            return self._json(403, {"error": "read-only"})
+        data = self._body()
+        if data is None:
+            return
+        number = pane_number(data.get("id"))
+        if number is None:
+            return self._json(400, {"error": "bad id"})
+        if path == "/api/key":
+            key = tmux_key(data.get("key"))
+            if key is None:
+                return self._json(400, {"error": "bad key"})
+        else:
+            text = data.get("text", "")
+            if not isinstance(text, str) or len(text) > MAX_TEXT_CHARS or "\x00" in text:
+                return self._json(400, {"error": "bad text"})
+        if self.server.collector.find(number) is None:
+            return self._json(404, {"error": "no such agent"})
+        if path == "/api/key":
+            self.server.collector.key(number, *key)
+        else:
+            self.server.collector.paste(number, text, bool(data.get("enter", False)))
+        self._json(204)
+
+
+# --- HTTPS（自己署名の証明書。CA は作らない） -----------------------------------------------
+#
+# 同じポートで HTTP と HTTPS の両方を受け付ける（接続の最初の 1 バイトで見分ける）。HTTPS の証明書は、この Mac の名前・IP の自己署名で、
+# 起動時に無ければ自動で作る（openssl が要る。無ければ HTTP だけで待ち受ける）。ブラウザには「安全ではない」と警告されるが、
+# 「詳細設定 → 続行」で使える。警告を消す（証明書を信頼させる）ために、CA を作ってスマホに入れることは、手間が大きいわりに得るものが
+# 少ないので、やらない（一度やって、やめた）。暗号化はされるので、HTTP よりトークンを盗み見されにくい（なりすましには弱い。信頼できる自宅の Wi-Fi で使う）。
+#
+# HTTPS が要る理由: Android の Chrome が「アプリをインストール」で作るアプリ(WebAPK)は、スコープを https に書き換える。サイトを http で開いて
+# インストールすると、起動した URL がスコープの外になり、タブで開いてしまう。https で開いてインストールすれば、独立したアプリとして起動する。
+
+TLS_FILENAMES = {"server_crt": "server.crt", "server_key": "server.key"}
+# 長くしておく: 作り直すと証明書が変わり、ブラウザの「続行」の記憶（証明書ごと）が無効になる（もう一度、警告を越える必要が出る）
+SELF_SIGNED_DAYS = 3650
+RENEW_WARNING_SECONDS = 30 * 86400
+
+
+def default_tls_dir(state_path: str) -> str:
+    return os.path.join(os.path.dirname(state_path), "tls")
+
+
+def tls_paths(tls_dir: str) -> Dict[str, str]:
+    return {key: os.path.join(tls_dir, name) for key, name in TLS_FILENAMES.items()}
+
+
+def tls_ready(tls_dir: str) -> bool:
+    paths = tls_paths(tls_dir)
+    return os.path.isfile(paths["server_crt"]) and os.path.isfile(paths["server_key"])
+
+
+def _openssl(*args: str) -> None:
+    binary = shutil.which("openssl")
+    if not binary:
+        raise RuntimeError("openssl が見つかりません")
+    result = _run([binary, *args], timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(f"openssl {args[0]} に失敗しました: {result.stderr.decode('utf-8', 'replace').strip()}")
+
+
+def _private_file(path: str) -> None:
+    """鍵ファイルは、openssl が書く前に 0600 で作っておく（書いた直後に他人から読める時間を作らない）。"""
+    os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
+    os.chmod(path, 0o600)
+
+
+def cert_expires_soon(cert_path: str, within_seconds: int = RENEW_WARNING_SECONDS) -> bool:
+    try:
+        result = _run([shutil.which("openssl") or "openssl", "x509", "-checkend", str(within_seconds), "-noout", "-in", cert_path], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode != 0
+
+
+def ensure_self_signed_cert(tls_dir: str, names: List[str], ips: List[str], days: int = SELF_SIGNED_DAYS) -> Dict[str, str]:
+    """自己署名のサーバー証明書があればそのまま返し、無い（または期限が近い）ときだけ作る。"""
+    paths = tls_paths(tls_dir)
+    if tls_ready(tls_dir) and not cert_expires_soon(paths["server_crt"]):
+        return paths
+    os.makedirs(tls_dir, mode=0o700, exist_ok=True)
+    cnf = os.path.join(tls_dir, "server.cnf")
+    san = ", ".join([f"DNS:{n}" for n in names] + [f"IP:{i}" for i in ips])
+    _private_file(cnf)
+    Path(cnf).write_text(
+        f"[req]\ndistinguished_name = dn\nprompt = no\n[dn]\nCN = {(names or ['localhost'])[0]}\n"
+        "[v3_self]\nbasicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature\n"
+        f"extendedKeyUsage = serverAuth\nsubjectKeyIdentifier = hash\nsubjectAltName = {san}\n"
+    )
+    try:
+        _private_file(paths["server_key"])
+        _openssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", paths["server_key"])
+        _openssl("req", "-new", "-x509", "-key", paths["server_key"], "-sha256", "-days", str(days),
+                 "-config", cnf, "-extensions", "v3_self", "-out", paths["server_crt"])
+    finally:
+        os.path.exists(cnf) and os.unlink(cnf)
+    return paths
+
+
+# --- 状態ファイル（sidebar の w / WEB 欄と tmux-agent-web-toggle が読む） -------------------
+
+
+def default_state_path() -> str:
+    """トークンを含む URL を置くので /tmp ではなく、本人だけが読める ~/.cache 以下に置く。"""
+    explicit = os.environ.get("TMUX_AGENT_WEB_STATE")
+    if explicit:
+        return explicit
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return str(cache / NAME / "state.json")
+
+
+def write_state(path: str, info: dict) -> None:
+    write_private_json(path, info)
+
+
+def read_state(path: str) -> Optional[dict]:
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def remove_state(path: str, pid: int) -> None:
+    """自分が書いた状態だけを消す（後から起動した別のサーバーの状態を消さない）。"""
+    state = read_state(path)
+    if state and state.get("pid") == pid:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def process_is_ours(pid: int) -> bool:
+    """pid が生きていて、tmux-agent-web のプロセスか（pid の使い回しで別のプロセスを誤認しない）。"""
+    try:
+        os.kill(pid, 0)
+        command = _out(_run(["ps", "-p", str(pid), "-o", "command="], timeout=2))
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return NAME in command
+
+
+def instance_running(state: Optional[dict], is_ours: Callable[[int], bool] = process_is_ours) -> bool:
+    if not state or not isinstance(state.get("pid"), int):
+        return False
+    return is_ours(state["pid"])
+
+
+def _terminate(signum, frame):
+    raise KeyboardInterrupt  # SIGTERM でも、Ctrl+C と同じ後片付け（状態ファイルの削除）を通す
+
+
+# --- 起動 ---------------------------------------------------------------------
+
+
+def detect_lan_ip() -> str:
+    """既定の経路で使われるローカル IP（パケットは送らない）。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+
+
+def local_hostname() -> str:
+    try:
+        name = _out(_run(["scutil", "--get", "LocalHostName"], timeout=2)).strip()
+    except (OSError, subprocess.TimeoutExpired):
+        name = ""
+    return name or socket.gethostname().split(".")[0]
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(prog=NAME, description="tmux 上の AI Agent をブラウザ（スマホ）から確認・操作する")
+    p.add_argument("--host", help="待ち受ける LAN の IPv4（既定: この Mac の LAN 側 IP。0.0.0.0 は不可）")
+    p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p.add_argument("--read-only", action="store_true", help="閲覧のみ（入力・キー送信を無効にする）")
+    p.add_argument("--idle-timeout", type=int, default=0, metavar="分", help="この時間 操作が無ければ終了（0 = 無効）")
+    p.add_argument("--allow-host", action="append", default=[], metavar="名前", help="Host ヘッダーに許す名前を足す（繰り返し可）")
+    p.add_argument("--copy", action="store_true", help="接続 URL を pbcopy でクリップボードへ（ユニバーサルクリップボードで貼れる）")
+    p.add_argument("--state-file", metavar="パス", help="状態ファイル（pid・ポート・URL）の場所（既定: ~/.cache/tmux-agent-web/state.json）")
+    p.add_argument("--session-days", type=int, default=SESSION_DAYS, metavar="日",
+                   help=f"一度ログインした端末の有効期間（既定 {SESSION_DAYS} 日。サーバーを起動し直しても続く）")
+    p.add_argument("--revoke-sessions", action="store_true", help="全端末のログインを取り消して終了する（動いているサーバーにも効く）")
+    p.add_argument("--tls-dir", metavar="パス", help="HTTPS 用の自己署名の証明書の置き場所（既定: ~/.cache/tmux-agent-web/tls。無ければ自動で作る）")
+    p.add_argument("--no-tls", action="store_true", help="HTTPS を使わず、HTTP だけで待ち受ける（既定は、同じポートで HTTP と HTTPS の両方）")
+    return p.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    state_path = args.state_file or default_state_path()
+    if args.revoke_sessions:
+        revoke_sessions(sessions_path_for(state_path))
+        print("全端末のログインを取り消しました（動いているサーバーにも反映されます）")
+        return 0
+    tls_dir = args.tls_dir or default_tls_dir(state_path)
+
+    host = args.host or detect_lan_ip()
+    problem = validate_bind_host(host)
+    token = os.environ.get("TMUX_AGENT_WEB_TOKEN") or secrets.token_urlsafe(24)
+    problem = problem or validate_token(token)
+    if not problem and not 1 <= args.session_days <= 365:
+        problem = "--session-days は 1〜365 にしてください"
+    if problem:
+        print(f"{NAME}: {problem}", file=sys.stderr)
+        return 2
+
+    existing = read_state(state_path)
+    if instance_running(existing):  # URL（トークン）は出さない
+        print(f"{NAME}: すでに起動しています (pid {existing['pid']}, {existing.get('host')}:{existing.get('port')})", file=sys.stderr)
+        return 1
+
+    cfg = config_from_env()
+    cfg.token, cfg.read_only = token, args.read_only
+    cfg.session_ttl, cfg.sessions_path = args.session_days * 86400, sessions_path_for(state_path)
+    mdns = f"{local_hostname()}.local".lower()
+    if not args.no_tls:
+        # 同じポートで HTTP と HTTPS の両方を受ける。HTTPS の証明書（自己署名）は、無ければここで自動で作る
+        try:
+            paths = ensure_self_signed_cert(tls_dir, [mdns, "localhost"], list(dict.fromkeys([host, "127.0.0.1"])))
+            cfg.tls_cert, cfg.tls_key = paths["server_crt"], paths["server_key"]
+        except RuntimeError as e:
+            print(f"{NAME}: HTTPS は使えません（{e}）。HTTP だけで待ち受けます", file=sys.stderr)
+    allowed = frozenset({host, "127.0.0.1", "localhost", mdns, *args.allow_host})
+    try:
+        server = make_server(host, args.port, cfg, allowed)
+    except (OSError, ssl.SSLError) as e:
+        print(f"{NAME}: {host}:{args.port} で待ち受けできません: {e}", file=sys.stderr)
+        return 1
+
+    port = server.server_address[1]
+    scheme = server.scheme  # スマホに渡す URL の scheme。HTTPS が使えるなら https（どちらの scheme でもつながる）
+    url = f"{scheme}://{mdns}:{port}/#token={token}"  # w でコピーされるのは、この .local の URL
+    ip_url = f"{scheme}://{host}:{port}/#token={token}"  # .local が引けない端末用
+    try:
+        write_state(state_path, {
+            "pid": os.getpid(), "host": host, "port": port, "scheme": scheme, "url": url, "ipUrl": ip_url,
+            "readOnly": cfg.read_only, "startedAt": int(time.time()),
+        })
+    except OSError as e:
+        print(f"{NAME}: 状態ファイルを書けません ({state_path}): {e}", file=sys.stderr)
+        server.server_close()
+        return 1
+    signal.signal(signal.SIGTERM, _terminate)
+    print(f"{NAME}  ({'閲覧のみ' if cfg.read_only else '操作できます'})")
+    print(f"\n  {url}")
+    print(f"  {ip_url}   (.local が開けないとき)")
+    if scheme == "https":
+        print("\n  同じポートで、http:// でも https:// でも開けます。https は自己署名の証明書なので、ブラウザの警告は「詳細設定 → 続行」で進めます。")
+        print("  Android で「アプリをインストール」するときは、https の URL で開いてください（http だとタブで開いてしまいます）。")
+    else:
+        print("\n  HTTP（暗号化なし）です。信頼できる自宅の Wi-Fi でだけ使い、URL（トークン）は他人に見せないでください。")
+    print("  URL（トークン）は他人に見せないでください。")
+    print(f"  一度ログインした端末は {args.session_days} 日間、起動し直しても再認証なしで使えます。全端末のログアウト: tmux-agent-web-toggle revoke")
+    print("  (Ctrl+C で停止)\n", flush=True)
+    if args.copy:
+        try:
+            _run(["pbcopy"], input_text=url)
+            print("  URL をクリップボードへコピーしました\n")
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    if args.idle_timeout > 0:
+        def watch():
+            while True:
+                time.sleep(15)
+                if time.time() - server.last_activity > args.idle_timeout * 60:
+                    print(f"{args.idle_timeout} 分操作が無かったので終了します", file=sys.stderr)
+                    server.shutdown()
+                    return
+        threading.Thread(target=watch, daemon=True).start()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        remove_state(state_path, os.getpid())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

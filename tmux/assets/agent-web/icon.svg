@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- tmux agents のアイコン: オレンジのゴースト（角丸版。ブラウザのタブ・「any」用） -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffb84d"/>
+      <stop offset="1" stop-color="#ff7a00"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.28" cy="0.2" r="0.75">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ffe3c2"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="112" fill="url(#glow)"/>
+  <ellipse cx="256" cy="418" rx="104" ry="12" fill="#7a3200" opacity="0.28"/>
+  <path d="M126 396 V246 A130 130 0 0 1 386 246 V396 q-21.67 -36 -43.33 0 t-43.33 0 t-43.33 0 t-43.33 0 t-43.33 0 t-43.33 0 z" fill="url(#body)"/>
+  <ellipse cx="214" cy="262" rx="20" ry="26" fill="#3a2412"/>
+  <ellipse cx="298" cy="262" rx="20" ry="26" fill="#3a2412"/>
+  <circle cx="208" cy="251" r="7.5" fill="#ffffff"/>
+  <circle cx="292" cy="251" r="7.5" fill="#ffffff"/>
+  <ellipse cx="180" cy="306" rx="17" ry="11" fill="#ff8fa3" opacity="0.75"/>
+  <ellipse cx="332" cy="306" rx="17" ry="11" fill="#ff8fa3" opacity="0.75"/>
+  <path d="M240 300 q16 18 32 0" fill="none" stroke="#3a2412" stroke-width="7" stroke-linecap="round"/>
+</svg>

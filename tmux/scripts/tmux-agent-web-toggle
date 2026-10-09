@@ -1,0 +1,157 @@
+#!/bin/bash
+# tmux-agent-web-toggle [toggle|start|stop|status|url|copy] [--notify]
+# スマホ用 Web サーバー(tmux-agent-web)の入り切り。sidebar の w(入り切り)/ W(URL をコピー)から呼ばれる。
+#
+#   toggle (既定) : 起動していれば止め、止まっていれば起動する
+#   start / stop  : 明示的に起動 / 停止
+#   status        : 起動中なら "ON host:port" を出して 0、止まっていれば "OFF" を出して 1（トークンは出さない）
+#   url           : 起動中ならトークンつきの URL を標準出力へ（止まっていれば 1）
+#   copy          : 起動中なら URL をクリップボードへ（--notify のときだけ）
+#   revoke        : 全端末のログインを取り消す（一度ログインした端末は 30 日有効なので、紛失・譲渡のときなどに使う）
+#   --notify      : 結果を tmux の display-message に出す。起動したとき URL をクリップボードへコピーする
+#                   （sidebar から呼ぶときに付ける。付けなければ tmux にもクリップボードにも触れない）
+#
+# 起動引数: tmux の option `@agent_web_args`（例: set -g @agent_web_args '--read-only --idle-timeout 120'）か、
+#   環境変数 AGENT_WEB_ARGS（設定されていればこちらが優先。空文字で「引数なし」）。空白区切りの単純なフラグだけ。
+# 状態: ~/.cache/tmux-agent-web/state.json（環境変数 TMUX_AGENT_WEB_STATE で変更）。tmux-agent-web が書く。
+#   トークンを含むので本人だけが読めるディレクトリに置く。起動しっぱなしで落ちた場合の古い状態は pid で見分ける
+# 環境変数（主にテスト用）: AGENT_WEB_BIN（tmux-agent-web の場所）、AGENT_WEB_CLIP_CMD（URL のコピーに使うコマンド。既定 pbcopy）
+#
+# bash 3.2（macOS 標準）で動く書き方にしている。JSON は jq で読む（sidebar と同じ依存）。
+
+set -u
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+BIN="${AGENT_WEB_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-web}"
+CLIP="${AGENT_WEB_CLIP_CMD:-pbcopy}"
+STATE="${TMUX_AGENT_WEB_STATE:-${XDG_CACHE_HOME:-$HOME/.cache}/tmux-agent-web/state.json}"
+STATE_DIR=$(dirname "$STATE")
+LOG="$STATE_DIR/server.log"
+START_WAIT_TICKS=50   # 0.1 秒 × 50 = 5 秒まで起動を待つ
+STOP_WAIT_TICKS=50    # 0.1 秒 × 50 = 5 秒まで終了を待つ
+
+action=toggle
+NOTIFY=0
+for arg in "$@"; do
+  case $arg in
+    --notify) NOTIFY=1 ;;
+    toggle | start | stop | status | url | copy | revoke) action=$arg ;;
+    *) echo "usage: tmux-agent-web-toggle [toggle|start|stop|status|url|copy|revoke] [--notify]" >&2; exit 2 ;;
+  esac
+done
+
+# 結果を標準出力へ出し、--notify のときは tmux にも出す
+say() {
+  echo "$*"
+  [ "$NOTIFY" = 1 ] && tmux display-message "web: $*" 2>/dev/null
+  return 0
+}
+
+state_field() { jq -r ".$1 // empty" "$STATE" 2>/dev/null; }
+
+# 状態ファイルの pid が生きていて、tmux-agent-web のプロセスか（pid の使い回しを避ける）
+running_pid() {
+  local pid cmd
+  [ -r "$STATE" ] || return 1
+  pid=$(state_field pid)
+  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  cmd=$(ps -p "$pid" -o command= 2>/dev/null)
+  case $cmd in *tmux-agent-web*) echo "$pid"; return 0 ;; esac
+  return 1
+}
+
+describe() {
+  local mode=""
+  [ "$(state_field readOnly)" = true ] && mode=" (閲覧のみ)"
+  [ "$(state_field scheme)" = https ] && mode=" https$mode"
+  echo "$(state_field host):$(state_field port)$mode"
+}
+
+web_args() {
+  if [ "${AGENT_WEB_ARGS+set}" = set ]; then
+    printf '%s' "$AGENT_WEB_ARGS"
+  else
+    tmux show-option -gqv @agent_web_args 2>/dev/null
+  fi
+}
+
+do_start() {
+  local pid child i args
+  if pid=$(running_pid); then
+    say "すでに ON です ($(describe))"
+    return 0
+  fi
+  args=$(web_args)
+  (umask 077; mkdir -p "$STATE_DIR" && : >>"$LOG") 2>/dev/null || { say "状態ディレクトリを作れません ($STATE_DIR)"; return 1; }
+  # 端末(sidebar)から切り離して起動する。標準出力にはトークンつきの URL が出るので捨て、エラーだけ記録する
+  # shellcheck disable=SC2086
+  nohup "$BIN" --state-file "$STATE" $args >/dev/null 2>>"$LOG" </dev/null &
+  child=$!
+  disown "$child" 2>/dev/null
+  for ((i = 0; i < START_WAIT_TICKS; i++)); do
+    if [ "$(state_field pid)" = "$child" ] && kill -0 "$child" 2>/dev/null; then
+      if [ "$NOTIFY" = 1 ] && state_field url | "$CLIP" 2>/dev/null; then
+        say "ON ($(describe)) URL をコピーしました。スマホに貼り付けて開きます"
+      else
+        say "ON ($(describe))"
+      fi
+      return 0
+    fi
+    kill -0 "$child" 2>/dev/null || break
+    sleep 0.1
+  done
+  say "起動できませんでした: $(tail -n 1 "$LOG" 2>/dev/null)"
+  return 1
+}
+
+do_stop() {
+  local pid i
+  if ! pid=$(running_pid); then
+    rm -f "$STATE" 2>/dev/null  # 古い状態の掃除
+    say "OFF"
+    return 0
+  fi
+  kill "$pid" 2>/dev/null
+  for ((i = 0; i < STOP_WAIT_TICKS; i++)); do
+    kill -0 "$pid" 2>/dev/null || { say "OFF"; return 0; }
+    sleep 0.1
+  done
+  say "止められませんでした (pid $pid)"
+  return 1
+}
+
+case $action in
+  toggle)
+    if running_pid >/dev/null; then do_stop; else do_start; fi
+    ;;
+  start) do_start ;;
+  stop) do_stop ;;
+  status)
+    if running_pid >/dev/null; then echo "ON $(describe)"; else echo "OFF"; exit 1; fi
+    ;;
+  url)
+    running_pid >/dev/null || { echo "OFF" >&2; exit 1; }
+    state_field url
+    ;;
+  revoke)
+    # 全端末のログインを取り消す(スマホの再認証が必要になる)。起動中のサーバーにも、止まっているときにも効く
+    "$BIN" --revoke-sessions --state-file "$STATE" >/dev/null 2>&1 || { say "ログインの取り消しに失敗しました"; exit 1; }
+    say "全端末のログインを取り消しました"
+    ;;
+  copy)
+    running_pid >/dev/null || { say "OFF です（w で起動してください）"; exit 1; }
+    if [ "$NOTIFY" != 1 ]; then
+      echo "copy は --notify つきで使ってください（クリップボードを書き換えるため）" >&2
+      exit 2
+    fi
+    # 成功の判定はコピーの結果だけ(tmux への表示の成否には左右されない)
+    if state_field url | "$CLIP" 2>/dev/null; then
+      say "URL をコピーしました"
+    else
+      say "コピーできませんでした"
+      exit 1
+    fi
+    ;;
+esac

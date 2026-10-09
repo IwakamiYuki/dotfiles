@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#161412">
+<meta name="referrer" content="no-referrer">
+<meta name="application-name" content="Agents">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Agents">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
+<link rel="icon" type="image/png" sizes="48x48" href="/icon-48.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>tmux agents</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header id="bar">
+  <button id="menu" type="button" aria-label="Agent の一覧を開く">☰</button>
+  <div id="who">
+    <div id="head"><span id="pill" class="pill unknown">—</span><span id="name">Agent を選択</span></div>
+    <div id="sub"></div>
+  </div>
+</header>
+
+<div id="tools" role="toolbar" aria-label="表示">
+  <button id="hist" type="button">履歴</button>
+  <button id="fit" type="button">幅に合わせる</button>
+  <button id="zoomOut" type="button" aria-label="文字を小さく">A−</button>
+  <button id="zoomIn" type="button" aria-label="文字を大きく">A＋</button>
+  <button id="bottom" type="button">↓ 最新</button>
+</div>
+
+<main id="view"><pre id="screen" aria-live="off"></pre></main>
+
+<footer id="foot">
+  <div id="keys" role="toolbar" aria-label="クイックキー">
+    <button type="button" data-key="/" aria-label="スラッシュ（コマンドメニュー）">/</button>
+    <button type="button" data-key="Escape">Esc</button>
+    <button type="button" data-key="Tab">Tab</button>
+    <button type="button" data-key="BTab">⇧Tab</button>
+    <button type="button" data-key="Up" aria-label="上">↑</button>
+    <button type="button" data-key="Down" aria-label="下">↓</button>
+    <button type="button" data-key="Left" aria-label="左">←</button>
+    <button type="button" data-key="Right" aria-label="右">→</button>
+    <button type="button" data-key="Enter">⏎</button>
+    <button type="button" data-key="C-c">^C</button>
+    <button type="button" data-key="y">y</button>
+    <button type="button" data-key="n">n</button>
+    <button type="button" data-key="1">1</button>
+    <button type="button" data-key="2">2</button>
+    <button type="button" data-key="3">3</button>
+    <button type="button" data-key="BSpace" aria-label="削除">⌫</button>
+  </div>
+  <form id="composer" autocomplete="off">
+    <textarea id="text" rows="1" placeholder="文字を入れる（空のときは、右のボタンが Enter になります）" enterkeyhint="send"
+      autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+    <button id="sendEnter" type="button" hidden title="文字を入れて、続けて Enter も押す">入力+⏎</button>
+    <button id="send" type="submit">⏎</button>
+  </form>
+</footer>
+
+<aside id="drawer" aria-label="Agent の一覧">
+  <div id="drawerHead"><strong>AGENTS</strong><button id="close" type="button" aria-label="閉じる">✕</button></div>
+  <div id="list"></div>
+  <div id="drawerFoot"><button id="logout" type="button">ログアウト</button></div>
+</aside>
+<div id="scrim"></div>
+
+<div id="login" hidden>
+  <form id="loginForm" autocomplete="off">
+    <h1>tmux agents</h1>
+    <p>Mac のターミナルに表示された URL（<code>#token=…</code> つき）を開くか、トークンを入力してください。</p>
+    <input id="loginToken" type="password" placeholder="トークン" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button type="submit">ログイン</button>
+    <p id="loginMsg" role="alert"></p>
+  </form>
+</div>
+
+<div id="toast" role="status"></div>
+
+<script src="/ansi.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
