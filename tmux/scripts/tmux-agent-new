@@ -1,5 +1,5 @@
 #!/bin/bash
-# tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id>) [--here]
+# tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id> | --print) [--here]
 # リポジトリのディレクトリで新しい pane を作り、Claude Code / Codex を新規セッションで起動する(sidebar の n から呼ばれる)。
 #
 # - pane の置き場所: anchor(そのリポジトリの先頭に表示されている Agent)の pane がある window。
@@ -12,6 +12,8 @@
 # - --here: pane を作らず、anchor の pane のシェルへそのまま入力して起動する(sidebar の「Agent の居ないリポジトリ」の
 #   空きシェルの欄から呼ばれる)。anchor が空きシェル(zsh 等)でなければ、シェルへ入力してしまわないよう何もしない
 # - --focus: 作った pane へ移動する(通常の sidebar)
+#   --print: フォーカスを動かさず、メッセージも出さず、作った pane_id だけを標準出力へ出す(スマホの Web 画面 tmux-agent-web から呼ぶ用。
+#            Mac で作業中の画面が切り替わらないように)。失敗の理由は標準エラー出力へ出して、終了コード 1
 #   --notify: cockpit 用。作った pane をすぐ cockpit の右の枠へ入れ、フォーカスもそこへ移す(すぐ入力できる)。
 #             さらに sidebar の pane option @agent_new_pane に pane_id を書く。sidebar は Agent として検出されたら
 #             カードを選択する(検出まで数秒かかるため、それまでは選択の表示を出さない)
@@ -20,7 +22,9 @@ set -u
 
 SPLIT_H_MIN=120
 
-say() { tmux display-message "new: $*" 2>/dev/null; }
+say() {
+  if [ "${mode:-}" = --print ]; then echo "$*" >&2; else tmux display-message "new: $*" 2>/dev/null; fi
+}
 die() { say "$*"; exit 1; }
 
 here=0
@@ -33,10 +37,10 @@ set -- ${args[@]+"${args[@]}"}
 type=${1:-}; anchor=${2:-}; dir=${3:-}; mode=${4:-}; sidebar=${5:-}
 case $type in
   claude | codex) ;;
-  *) echo "usage: tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id>) [--here]" >&2; exit 2 ;;
+  *) echo "usage: tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id> | --print) [--here]" >&2; exit 2 ;;
 esac
 case $mode in
-  --focus) ;;
+  --focus | --print) ;;
   --notify) [ -n "$sidebar" ] || exit 2 ;;
   *) exit 2 ;;
 esac
@@ -96,7 +100,10 @@ fi
 tmux send-keys -t "$new" -l "$cmd"
 tmux send-keys -t "$new" Enter
 
-if [ "$mode" = "--focus" ]; then
+if [ "$mode" = "--print" ]; then
+  echo "$new"  # フォーカスも cockpit も触らない。呼び出し元（Web 画面）が、この pane_id で、検出されるのを待つ
+  exit 0
+elif [ "$mode" = "--focus" ]; then
   tmux switch-client -t "$new" 2>/dev/null
   tmux select-window -t "$new" \; select-pane -t "$new" 2>/dev/null
 else
