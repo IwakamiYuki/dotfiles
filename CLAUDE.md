@@ -147,6 +147,11 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     - 起動の直前に `tmux-agent-new` が、anchor がまだ空きシェルか確かめる（実行中のコマンドへ入力してしまわないため）。違えば何もしない
     - 見出しの件数と先頭行の `AGENTS` は Agent だけ数える（欄は数えない）。Agent が起動して欄がカードに変わっても、選択は pane_id で引き継ぐ（`@agent_new_pane` は使わない）
     - cockpit では、欄を選ぶと、その空きシェルの本物の pane が右の枠に入る。そこで `n` を押すと、枠の中のシェルで起動する
+- sidebar 上で `w` → スマホ用 Web サーバー（`tmux-agent-web`、後述「Agent Web」）を **ON / OFF**。`W`（大文字）→ 起動中なら URL（トークンつき）をクリップボードへ（通常の sidebar・cockpit のどちらでも効く）
+  - 最下行の **WEB 欄**に状態を出す（`○ WEB off  w start` / `● WEB ON :8765  w stop W copy`。閲覧のみのときは `ro`）。端末の高さが 14 未満のときは USAGE 欄と同様に出さない。幅に収まらないときはヒント（`W copy`）から省く
+  - 実際の入り切りは `tmux-agent-web-toggle`（`R` と同じく、sidebar からは裏で `--notify` つきで呼ぶだけ。起動の待ちで sidebar を止めない）。結果は `display-message` に出る。ON にしたときは URL をクリップボードへコピーする
+  - 状態は `~/.cache/tmux-agent-web/state.json`（`tmux-agent-web` が書く。pid・ポート・URL）。sidebar は毎 tick（約 1 秒）これを fork なしで読み、変わったときだけ再描画する。pid が死んでいれば OFF 扱い（古い状態ファイルは無視される）
+  - 手動（端末）で起動した `tmux-agent-web` も同じ状態ファイルを書くので、WEB 欄に ON と出て、`w` で止められる。**状態ファイルを書かない古い版で起動したものは、WEB 欄に出ず、`w` でも止められない**（二重起動はポート衝突で失敗する）。止めてから `w` で起動し直す
 - sidebar 上で `p`（または Space）→ 選択中の Agent の pane を **ポップアップでプレビュー**（`tmux-agent-sidebar-preview`）
   - 中身は `tmux capture-pane -e -p`（色つき・読み取り専用）を 1 秒ごとに更新。Agent には影響しない
   - ポップアップ内で `j` / `k`（`↓` / `↑`、Tab）→ 前後の Agent に切り替え、`Enter` → その pane へ移動、`q` / Esc / `p` / Space → 閉じる
@@ -242,6 +247,88 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 **危険な点（重要）**: Agent が枠に入っている間に cockpit window を **tmux の外から** 閉じると、Agent も終了する。tmux には「閉じる直前」のフックが無い（`window-unlinked` 等は閉じた後）。
 守れる経路: `prefix + &`（差し替え済み）、sidebar の終了、次回起動時の `heal`。**守れない経路**: `prefix :` から `kill-window` を直接実行、`kill-session`、tmux サーバーの終了。
 その場合も会話の記録は残る（`claude --resume`）が、実行中の処理は失われる。
+
+### Agent Web (tmux/scripts/tmux-agent-web)
+スマホのブラウザから、この Mac の tmux 上の Claude Code / Codex を **確認・操作**する小さな Web サーバー（Python 3 標準ライブラリのみ）。
+メニュー（☰）に sidebar と同じ Agent 一覧、メインに選んだ Agent の pane、下に入力欄とクイックキー（`/` / Esc / Tab / ⇧Tab / 矢印 / Enter / ^C / y / n / 1-3 / ⌫）。
+`/` は Claude Code のスラッシュコマンドのメニューを開く（空の入力欄に `/` を 1 文字だけ送る。続きは入力欄で打って送信するか、↑↓ と Enter で選ぶ）。送れるキーは許可リストのみ（`/ y n 1-9` と名前つきキー）。
+**入力欄の送信ボタン**は、文字があるときは **「入力」= 文字を入れるだけ（Enter は押さない）**、空のときは **「⏎」= Enter を押す**。
+Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選ぶ）を使えないため。文字を入れたあと、補完を選んで、⏎ で確定する。
+文字があるときだけ出る **「入力+⏎」**は、従来どおり「文字を入れて Enter まで」を 1 回で済ませる（デスクトップでは Ctrl/Cmd+Enter も同じ）。
+1 行の文字は **キーボードで打った形**で届ける（`paste-buffer` の `-p` なし。補完メニューは、貼り付けでは出ないため）。**改行を含む文字だけ**、貼り付け（bracketed paste）の形にする。
+文字は `load-buffer` の標準入力で渡すので、「;」で終わる・「-」で始まる文字も、tmux の引数として誤解釈されない（`send-keys -l` だと崩れるため、使わない）。
+
+**起動**（必要なときだけ。常駐させない）:
+- **sidebar の `w`**（ON / OFF）と `W`（URL のコピー）。ON にすると URL がクリップボードに入る（ユニバーサルクリップボードでスマホに貼れる）。詳細は上の「Agent Sidebar」
+- 起動引数を変えたいときは tmux の option: `set -g @agent_web_args '--read-only --idle-timeout 120'`（空白区切りの単純なフラグだけ。サーバー起動中の変更は、次の起動から効く）
+- 端末から直接:
+```bash
+~/.tmux/scripts/tmux-agent-web --copy        # LAN 側 IP で待ち受け。URL をクリップボードへ
+~/.tmux/scripts/tmux-agent-web --read-only   # 閲覧のみ
+~/.tmux/scripts/tmux-agent-web-toggle status # ON host:port / OFF（トークンは出さない）。ほかに start / stop / toggle / url
+```
+他のオプション: `--host IP`、`--port N`（既定 8765）、`--idle-timeout 分`、`--allow-host 名前`、`--state-file パス`。端末に出る URL の `#token=…` つきで開く（トークンは起動のたびに変わる。`TMUX_AGENT_WEB_TOKEN`（20 文字以上）で固定できる）。
+スマホは同じ Wi-Fi に繋ぐ。mDNS 名（`<LocalHostName>.local`）でも開ける。
+**二重起動はしない**（状態ファイルの pid が生きていれば「すでに起動しています」で終了）。SIGTERM（`w` の OFF）でも Ctrl+C と同じ後片付け（状態ファイルの削除）をする。
+状態ファイル `~/.cache/tmux-agent-web/state.json`（`TMUX_AGENT_WEB_STATE` で変更）は **トークンつきの URL を含む**ので、本人だけが読めるディレクトリ（0700）・ファイル（0600）にしている。サーバーのエラーログは同じディレクトリの `server.log`（URL は出さない）
+
+**仕組み・設計判断**:
+- 表示は `capture-pane -e -p` の読み取りだけ（1 秒ごとにポーリング。内容が同じなら `rev` 一致で本文を返さない）、入力は `load-buffer` + `paste-buffer -p`（+ Enter）と `send-keys` だけ。
+  `swap-pane`・リサイズ・window 切り替えはしないので、Mac 側の画面（cockpit を含む）に影響しない
+- 検出は sidebar と同じ方式（`claude agents --json` + ps の祖先 → pane、Codex は ps の引数、DONE は `/tmp/tmux-claude-agents-state`、
+  名前は `/tmp/claude-title-<sid>.txt` → トランスクリプトの `ai-title` → セッション名）を **Python で再実装**している。
+  `tmux-agent-sidebar` は起動中に書き換えると壊れるので、検出ロジックを共有するための変更はしなかった（検出の仕様を変えたら両方を直す）
+- tmux の外で動いている Claude（別ターミナル・アプリ）は pane が無いので一覧に出ない
+- 並び順は sidebar と同じ（リポジトリ → worktree → 元の window・pane 番号。cockpit に入っている Agent は元の番号）
+- **ソフトキーボードで入力欄が隠れない**ようにしている: viewport の `interactive-widget=resizes-content`（Android の Chrome 108 以降は、既定だとキーボードが画面に重なるだけでページが縮まない）と、
+  縮まない端末（iOS Safari 等）向けに `visualViewport` の高さを `--vvh` としてページ高さに反映（ピンチズーム中は反映しない）。実機のキーボードでの確認は人手（テストはメタ・CSS の存在だけ）
+- 画面は pane の実際の幅で描かれる。**幅の広い pane はスマホでは読みにくい**ので、表示の「幅に合わせる」（内容の幅で文字サイズを決める。下限 7px）、
+  A−/A＋、横スクロール、ピンチズームで調整する。履歴ボタンで過去 500 行も読める
+
+**セキュリティ**（`ssh` と同じ重さの口なので、最小限を重ねている）:
+- 待ち受けは **特定の LAN の IPv4 だけ**（RFC1918 / ループバック / リンクローカル / CGNAT）。`0.0.0.0`・公開 IP・ホスト名は起動時に拒否。接続元 IP も同じ範囲だけ許す
+- トークン（URL の `#` 以降。サーバーには送られない）→ ログインで **HttpOnly / SameSite=Strict の Cookie**（トークンそのものは Cookie に入れない）。比較は timing-safe。
+  **ログインは 30 日間有効で、サーバーを起動し直しても続く**（トークンは起動のたびに変わるが、ログイン済みの端末は再認証なし）。
+  記録は `~/.cache/tmux-agent-web/sessions.json`（0600）に **Cookie の sha256 だけ**を残す（ファイルが漏れても Cookie としては使えない）。期限は延長しない（ログインから 30 日。`--session-days` で 1〜365）、最大 32 端末。
+  **全端末のログアウトは `tmux-agent-web-toggle revoke`**（= `tmux-agent-web --revoke-sessions`。記録を消す。動いているサーバーも次のリクエストで気づく）。スマホの紛失・譲渡のときに使う
+  （⚠️ 紛失したスマホは、取り消すまで最大 30 日 操作できる。画面のメニューの「ログアウト」はその端末だけ）
+- **Host ヘッダーを許可名（待ち受け IP・localhost・`.local` 名・`--allow-host`）に限定**（DNS rebinding 対策）。POST は Origin 一致と `X-Requested-With` も必須
+- ログイン失敗は IP ごとに 5 回で締め出し（指数的に延びる。最大 15 分）
+- 操作できる pane は **検出済みの Agent だけ**（他の pane の番号は 404）。キーは許可リスト、本文は 8000 文字まで、リクエストは 64KB まで
+- CSP（script は自分のファイルのみ）、`Cache-Control: no-store`、`Referrer-Policy: no-referrer`
+- **HTTP と HTTPS の両方でつながる**（下の「HTTP と HTTPS の両方」）。**HTTP は平文**なので、信頼できる自宅の Wi-Fi でだけ使う。HTTPS は自己署名（警告を越えて使う）なので、暗号化はされるが、なりすましには弱い。URL（トークン）を他人に見せない・共有チャットに貼らない。
+  `--dangerously-skip-permissions` で動く Agent があれば、トークンが漏れた時点で Mac のシェルを操作されるのと同じ
+- ⚠️ 会社管理（Jamf）の Mac では、LAN に待ち受けるサーバー自体が社内ルールに触れないか確認する
+
+**HTTP と HTTPS の両方**: 同じポート（既定 8765）で、`http://` でも `https://` でもつながる（接続の最初の 1 バイトで見分ける）。
+- HTTPS の証明書は **自己署名**で、起動時に無ければ自動で作る（`~/.cache/tmux-agent-web/tls/`、鍵は 0600。`openssl` が要る。無ければ HTTP だけで起動する）。
+  ブラウザには「安全ではない」と警告されるが、**「詳細設定 → 続行」で使える**。証明書は 10 年有効で、作り直さない（作り直すと、ブラウザの「続行」の記憶が無効になり、もう一度警告を越えることになる）
+- **CA を作ってスマホに入れる方式は、やめた**（一度作ったが、スマホへのインストールが難しく、警告を越えれば足りたため）。警告を消したくなったら、その方式を作り直すことになる（コミット前に削除したので、履歴には残っていない。名前制限（Name Constraints）つきの CA を `openssl` で作り、`/ca.crt` で配る形だった）
+- Cookie の `Secure` と Origin の検証は、**接続ごとの scheme**で判断する（https の接続には `Secure` を付け、`Origin` も `https://…` と一致したものだけ通す）。HTTP の接続は、これまでどおり
+- HTTPS が要る理由: Android の Chrome が「アプリをインストール」で作るアプリ（WebAPK）は、**スコープを https に書き換える**。http のサイトでインストールすると、起動した URL がスコープの外になり、
+  **Chrome のタブで開いてしまう**（実機の `chrome://webapks` で、`URI: http://…` に対して `Scope: https://…` だったことで判明）。**https の URL を開いてインストールすれば、独立したアプリとして起動する**（実機で確認済み）
+- `w`（sidebar）で起動すると、**`.local` の URL（`<scheme>://<Mac の名前>.local:8765/#token=…`）がクリップボードに入る**。`.local` が引けない端末用の IP の URL は、端末に出る（状態ファイルの `ipUrl`）
+- `--no-tls` で HTTP だけにする。HTTP のままだと、トークンと Cookie が LAN で平文になる（信頼できる自宅の Wi-Fi でだけ使う）
+
+**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
+入り切りスクリプトのテストは、`AGENT_WEB_CLIP_CMD`（コピー先のコマンド）を偽物にして、本物のクリップボードを書き換えない。`jq` が必要）、
+`cd tmux/tests && node --test`（`assets/agent-web/ansi.js` の ANSI 変換）。
+環境変数 `TMUX_AGENT_WEB_SOCKET`（tmux のソケットパス）はテスト用。
+
+**ホーム画面のアイコン**: オレンジのゴースト（`tmux/assets/agent-web/icon.svg` が角丸版、`icon-maskable.svg` が全面塗り版。PNG は `rsvg-convert -w <幅> -h <幅> <svg> -o <png>` で作った
+`icon-48/192/512.png`・`icon-maskable-512.png`・`apple-touch-icon.png`）。`manifest.webmanifest`（名前 `tmux agents`、ホーム画面の表示名 `Agents`、`standalone`、アイコン 192/512/maskable）と
+`<link rel="icon" / "apple-touch-icon" / "manifest">` を配信する（秘密を含まないのでログイン不要）。表示名・色を変えるときは `manifest.webmanifest` と `index.html` の `apple-mobile-web-app-title` を直す。
+`sw.js` は「アプリとして追加」の条件（fetch ハンドラ）を満たすためだけの Service Worker で、**何もキャッシュしない**（認証済みの内容を端末に残さない）。
+- **Android の Chrome の「アプリをインストール」**: **https の URL を開いて**インストールする（上の「HTTP と HTTPS の両方」）。証明書の警告は「詳細設定 → 続行」で越える（CA の導入は不要。実機で確認済み）。
+  http のままだと、アプリは作られても、タブで開いてしまう。「ホーム画面に追加」（ショートカット）だけだと、アイコンに **Chrome のバッジ**が付く（Android 8 以降が付ける印で、サイト側では消せない）
+- 補足（http のまま使う場合のみ）: スマホの Chrome の `chrome://flags`（アドレスバーに手で入力。リンクのタップでは開けない）→ `insecure` → 「Insecure origins treated as secure」に
+  `http://<Mac の名前>.local:8765`（末尾の `/` なし）を入れて Enabled → 再起動すると、http でも「アプリをインストール」が出る。ただし上のとおり、起動はタブになる
+- ⚠️ 「アプリをインストール」が出ないときは、まず Mac のログ（`~/.cache/tmux-agent-web/server.log`）で、スマホが `manifest.webmanifest` を取得しているか見る。
+  取得していなければ、CSP が `manifest-src` を止めている（以前はこれで失敗していた。`default-src 'none'` のままだと manifest も Service Worker も止まるので、CSP に明示している）
+- iOS の Safari は、`apple-touch-icon` でホーム画面のアイコンが付く（バッジは付かない）。ホーム画面から開くアプリは Safari と Cookie が別なので、そこで一度ログインし直す
+
+**既知の制限・今後**: Agent の居ない空きシェルからの起動（sidebar の `n`）・再起動（`R`）は未対応。pane 表示は端末のミラーなので、読みやすさは pane の幅に依存する
+（改善案: トランスクリプトからチャット形式で表示、承認待ちの画面をボタン化）。
 
 ### Claude Code (claude/)
 **settings.json**: MCP サーバーの事前承認とフック設定
@@ -391,6 +478,8 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 │   ├── tmux-agent-cockpit-slot    # cockpit の右の枠に常駐する交換用 pane
 │   ├── tmux-agent-restart         # sidebar の R で呼ばれる Claude Code の再起動（終了 → --resume で入り直す）
 │   ├── tmux-agent-new             # sidebar の n で呼ばれる、リポジトリでの新規 pane + Claude / Codex の新規起動
+│   ├── tmux-agent-web             # スマホのブラウザから Agent を確認・操作する Web サーバー（Python。画面は tmux/assets/agent-web/）
+│   ├── tmux-agent-web-toggle      # sidebar の w / W から呼ばれる、tmux-agent-web の入り切り・URL コピー
 │   ├── tmux-window-reorder        # C-t S の window 並び替えポップアップ
 │   ├── tmux-rate-limits   # レートリミット使用率表示（現在はステータスバーから外し、sidebar の USAGE 欄が代替）
 │   └── ...                # その他スクリプト
