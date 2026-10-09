@@ -134,7 +134,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - **扱わないケース**: Agent が pane の直下で起動されていて、シェルが無い pane（終了すると pane ごと閉じるため）。戻った先が既知のシェル（zsh / bash / sh / dash / ksh / fish）でないときも、何も入力しない。Codex は未対応
   - 環境変数: `AGENT_RESTART_CLAUDE_CMD`（入力するコマンド名。既定 `claude`）
 - sidebar 上で `n` → 選択中のカードの **リポジトリで新しい pane を作り**、Claude Code / Codex を新規セッションで起動する（tmux のメニューで `c` = Claude / `x` = Codex を選ぶ。通常の sidebar・cockpit のどちらでも効く）
-  - `tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id>)` が処理する
+  - `tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id> | --print)` が処理する（`--print` は、スマホの Web 画面（`tmux-agent-web`）用。Mac のフォーカスを動かさず、作った pane_id だけを標準出力へ返す）
   - **ディレクトリ**: リポジトリの本体（worktree のカードを選んでいても、大本のディレクトリ。見出しのリポジトリと同じ `AG_RKEY`）。git 管理外のグループはそのディレクトリ
   - **置き場所**: そのリポジトリの **先頭に表示されている Agent の window**（anchor の pane を分割する。幅が 120 以上なら左右、狭ければ上下）。anchor が cockpit の枠に入っているときは、元の window を交換用の枠（slot）の位置から割り出す（slot は枠に入った Agent の元の位置に居るため）。割り出せなければ新しい window にする
   - シェルを立ち上げてからコマンドを入力するので、Agent が終了してもシェルが残り、`R`（再起動）がそのまま使える
@@ -315,6 +315,14 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 `cd tmux/tests && node --test`（`assets/agent-web/ansi.js` の ANSI 変換）。
 環境変数 `TMUX_AGENT_WEB_SOCKET`（tmux のソケットパス）はテスト用。
 
+**新しい Agent の起動**（sidebar の `n` と同じ）: 画面のメニュー（☰）で、リポジトリの見出しの **「＋」**を押し、**Claude Code / Codex** を選ぶ。そのリポジトリのディレクトリで、新しい pane を作って起動する。
+- 実体は `tmux-agent-new <kind> <anchor> <dir> --print`。**Mac 側のフォーカスは動かさない**（`--focus` / `--notify` は、Mac の画面を作った pane へ移すので使わない）。起動するコマンドは、sidebar と同じ tmux の option（`@agent_sidebar_claude_cmd` / `@agent_sidebar_codex_cmd`。
+  たとえば `--dangerously-skip-permissions` を付けている場合は、スマホからの起動にも付く）
+- **ディレクトリと置き場所は、クライアントからは受け取らない**（`POST /api/new` は `id`（検出済みの Agent）と `kind`（`claude` / `codex` の許可リスト）だけを読む）。ディレクトリはその Agent のリポジトリの本体、置き場所はそのリポジトリの先頭の Agent の window。
+  閲覧のみのモードでは使えない（403）。失敗の理由は、画面のトーストに出る
+- 作った pane が Agent として検出されるまで（Claude は数秒）、画面は 1 秒ごとに一覧を見て、検出されたらその Agent を自動で選ぶ（最長 60 秒）
+- テストは、専用ソケットの別 tmux で、本物の `tmux-agent-new` まで通す（起動コマンドを `echo` に差し替えるので、本物の Claude / Codex は起動しない）
+
 **ホーム画面のアイコン**: オレンジのゴースト（`tmux/assets/agent-web/icon.svg` が角丸版、`icon-maskable.svg` が全面塗り版。PNG は `rsvg-convert -w <幅> -h <幅> <svg> -o <png>` で作った
 `icon-48/192/512.png`・`icon-maskable-512.png`・`apple-touch-icon.png`）。`manifest.webmanifest`（名前 `tmux agents`、ホーム画面の表示名 `Agents`、`standalone`、アイコン 192/512/maskable）と
 `<link rel="icon" / "apple-touch-icon" / "manifest">` を配信する（秘密を含まないのでログイン不要）。表示名・色を変えるときは `manifest.webmanifest` と `index.html` の `apple-mobile-web-app-title` を直す。
@@ -327,7 +335,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
   取得していなければ、CSP が `manifest-src` を止めている（以前はこれで失敗していた。`default-src 'none'` のままだと manifest も Service Worker も止まるので、CSP に明示している）
 - iOS の Safari は、`apple-touch-icon` でホーム画面のアイコンが付く（バッジは付かない）。ホーム画面から開くアプリは Safari と Cookie が別なので、そこで一度ログインし直す
 
-**既知の制限・今後**: Agent の居ない空きシェルからの起動（sidebar の `n`）・再起動（`R`）は未対応。pane 表示は端末のミラーなので、読みやすさは pane の幅に依存する
+**既知の制限・今後**: Agent の居ない空きシェルの欄からの起動（sidebar の `n` の `--here`）・再起動（`R`）は未対応。pane 表示は端末のミラーなので、読みやすさは pane の幅に依存する
 （改善案: トランスクリプトからチャット形式で表示、承認待ちの画面をボタン化）。
 
 ### Claude Code (claude/)
