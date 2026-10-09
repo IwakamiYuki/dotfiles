@@ -82,6 +82,15 @@
   </form>
 </div>
 
+<div id="newSheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="newTitle">
+    <p id="newTitle"></p>
+    <button type="button" data-kind="claude">Claude Code</button>
+    <button type="button" data-kind="codex">Codex</button>
+    <button type="button" id="newCancel">キャンセル</button>
+  </div>
+</div>
+
 <div id="toast" role="status"></div>
 
 <script src="/ansi.js"></script>

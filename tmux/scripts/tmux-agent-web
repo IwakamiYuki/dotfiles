@@ -101,6 +101,9 @@ KEYS = {
 }
 # 「/」は Claude Code のスラッシュコマンドのメニューを開く（スマホの日本語キーボードでは打ちにくい）
 LITERAL_KEYS = frozenset("yn123456789/")
+# 新規に起動できる Agent の種別（許可リスト。起動するコマンドは tmux の option @agent_sidebar_claude_cmd / @agent_sidebar_codex_cmd で決まる）
+NEW_KINDS = frozenset({"claude", "codex"})
+NEW_AGENT_TIMEOUT = 20
 
 # 待ち受け・接続を許す範囲。ipaddress の is_private はドキュメント用の範囲（203.0.113.0/24 等）まで含むので使わず、明示する
 LAN_NETWORKS = tuple(
@@ -133,6 +136,7 @@ class Config:
     tls_cert: str = ""  # サーバー証明書と鍵（両方あれば HTTPS で待ち受ける）
     tls_key: str = ""
     assets_dir: str = str(Path(os.path.realpath(__file__)).parent.parent / "assets" / "agent-web")
+    new_bin: str = str(Path(os.path.realpath(__file__)).parent / "tmux-agent-new")  # 新規起動（sidebar の n と同じスクリプト）
 
 
 def config_from_env() -> Config:
@@ -329,10 +333,10 @@ def build_agents(
 # --- 外部の情報源（claude / git / トランスクリプト / 状態ファイル） ------------------------
 
 
-def _run(cmd: List[str], *, input_text: Optional[str] = None, timeout: float = SUBPROCESS_TIMEOUT):
+def _run(cmd: List[str], *, input_text: Optional[str] = None, timeout: float = SUBPROCESS_TIMEOUT, env: Optional[dict] = None):
     return subprocess.run(
         cmd, input=input_text.encode() if input_text is not None else None,
-        capture_output=True, timeout=timeout,
+        capture_output=True, timeout=timeout, env=env,
     )
 
 
@@ -514,6 +518,35 @@ class Collector:
         args = ["send-keys", "-t", f"%{number}"]
         args += ["-l", "--", name] if literal else [name]
         self.tmux(*args)
+
+    def new_agent(self, kind: str, number: int) -> Tuple[Optional[str], str]:
+        """number の Agent と同じリポジトリで、新しい pane を作り、Claude / Codex を新規に起動する（sidebar の n と同じ）。
+
+        ディレクトリと置き場所は、クライアントからは受け取らず、検出済みの Agent から決める:
+          ディレクトリ = そのリポジトリの本体（worktree でも大本のディレクトリ）、置き場所 = そのリポジトリの先頭に表示されている Agent の window。
+        実際の処理は tmux-agent-new --print（Mac 側のフォーカスを動かさず、作った pane_id だけを返す）。戻り値は (pane_id, エラー文)。
+        """
+        agents = self.agents(max_age=0)
+        agent = next((a for a in agents if a["id"] == number), None)
+        if agent is None:
+            return None, "no such agent"
+        directory = agent["repoKey"]
+        anchor = next(a for a in agents if a["repoKey"] == directory)  # 一覧は、リポジトリごとにまとまっている（先頭が anchor）
+        if not os.path.isabs(directory) or not os.path.isdir(directory):
+            return None, f"ディレクトリがありません ({directory})"
+        env = dict(os.environ)
+        if self.cfg.tmux_socket:
+            env["TMUX"] = f"{self.cfg.tmux_socket},0,0"  # tmux-agent-new が呼ぶ素の tmux を、同じサーバーへ向ける
+        try:
+            result = _run([self.cfg.new_bin, kind, anchor["pane"], directory, "--print"], timeout=NEW_AGENT_TIMEOUT, env=env)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return None, f"起動できませんでした ({e})"
+        out = _out(result).strip()
+        if result.returncode != 0 or not re.fullmatch(r"%[0-9]{1,7}", out):
+            reason = result.stderr.decode("utf-8", "replace").strip().splitlines()
+            return None, (reason[-1] if reason else "起動できませんでした")
+        self._agents = (0.0, self._agents[1])  # 一覧のキャッシュを捨てる（新しい Agent が検出されたら、すぐ出るように）
+        return out, ""
 
 
 # --- 入力の検証・認証 ---------------------------------------------------------------
@@ -944,7 +977,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/login":
             return self._login()
-        if path in ("/api/send", "/api/key", "/api/logout"):
+        if path in ("/api/send", "/api/key", "/api/new", "/api/logout"):
             if not self._authed():
                 return
             if path == "/api/logout":
@@ -983,12 +1016,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             key = tmux_key(data.get("key"))
             if key is None:
                 return self._json(400, {"error": "bad key"})
+        elif path == "/api/new":
+            kind = data.get("kind")
+            if kind not in NEW_KINDS:  # 許可リストだけ（dir・anchor など、ほかの項目は読まない）
+                return self._json(400, {"error": "bad kind"})
         else:
             text = data.get("text", "")
             if not isinstance(text, str) or len(text) > MAX_TEXT_CHARS or "\x00" in text:
                 return self._json(400, {"error": "bad text"})
         if self.server.collector.find(number) is None:
             return self._json(404, {"error": "no such agent"})
+        if path == "/api/new":
+            pane, error = self.server.collector.new_agent(kind, number)
+            if pane is None:
+                return self._json(502 if error != "no such agent" else 404, {"error": error})
+            return self._json(200, {"pane": pane, "id": int(pane[1:])})
         if path == "/api/key":
             self.server.collector.key(number, *key)
         else:

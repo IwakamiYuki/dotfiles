@@ -9,6 +9,7 @@
     keys: $("#keys"), login: $("#login"), loginForm: $("#loginForm"), loginToken: $("#loginToken"), loginMsg: $("#loginMsg"),
     toast: $("#toast"), hist: $("#hist"), fit: $("#fit"), zoomIn: $("#zoomIn"), zoomOut: $("#zoomOut"),
     bottom: $("#bottom"), logout: $("#logout"),
+    newSheet: $("#newSheet"), newTitle: $("#newTitle"), newCancel: $("#newCancel"),
   };
 
   // localStorage は使えない環境（プライベートブラウズ等）がある。無くても動く
@@ -32,7 +33,7 @@
   const state = {
     agents: [], selected: null, rev: "", history: 0, readOnly: false, running: false, stick: true,
     fit: store.get("fit", "1") === "1", size: Number(store.get("size", "11")) || 11, cells: 0, ratio: 0.6,
-    paneTimer: 0, listTimer: 0,
+    paneTimer: 0, listTimer: 0, newAnchor: null, pendingPane: null, pendingUntil: 0,
   };
 
   // --- 通信 ---
@@ -125,7 +126,14 @@
       if (a.repoKey !== last) {
         last = a.repoKey;
         const g = el("div", "group");
-        g.append(el("span", "", a.repo), el("span", "count", String(counts[a.repoKey])));
+        const add = el("button", "add", "＋");
+        add.type = "button";
+        add.dataset.id = String(a.id); // そのリポジトリの先頭の Agent（足がかりにする）
+        add.dataset.repo = a.repo;
+        add.title = a.repo + " で、新しい Agent を起動";
+        add.setAttribute("aria-label", a.repo + " で、新しい Agent を起動");
+        add.hidden = state.readOnly;
+        g.append(el("span", "name", a.repo), el("span", "count", String(counts[a.repoKey])), add);
         frag.append(g);
       }
       const card = el("button", "card st-" + a.status + (a.id === state.selected ? " sel" : ""));
@@ -143,8 +151,41 @@
   }
 
   els.list.addEventListener("click", (e) => {
+    const add = e.target.closest(".add");
+    if (add) return openNewSheet(Number(add.dataset.id), add.dataset.repo);
     const card = e.target.closest(".card");
     if (card) select(Number(card.dataset.id), true);
+  });
+
+  // --- 新しい Agent を起動（sidebar の n と同じ。リポジトリの見出しの「＋」から、Claude / Codex を選ぶ） ---
+  function openNewSheet(anchorId, repo) {
+    state.newAnchor = anchorId;
+    els.newTitle.textContent = repo + " で、新しい Agent を起動";
+    els.newSheet.hidden = false;
+  }
+  const closeNewSheet = () => {
+    els.newSheet.hidden = true;
+    state.newAnchor = null;
+  };
+  els.newCancel.addEventListener("click", closeNewSheet);
+  els.newSheet.addEventListener("click", (e) => {
+    if (e.target === els.newSheet) closeNewSheet(); // 外側のタップで閉じる
+  });
+  els.newSheet.addEventListener("click", async (e) => {
+    const button = e.target.closest("button[data-kind]");
+    if (!button || state.newAnchor === null) return;
+    const buttons = els.newSheet.querySelectorAll("button");
+    buttons.forEach((b) => (b.disabled = true));
+    const r = await api("/api/new", { id: state.newAnchor, kind: button.dataset.kind });
+    buttons.forEach((b) => (b.disabled = false));
+    if (!r.ok) return toast((r.data && r.data.error) || MESSAGES[r.status] || "起動できませんでした");
+    closeNewSheet();
+    setDrawer(false);
+    // Agent として検出されるまで（Claude は数秒かかる）待ち、検出されたら、その Agent を選ぶ
+    state.pendingPane = r.data.pane;
+    state.pendingUntil = Date.now() + 60000;
+    toast("起動しました。検出されたら、自動で選びます");
+    pollAgents();
   });
 
   function current() {
@@ -171,6 +212,15 @@
       const stored = Number(store.get("selected", ""));
       const pick = state.agents.find((a) => a.id === stored) || state.agents.find((a) => a.status === "waiting") || state.agents[0];
       if (pick) select(pick.id, false);
+    }
+    if (state.pendingPane) {
+      const started = state.agents.find((a) => a.pane === state.pendingPane);
+      if (started) {
+        state.pendingPane = null;
+        select(started.id, false);
+        return true;
+      }
+      if (Date.now() > state.pendingUntil) state.pendingPane = null;
     }
     renderList();
     renderHeader();
@@ -253,7 +303,7 @@
     if (!document.hidden) {
       await refreshAgents();
     }
-    if (state.running) state.listTimer = setTimeout(pollAgents, 3000);
+    if (state.running) state.listTimer = setTimeout(pollAgents, state.pendingPane ? 1000 : 3000);
   }
 
   function start() {

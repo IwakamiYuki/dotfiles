@@ -320,6 +320,10 @@ class ServerIntegrationTest(unittest.TestCase):
         subprocess.run(["tmux", "-S", cls.sock, "-f", "/dev/null", "new-session", "-d", "-s", "t",
                         "-x", "100", "-y", "30", "cat"], check=True, env=env)
         cls.tmux("split-window", "-t", "t", "cat")  # 2 つ目の pane（Agent ではない）
+        # 「新規に Agent を起動」のテスト用: 新しい pane のシェルを固定し、起動コマンドは echo に差し替える（本物の Claude / Codex は起動しない）
+        cls.tmux("set-option", "-g", "default-shell", "/bin/sh")
+        cls.tmux("set-option", "-g", "@agent_sidebar_claude_cmd", "echo STARTED-claude")
+        cls.tmux("set-option", "-g", "@agent_sidebar_codex_cmd", "echo STARTED-codex")
         panes = cls.tmux("list-panes", "-t", "t", "-F", "#{pane_id} #{pane_pid}").split("\n")
         (cls.agent_pane, cls.agent_pid), (cls.other_pane, _) = [p.split() for p in panes if p][:2]
         fake = Path(cls.tmp, "claude")
@@ -535,6 +539,11 @@ class ServerIntegrationTest(unittest.TestCase):
             time.sleep(0.1)
         return text
 
+    def test_page_has_a_sheet_to_start_a_new_agent(self):
+        html = self.request("GET", "/")[1].decode()
+        for needle in ('id="newSheet"', 'data-kind="claude"', 'data-kind="codex"'):
+            self.assertIn(needle, html)
+
     def test_composer_has_a_text_button_and_a_separate_enter_button(self):
         html = self.request("GET", "/")[1].decode()
         self.assertIn('id="send"', html)
@@ -550,6 +559,72 @@ class ServerIntegrationTest(unittest.TestCase):
             time.sleep(0.1)
             text = self.capture(cookie)[1]["text"]
         self.assertIn("/", text)
+
+    def pane_ids(self):
+        return set(self.tmux("list-panes", "-a", "-F", "#{pane_id}").split())
+
+    def wait_for_pane_text(self, pane, needle, timeout=5.0):
+        deadline, text = time.time() + timeout, ""
+        while time.time() < deadline:
+            text = self.tmux("capture-pane", "-p", "-t", pane)
+            if needle in text:
+                break
+            time.sleep(0.1)
+        return text
+
+    def test_new_agent_starts_in_a_new_pane_in_the_repo_directory_without_moving_focus(self):
+        """sidebar の n と同じ: そのリポジトリのディレクトリで新しい pane を作り、Claude / Codex を起動する。Mac 側のフォーカスは動かさない。"""
+        cookie = self.login()
+        n = self.pane_id(self.agent_pane)
+        for kind in ("claude", "codex"):
+            before = self.pane_ids()
+            active_before = self.tmux("display-message", "-p", "-t", "t", "#{window_id} #{pane_id}")
+            status, data, _ = self.request("POST", "/api/new", {"id": n, "kind": kind}, cookie)
+            self.assertEqual(status, 200, data)
+            new = data["pane"]
+            self.addCleanup(self.tmux, "kill-pane", "-t", new)  # 分割で、共有の agent pane が小さくなったままだと、他のテストの表示が押し出される
+            self.assertEqual(self.pane_ids() - before, {new})  # 新しい pane が 1 つだけできた
+            self.assertEqual(data["id"], self.pane_id(new))
+            self.assertIn(f"STARTED-{kind}", self.wait_for_pane_text(new, f"STARTED-{kind}"))
+            path = self.tmux("display-message", "-p", "-t", new, "#{pane_current_path}").strip()
+            self.assertEqual(os.path.realpath(path), os.path.realpath(self.tmp))  # リポジトリ（この Agent の cwd）のディレクトリ
+            self.assertEqual(self.tmux("display-message", "-p", "-t", "t", "#{window_id} #{pane_id}"), active_before)  # フォーカスは動かない
+
+    def test_new_agent_rejects_bad_requests(self):
+        cookie = self.login()
+        n = self.pane_id(self.agent_pane)
+        before = self.pane_ids()
+        self.assertEqual(self.request("POST", "/api/new", {"id": n, "kind": "bash"}, cookie)[0], 400)
+        self.assertEqual(self.request("POST", "/api/new", {"id": n, "kind": "; kill-server"}, cookie)[0], 400)
+        self.assertEqual(self.request("POST", "/api/new", {"id": n}, cookie)[0], 400)
+        self.assertEqual(self.request("POST", "/api/new", {"id": "%1;x", "kind": "claude"}, cookie)[0], 400)
+        # 検出された Agent でない pane を足がかりにはできない
+        self.assertEqual(self.request("POST", "/api/new", {"id": self.pane_id(self.other_pane), "kind": "claude"}, cookie)[0], 404)
+        self.assertEqual(self.request("POST", "/api/new", {"id": n, "kind": "claude"}, None)[0], 401)
+        self.assertEqual(self.pane_ids(), before)  # どれも、pane を作っていない
+
+    def test_new_agent_takes_no_directory_from_the_client(self):
+        """ディレクトリ・置き場所は、検出済みの Agent からサーバーが決める。クライアントが dir を送っても使わない。"""
+        cookie = self.login()
+        n = self.pane_id(self.agent_pane)
+        status, data, _ = self.request("POST", "/api/new", {"id": n, "kind": "claude", "dir": "/etc", "anchor": "%999"}, cookie)
+        self.assertEqual(status, 200, data)
+        self.addCleanup(self.tmux, "kill-pane", "-t", data["pane"])
+        path = self.tmux("display-message", "-p", "-t", data["pane"], "#{pane_current_path}").strip()
+        self.assertEqual(os.path.realpath(path), os.path.realpath(self.tmp))
+
+    def test_new_agent_reports_a_failure_of_the_launcher(self):
+        cookie = self.login()
+        failing = Path(self.tmp, "failing-new")
+        failing.write_text("#!/bin/sh\necho 'pane を作れませんでした' >&2\nexit 1\n")
+        failing.chmod(0o755)
+        original, self.srv.cfg.new_bin = self.srv.cfg.new_bin, str(failing)
+        try:
+            status, data, _ = self.request("POST", "/api/new", {"id": self.pane_id(self.agent_pane), "kind": "claude"}, cookie)
+        finally:
+            self.srv.cfg.new_bin = original
+        self.assertEqual(status, 502)
+        self.assertIn("pane を作れませんでした", data["error"])
 
     def test_non_agent_pane_cannot_be_read_or_driven(self):
         cookie = self.login()
@@ -588,6 +663,9 @@ class ServerIntegrationTest(unittest.TestCase):
             n = self.pane_id(self.agent_pane)
             self.assertEqual(self.request("POST", "/api/send", {"id": n, "text": "x"}, cookie)[0], 403)
             self.assertEqual(self.request("POST", "/api/key", {"id": n, "key": "Enter"}, cookie)[0], 403)
+            before = self.pane_ids()
+            self.assertEqual(self.request("POST", "/api/new", {"id": n, "kind": "claude"}, cookie)[0], 403)
+            self.assertEqual(self.pane_ids(), before)
             self.assertEqual(self.capture(cookie)[0], 200)
             self.assertTrue(self.request("GET", "/api/agents", cookie=cookie)[1]["readOnly"])
         finally:
