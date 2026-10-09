@@ -842,6 +842,13 @@ LIM_1W_RESET=""
 # 下部欄を出すのに必要な最小の端末高さ(これ未満では Agent 一覧を優先して出さない)
 FOOTER_MIN_TERM_H=14
 
+# スマホ用 Web サーバー(tmux-agent-web)の状態。tmux-agent-web が書く状態ファイル(JSON)の pid が生きているかを読む。
+# 入り切りは w(tmux-agent-web-toggle)。USAGE 欄の下の 1 行(WEB 欄)に出す
+WEB_STATE_FILE="${TMUX_AGENT_WEB_STATE:-${XDG_CACHE_HOME:-$HOME/.cache}/tmux-agent-web/state.json}"
+WEB_ON=0
+WEB_PORT=""
+WEB_RO=""
+
 # json_field <json> <key> : 単純な "key": value を REPLY に入れる(null は空)。fork せず正規表現で読む
 json_field() {
   local re="\"$2\"[[:space:]]*:[[:space:]]*\"?([^\",}[:space:]]+)"
@@ -932,24 +939,70 @@ limit_row() {
 }
 
 # 下部欄を組み立てる。FOOTER_FRAME に描画文字列、footer_rows に使う行数を入れる
+
+# WEB サーバーの状態ファイルを読み、状態(ON/OFF・ポート・閲覧のみか)が変わったら 0、変わらなければ 1 を返す。
+# fork しない(JSON は json_field の正規表現で読み、pid の生存は kill -0)ので毎 tick 呼んでよい
+read_web_state() {
+  local on=0 port="" ro="" json pid
+  if [ -r "$WEB_STATE_FILE" ]; then
+    json=$(<"$WEB_STATE_FILE")
+    json_field "$json" pid
+    pid=$REPLY
+    json_field "$json" port
+    port=$REPLY
+    json_field "$json" readOnly
+    ro=$REPLY
+    [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && on=1
+  fi
+  ((on)) || { port=""; ro=""; }
+  [ "$on|$port|$ro" = "$WEB_ON|$WEB_PORT|$WEB_RO" ] && return 1
+  WEB_ON=$on
+  WEB_PORT=$port
+  WEB_RO=$ro
+  return 0
+}
+
+# 下部欄: レートリミット(USAGE。データがあるときだけ)と、最下行の WEB 欄(スマホ用サーバーの ON/OFF)
 build_footer() {
-  local top fill
+  local top fill usage_rows=0 web plain
   FOOTER_FRAME=""
   footer_rows=0
-  [ -z "$LIM_5H_PCT" ] && return 0
   ((term_h < FOOTER_MIN_TERM_H)) && return 0
 
-  footer_rows=2
-  [ -n "$LIM_1W_PCT" ] && footer_rows=3
-  FOOTER_RLEN=0
-  [ -n "$LIM_5H_RESET" ] && FOOTER_RLEN=$((2 + ${#LIM_5H_RESET}))
-  [ -n "$LIM_1W_PCT" ] && [ -n "$LIM_1W_RESET" ] && ((2 + ${#LIM_1W_RESET} > FOOTER_RLEN)) && FOOTER_RLEN=$((2 + ${#LIM_1W_RESET}))
+  if [ -n "$LIM_5H_PCT" ]; then
+    usage_rows=2
+    [ -n "$LIM_1W_PCT" ] && usage_rows=3
+  fi
+  footer_rows=$((usage_rows + 1))
   top=$((term_h - footer_rows + 1))
 
-  printf -v fill '%*s' $((width - 1 - 2 - 7)) ''
-  FOOTER_FRAME+="${ESC}[${top};1H${C_RULE}──${C_GROUP}${BOLD_ON} USAGE ${BOLD_OFF}${C_RULE}${fill// /─}${ESC}[K${C_RESET}"
-  limit_row $((top + 1)) 5h "$LIM_5H_PCT" "$LIM_5H_RESET"
-  [ -n "$LIM_1W_PCT" ] && limit_row $((top + 2)) 1w "$LIM_1W_PCT" "$LIM_1W_RESET"
+  if ((usage_rows > 0)); then
+    FOOTER_RLEN=0
+    [ -n "$LIM_5H_RESET" ] && FOOTER_RLEN=$((2 + ${#LIM_5H_RESET}))
+    [ -n "$LIM_1W_PCT" ] && [ -n "$LIM_1W_RESET" ] && ((2 + ${#LIM_1W_RESET} > FOOTER_RLEN)) && FOOTER_RLEN=$((2 + ${#LIM_1W_RESET}))
+    printf -v fill '%*s' $((width - 1 - 2 - 7)) ''
+    FOOTER_FRAME+="${ESC}[${top};1H${C_RULE}──${C_GROUP}${BOLD_ON} USAGE ${BOLD_OFF}${C_RULE}${fill// /─}${ESC}[K${C_RESET}"
+    limit_row $((top + 1)) 5h "$LIM_5H_PCT" "$LIM_5H_RESET"
+    [ -n "$LIM_1W_PCT" ] && limit_row $((top + 2)) 1w "$LIM_1W_PCT" "$LIM_1W_RESET"
+  fi
+
+  if ((WEB_ON)); then
+    # 幅に収まる範囲で、操作ヒント(w stop = 8 桁、W copy = 7 桁)を足す。行の折り返しで下部欄が崩れないようにする
+    web="${C_DONE}●${C_TITLE_ROW} WEB ${C_DONE}ON${C_DIM} :${WEB_PORT}"
+    plain=" ● WEB ON :${WEB_PORT}"
+    if [ "$WEB_RO" = true ]; then
+      web+=" ro"
+      plain+=" ro"
+    fi
+    if ((${#plain} + 8 <= width - 1)); then
+      web+="  ${C_ACTIVE}w${C_DIM} stop"
+      plain+="  w stop"
+    fi
+    ((${#plain} + 7 <= width - 1)) && web+=" ${C_ACTIVE}W${C_DIM} copy"
+  else
+    web="${C_DIM}○ WEB off  ${C_ACTIVE}w${C_DIM} start"
+  fi
+  FOOTER_FRAME+="${ESC}[${term_h};1H ${web}${ESC}[K${C_RESET}"
 }
 
 # FIT に「top 番目から表示できる Agent 数」を入れる。
@@ -1283,6 +1336,7 @@ COCKPIT=0
 COCKPIT_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-cockpit"
 RESTART_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-restart"
 NEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-new"
+WEB_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-web-toggle"
 # tmux-agent-new が通知してきた「作ったばかりの pane」。Agent として検出されるまで探す秒数と合わせて持つ
 PENDING_ID=""
 PENDING_UNTIL=0
@@ -1470,6 +1524,8 @@ read_key() {
     r) KEY=refresh ;;
     R) KEY=restart ;;
     n) KEY=new ;;
+    w) KEY=web_toggle ;;
+    W) KEY=web_copy ;;
     q) KEY=quit ;;
     p | " ") KEY=preview ;;
     # l / h も Enter と同じ(cockpit では右の枠へフォーカス、通常は Agent へ移動)
@@ -1615,6 +1671,9 @@ while :; do
     need_render=1
   fi
 
+  # WEB 欄の ON/OFF が変わったときだけ再描画する(w で入り切りした直後も、収集(2 秒ごと)を待たずに反映される)
+  read_web_state && need_render=1
+
   if ((need_render)); then
     render
     need_render=0
@@ -1706,6 +1765,14 @@ while :; do
       ;;
     new)
       new_agent_menu
+      ;;
+    # スマホ用 Web サーバーの入り切り / URL のコピー。起動の待ち(最大 5 秒)で sidebar を止めないよう、裏で実行する。
+    # 状態は毎 tick の read_web_state が拾うので、ON/OFF の表示は 1 秒ほどで変わる
+    web_toggle)
+      "$WEB_BIN" toggle --notify >/dev/null 2>&1 &
+      ;;
+    web_copy)
+      "$WEB_BIN" copy --notify >/dev/null 2>&1 &
       ;;
     quit)
       # cockpit の sidebar では、q で cockpit を閉じる(Ctrl-C と同じ終了処理: Agent を元へ戻し、交換用の枠も消して window ごと閉じる)。
