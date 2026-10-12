@@ -63,6 +63,10 @@ CLAUDE_CACHE_FILE="${AGENT_SIDEBAR_CLAUDE_CACHE:-/tmp/tmux-agent-sidebar-claude2
 SESSIONS_DIR="${AGENT_SIDEBAR_SESSIONS_DIR:-$HOME/.claude/sessions}"
 # statusline.sh が書き出す 5h/1w の使用率とリセット時刻（tmux-rate-limits も同じファイルを読む）
 RATE_LIMIT_FILE="${AGENT_SIDEBAR_RATE_LIMITS:-/tmp/claude-rate-limits.json}"
+# fetch-usage-credits.sh が書く usage credits（今月の支出 / 上限）。取得は statusline.sh が TTL 切れのときに裏で起動する
+CREDITS_FILE="${AGENT_SIDEBAR_CREDITS:-/tmp/claude-credits.json}"
+# 取得が止まったとき、この秒数を超えた値には経過時間を添える
+CREDITS_STALE_SEC=900
 GIT_TTL=10
 # トランスクリプトから拾った ai-title のキャッシュ("sessionId|title" の行)。形式は refresh_title_cache を参照
 TITLE_CACHE_FILE="${AGENT_SIDEBAR_TITLE_CACHE:-/tmp/tmux-agent-sidebar-titles.txt}"
@@ -839,6 +843,12 @@ LIM_5H_PCT=""
 LIM_5H_RESET=""
 LIM_1W_PCT=""
 LIM_1W_RESET=""
+# usage credits（従量課金・席の枠を超えた分の支出）。CRED_USED が空なら出さない
+CRED_USED=""
+CRED_LIMIT=""
+CRED_PCT=""
+CRED_CUR="USD"
+CRED_AGE=""
 # 下部欄を出すのに必要な最小の端末高さ(これ未満では Agent 一覧を優先して出さない)
 FOOTER_MIN_TERM_H=14
 
@@ -883,25 +893,89 @@ fmt_reset_in() {
   fi
 }
 
+# 1 つの窓（5h / 1w）の使用率とリセットまでの残りを LIM_WIN_PCT / LIM_WIN_RESET に入れる: read_limit_window <json> <使用率のキー> <リセットのキー>
+# リセット時刻を過ぎた窓は、その後の使用率が分からない古い値なので空にする。
+# 契約を替えるなどで statusline.sh が書かなくなったファイルの値が、出続けないようにするため
+read_limit_window() {
+  local pct
+  LIM_WIN_PCT=""; LIM_WIN_RESET=""
+  json_field "$1" "$2"
+  [ -z "$REPLY" ] && return 0
+  pct=$REPLY
+  json_field "$1" "$3"
+  fmt_reset_in "$REPLY"
+  [ "$REPLY" = now ] && return 0
+  printf -v LIM_WIN_PCT '%.0f' "$pct" 2>/dev/null || LIM_WIN_PCT=0
+  LIM_WIN_RESET=$REPLY
+}
+
 read_limits() {
   local json
   LIM_5H_PCT=""; LIM_5H_RESET=""; LIM_1W_PCT=""; LIM_1W_RESET=""
   [ -r "$RATE_LIMIT_FILE" ] || return 0
   json=$(<"$RATE_LIMIT_FILE") || return 0
 
-  json_field "$json" five_hour_pct
-  [ -z "$REPLY" ] && return 0
-  printf -v LIM_5H_PCT '%.0f' "$REPLY" 2>/dev/null || LIM_5H_PCT=0
-  json_field "$json" five_hour_resets
-  fmt_reset_in "$REPLY"
-  LIM_5H_RESET=$REPLY
+  read_limit_window "$json" five_hour_pct five_hour_resets
+  LIM_5H_PCT=$LIM_WIN_PCT
+  LIM_5H_RESET=$LIM_WIN_RESET
+  read_limit_window "$json" seven_day_pct seven_day_resets
+  LIM_1W_PCT=$LIM_WIN_PCT
+  LIM_1W_RESET=$LIM_WIN_RESET
+}
 
-  json_field "$json" seven_day_pct
+# fmt_money <数値> <通貨> <whole>: 通貨記号つき・桁区切りの金額を REPLY に入れる（fork しない）。
+# whole=1 なら端数が 00 のとき小数を省く（上限の $1,300 用）。USD 以外は記号の代わりに通貨コードを付ける
+fmt_money() {
+  local n=$1 cur=$2 whole=$3 s int frac out="" sym
+  printf -v s '%.2f' "$n" 2>/dev/null || s=0.00
+  int=${s%.*}
+  frac=${s#*.}
+  while ((${#int} > 3)); do
+    out=",${int: -3}$out"
+    int=${int%???}
+  done
+  out=$int$out
+  if [ "$whole" != 1 ] || [ "$frac" != 00 ]; then
+    out+=".$frac"
+  fi
+  if [ "$cur" = USD ]; then sym='$'; else sym="$cur "; fi
+  REPLY="$sym$out"
+}
+
+# 経過秒を "12m" / "3h" / "2d" にして REPLY に入れる
+fmt_age() {
+  local sec=$1
+  if ((sec >= 86400)); then REPLY="$((sec / 86400))d"
+  elif ((sec >= 3600)); then REPLY="$((sec / 3600))h"
+  else REPLY="$((sec / 60))m"; fi
+}
+
+# usage credits を読む。無効（is_enabled が false）・読めないときは CRED_USED を空にして出さない。
+# 値は fetch-usage-credits.sh が通貨単位に直して書く（最小単位の変換は取得側）
+read_credits() {
+  local json age
+  CRED_USED=""; CRED_LIMIT=""; CRED_PCT=""; CRED_CUR="USD"; CRED_AGE=""
+  [ -r "$CREDITS_FILE" ] || return 0
+  json=$(<"$CREDITS_FILE") || return 0
+
+  json_field "$json" enabled
+  [ "$REPLY" = true ] || return 0
+  json_field "$json" used
+  [ -z "$REPLY" ] && return 0
+  CRED_USED=$REPLY
+  json_field "$json" limit
+  CRED_LIMIT=$REPLY
+  json_field "$json" percent
+  [ -n "$REPLY" ] && { printf -v CRED_PCT '%.0f' "$REPLY" 2>/dev/null || CRED_PCT=""; }
+  json_field "$json" currency
+  [ -n "$REPLY" ] && CRED_CUR=$REPLY
+  json_field "$json" fetched_at
   if [ -n "$REPLY" ]; then
-    printf -v LIM_1W_PCT '%.0f' "$REPLY" 2>/dev/null || LIM_1W_PCT=0
-    json_field "$json" seven_day_resets
-    fmt_reset_in "$REPLY"
-    LIM_1W_RESET=$REPLY
+    age=$(($(date +%s) - ${REPLY%.*}))
+    if ((age >= CREDITS_STALE_SEC)); then
+      fmt_age "$age"
+      CRED_AGE=$REPLY
+    fi
   fi
 }
 
@@ -938,6 +1012,41 @@ limit_row() {
   FOOTER_FRAME+="${ESC}[${at};1H ${C_DIM}${label}${FG_DEFAULT} ${color}${filled_str// /█}${C_RULE}${empty_str// /░}${FG_DEFAULT} ${color}${pct_str}${C_DIM}${rs}${FG_DEFAULT}${ESC}[K${C_RESET}"
 }
 
+# credits_row <行番号>: "💳 $29.84 / $1,300  2%  3h" を FOOTER_FRAME に積む。
+# 幅に収まる範囲で、金額 → 上限 → 使用率 → 古さ(取得が止まっているとき)の順に足す。
+# 色は使用率で limit_color と同じ段階に変える（上限なしは使用率が無いので低い段階の色）
+credits_row() {
+  local at=$1 used limit color body plain_len piece
+  fmt_money "$CRED_USED" "$CRED_CUR" 0
+  used=$REPLY
+  limit_color "${CRED_PCT:-0}"
+  color=$REPLY
+  body="${color}${used}"
+  plain_len=$((4 + ${#used}))   # 空白1 + ラベル(💳=2桁) + 空白1 + 金額
+
+  if [ -n "$CRED_LIMIT" ]; then
+    fmt_money "$CRED_LIMIT" "$CRED_CUR" 1
+    limit=$REPLY
+    piece=" / $limit"
+    if ((plain_len + ${#piece} <= width - 1)); then
+      body+="${C_DIM}${piece}"
+      plain_len=$((plain_len + ${#piece}))
+    fi
+  fi
+  if [ -n "$CRED_PCT" ]; then
+    printf -v piece '%4s%%' "$CRED_PCT"
+    if ((plain_len + ${#piece} <= width - 1)); then
+      body+="${color}${piece}"
+      plain_len=$((plain_len + ${#piece}))
+    fi
+  fi
+  if [ -n "$CRED_AGE" ]; then
+    piece="  $CRED_AGE"
+    ((plain_len + ${#piece} <= width - 1)) && body+="${C_DIM}${piece}"
+  fi
+  FOOTER_FRAME+="${ESC}[${at};1H ${FG_DEFAULT}💳 ${body}${FG_DEFAULT}${ESC}[K${C_RESET}"
+}
+
 # 下部欄を組み立てる。FOOTER_FRAME に描画文字列、footer_rows に使う行数を入れる
 
 # WEB サーバーの状態ファイルを読み、状態(ON/OFF・ポート・閲覧のみか)が変わったら 0、変わらなければ 1 を返す。
@@ -969,21 +1078,31 @@ build_footer() {
   footer_rows=0
   ((term_h < FOOTER_MIN_TERM_H)) && return 0
 
-  if [ -n "$LIM_5H_PCT" ]; then
-    usage_rows=2
-    [ -n "$LIM_1W_PCT" ] && usage_rows=3
-  fi
+  # 行は、データがあるものだけ並べる（5h / 1w は rate_limits が届くサブスク、💳 は usage credits がある従量課金）。
+  # 先頭の見出し(USAGE)は、行が 1 つでもあれば 1 行足す
+  [ -n "$LIM_5H_PCT" ] && usage_rows=$((usage_rows + 1))
+  [ -n "$LIM_1W_PCT" ] && usage_rows=$((usage_rows + 1))
+  [ -n "$CRED_USED" ] && usage_rows=$((usage_rows + 1))
+  ((usage_rows > 0)) && usage_rows=$((usage_rows + 1))
   footer_rows=$((usage_rows + 1))
   top=$((term_h - footer_rows + 1))
 
   if ((usage_rows > 0)); then
+    local row=$((top + 1))
     FOOTER_RLEN=0
-    [ -n "$LIM_5H_RESET" ] && FOOTER_RLEN=$((2 + ${#LIM_5H_RESET}))
+    [ -n "$LIM_5H_PCT" ] && [ -n "$LIM_5H_RESET" ] && FOOTER_RLEN=$((2 + ${#LIM_5H_RESET}))
     [ -n "$LIM_1W_PCT" ] && [ -n "$LIM_1W_RESET" ] && ((2 + ${#LIM_1W_RESET} > FOOTER_RLEN)) && FOOTER_RLEN=$((2 + ${#LIM_1W_RESET}))
     printf -v fill '%*s' $((width - 1 - 2 - 7)) ''
     FOOTER_FRAME+="${ESC}[${top};1H${C_RULE}──${C_GROUP}${BOLD_ON} USAGE ${BOLD_OFF}${C_RULE}${fill// /─}${ESC}[K${C_RESET}"
-    limit_row $((top + 1)) 5h "$LIM_5H_PCT" "$LIM_5H_RESET"
-    [ -n "$LIM_1W_PCT" ] && limit_row $((top + 2)) 1w "$LIM_1W_PCT" "$LIM_1W_RESET"
+    if [ -n "$LIM_5H_PCT" ]; then
+      limit_row "$row" 5h "$LIM_5H_PCT" "$LIM_5H_RESET"
+      row=$((row + 1))
+    fi
+    if [ -n "$LIM_1W_PCT" ]; then
+      limit_row "$row" 1w "$LIM_1W_PCT" "$LIM_1W_RESET"
+      row=$((row + 1))
+    fi
+    [ -n "$CRED_USED" ] && credits_row "$row"
   fi
 
   if ((WEB_ON)); then
@@ -1637,6 +1756,7 @@ while :; do
     fi
     [ -n "$PENDING_ID" ] && select_pending_agent
     read_limits
+    read_credits
     # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる。
     # cockpit では、枠に入っていた Agent が終了しただけのことがあるので、交換用の枠を戻してから判断する
     if [ "$MAIN_PANES" = "0" ]; then
