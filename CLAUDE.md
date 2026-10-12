@@ -192,6 +192,10 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     さらにカードの右端の縁は `ESC[row;colH` で桁を指定して描くので、幅の見積もりがずれても縁の位置は動かない
   - 状態に応じてカードの背景に色味を付ける（WAITING=暗い赤、DONE=強い緑、IDLE=暗い緑。選択中は一段明るい）
   - 下部に固定の `── USAGE ──` 欄で Claude Code の 5h / 1w レートリミット使用率（バー + % + リセットまでの残り時間。色は `tmux-rate-limits` と同じ段階で 80% 以上は赤）を表示。元データは `statusline.sh` が書く `/tmp/claude-rate-limits.json`。端末の高さが 14 未満、またはファイルが無いときは出さない
+  - **リセット時刻を過ぎた窓は出さない**（その後の使用率が分からない古い値のため。契約を替えて `statusline.sh` が書かなくなったファイルの値が、出続けないようにする）。5h だけ過ぎていれば 1w だけ出す
+  - **従量課金（usage credits）の行**: データがあれば `💳 $29.84 / $1,300   2%` を 5h / 1w の下に 1 行足す（`💳` は絵文字で 2 桁幅なので、5h / 1w のラベルと列がそろう。StatusLine の 💰 はセッションの推定コストなので、混ざらないよう別の絵文字にした）。サブスクなら 5h / 1w、従量課金なら 💳、両方のデータがあれば全部出る（アカウントごとにデータの有無で決まり、契約の判定はしない）。
+    元データは `fetch-usage-credits.sh` が書く `/tmp/claude-credits.json`（`AGENT_SIDEBAR_CREDITS` で変更）。使用率で色が変わる（`limit_color` と同じ段階）。上限なしなら支出だけ。幅に収まる範囲で 金額 → 上限 → 使用率 → 古さ の順に出す。
+    取得が 15 分以上止まっている値には経過時間（`3h` など）を添える。`is_enabled` が false なら出さない。取得は `statusline.sh` が TTL 切れのときに裏で起動する（sidebar は読むだけ）
   - **種別アイコン（画像）** `@agent_sidebar_type_icon`: `text`（既定。project 名の右に `Claude` / `Codex` の文字）| `image`（project 名の左に 2 桁 × 1 行の画像。project 名の幅が増える）
     - 画像は `tmux/assets/agent-icons/{claude,codex}.png`（出所は同ディレクトリの `NOTICE.md`。Simple Icons の SVG を色付け・PNG 化したもの）
     - Kitty graphics protocol の **Unicode placeholders** を使う: 画像データを tmux のパススルー（`ESC P tmux ; … ESC \`）で端末へ一度登録し、
@@ -310,7 +314,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 - `w`（sidebar）で起動すると、**`.local` の URL（`<scheme>://<Mac の名前>.local:8765/#token=…`）がクリップボードに入る**。`.local` が引けない端末用の IP の URL は、端末に出る（状態ファイルの `ipUrl`）
 - `--no-tls` で HTTP だけにする。HTTP のままだと、トークンと Cookie が LAN で平文になる（信頼できる自宅の Wi-Fi でだけ使う）
 
-**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
+**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
 入り切りスクリプトのテストは、`AGENT_WEB_CLIP_CMD`（コピー先のコマンド）を偽物にして、本物のクリップボードを書き換えない。`jq` が必要）、
 `cd tmux/tests && node --test`（`assets/agent-web/ansi.js` の ANSI 変換）。
 環境変数 `TMUX_AGENT_WEB_SOCKET`（tmux のソケットパス）はテスト用。
@@ -399,6 +403,14 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 
 **scripts/**: 各種スクリプト
 - `statusline.sh`: カスタムステータスライン（会話タイトル、モデル + effort、コンテキスト使用量、プロンプトキャッシュ状態と cold 時の再キャッシュ量、推定コスト、支出上限、PR とレビュー状態、処理時間、バージョン、レートリミット警告を表示）
+- `fetch-usage-credits.sh`: usage credits（`/usage` の `$28.49 / $1,300.00`）を取得して `/tmp/claude-credits.json` へ書く。`statusline.sh` が TTL（既定 300 秒）切れのときだけ裏で起動する（StatusLine には表示しない。アカウント単位の値なので、5h / 1w と同じく tmux sidebar の USAGE 欄に `💳 $29.84 / $1,300   2%` と出す。「Agent Sidebar」参照）
+  - 取得は `claude -p --input-format stream-json --output-format stream-json --verbose` の標準入力へ `get_usage` の control_request を 1 つ送る（Claude Code 自身のログインを使うのでトークンは扱わない。応答の `total_api_duration_ms` が 0 で、モデルは呼ばれない。実機で約 1.3 秒）
+  - ⚠️ **非公式**: Agent SDK の `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET` と同じ経路で、公式に「変更されうる」実験的 API。応答の形が変わったら取得失敗として扱い、表示しない
+  - 金額は `spend.used.amount_minor` を `exponent` で通貨単位に直す（無ければ `extra_usage.used_credits` を `decimal_places` で）。`2842` は `$28.42`。上限なしなら支出だけ表示する
+  - 取得に失敗しても前回の値と `fetched_at` を消さない（0 円と取り違えない）。15 分以上古い値には `(N分前)` を添える。失敗後も TTL の間は再試行しない（`.attempt`）。重複取得は `.lock`（ディレクトリ）で防ぐ
+  - 使用率の警告色は gateway の支出上限と同じ閾値（`SPEND_WARN_PCT` / `SPEND_ALERT_PCT`）。Team / Enterprise の席の allowance 内の利用はドル建てでは出ない（超えた分だけが credits）
+  - 環境変数: `CLAUDE_CREDITS_CACHE` / `CLAUDE_CREDITS_CLAUDE_BIN` / `CLAUDE_CREDITS_TTL` / `CLAUDE_CREDITS_FETCH_CMD`（statusline 側の起動コマンド）
+  - テスト（偽の claude を使うので実際の API は呼ばない）: `cd claude/scripts/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`
 - `extract-title.sh`: 会話タイトル抽出（ルールベース）。トランスクリプトから最初のユーザーメッセージを抽出して 30 文字のタイトルを生成。キャッシュ機構付き
 - `generate-title.sh`: 会話タイトル生成（AI 生成）。codex CLI で会話全体を要約してタイトルを作成。失敗時は extract-title.sh にフォールバック
 - `translate-title.sh`: プラン承認で付く英語のハイフンつなぎのセッション名（例: `eve-account-takeover-redesign`）を codex で日本語に訳す（statusline から呼ぶ）
