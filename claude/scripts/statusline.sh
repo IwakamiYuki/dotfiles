@@ -32,6 +32,10 @@ COST_ALERT_USD=20
 # 支出上限（spend limit）を警告色（オレンジ / 赤）で表示する使用率（%）
 SPEND_WARN_PCT=60
 SPEND_ALERT_PCT=80
+# usage credits（今月の支出）のキャッシュ。fetch-usage-credits.sh が書き、tmux の sidebar が読む
+CREDITS_CACHE="${CLAUDE_CREDITS_CACHE:-/tmp/claude-credits.json}"
+CREDITS_TTL="${CLAUDE_CREDITS_TTL:-300}"
+CREDITS_FETCH_CMD="${CLAUDE_CREDITS_FETCH_CMD:-$(dirname "${BASH_SOURCE[0]}")/fetch-usage-credits.sh}"
 
 # 標準入力からClaude Codeのコンテキスト情報を取得
 input=$(cat)
@@ -254,6 +258,25 @@ build_spend_limit() {
     fi
 }
 
+file_mtime() {
+    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+}
+
+# usage credits の取得を裏で起動する（表示は tmux の sidebar の USAGE 欄。アカウント単位の値なので、レートリミットと同じくそちらへ置いた）。
+# 取得中の遅れで statusline を止めないため、待たずに切り離す。
+# キャッシュまたは直近の試行が TTL 内なら起動しない（取得側にも同じ判定があるが、プロセス起動を省く）
+refresh_credits() {
+    [ -n "$CLAUDE_CREDITS_FETCHING" ] && return
+    local now cache_mtime attempt_mtime
+    now=$(date +%s)
+    cache_mtime=$(file_mtime "$CREDITS_CACHE")
+    attempt_mtime=$(file_mtime "$CREDITS_CACHE.attempt")
+    [ -n "$cache_mtime" ] && [ $((now - cache_mtime)) -lt "$CREDITS_TTL" ] && return
+    [ -n "$attempt_mtime" ] && [ $((now - attempt_mtime)) -lt "$CREDITS_TTL" ] && return
+    "$CREDITS_FETCH_CMD" >/dev/null 2>&1 &
+    disown 2>/dev/null
+}
+
 # PR: GitLab の MR は "!番号"、GitHub の PR は "#番号"。レビュー状態は色で区別する
 build_pr() {
     [ -z "$pr_number" ] && return
@@ -311,6 +334,8 @@ duration_formatted=$(format_time $((${duration%.*} / 1000)))
 # 出力（1行表示）
 version_display=""
 [ -n "$version" ] && version_display=" | 📦 ${version}"
+
+refresh_credits
 
 printf "%s%s | %s%s%s%s%s | ⏱️ %s%s%s\n" \
     "$(build_title)" \
