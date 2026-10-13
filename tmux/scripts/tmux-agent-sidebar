@@ -1630,12 +1630,28 @@ select_pending_agent() {
   return 0
 }
 
+# 端末が消えると read が待たずに即失敗し、ループが CPU を使い切る(pane が閉じたのに残った sidebar が 99% で居座った)。
+# bash 3.2 は、タイムアウトも EOF も終了ステータスが 1 で区別できない。通常のタイムアウトは 1 秒に高々 2 回なので、
+# 同じ秒のうちに READ_FAIL_MAX 回を超えて失敗したら、端末が無いとみなして終了する
+READ_FAIL_MAX=20
+READ_FAIL_SEC=-1
+READ_FAIL_N=0
+note_read_failure() {
+  if [ "$SECONDS" = "$READ_FAIL_SEC" ]; then
+    ((++READ_FAIL_N > READ_FAIL_MAX)) && exit 0
+  else
+    READ_FAIL_SEC=$SECONDS
+    READ_FAIL_N=1
+  fi
+  return 0
+}
+
 # 入力を 1 件読み、KEY に up / down / enter / refresh / click / other を、
 # クリックなら CLICK_ROW に行番号を入れる。タイムアウト時は KEY が空になる
 read_key() {
   local c seq="" params b y final
   KEY=""
-  IFS= read -rsn1 -t "$TICK" c || return 0
+  IFS= read -rsn1 -t "$TICK" c || { note_read_failure; return 0; }
 
   case $c in
     j) KEY=down ;;
@@ -1685,6 +1701,12 @@ read_key() {
 }
 
 # --- メイン ---------------------------------------------------------------
+
+# 本体は関数に包む。bash はスクリプトを読み進めながら実行するので、起動中にファイルを書き換えると、
+# 壊れた位置から読み続けて暴走する(SIGTERM でも止まらないまま CPU を使い切った実例がある)。
+# 関数は定義全体を先に読み込むため、起動後に書き換えられても、動いているプロセスは影響を受けない
+# (インデントは差分を小さくするため、あえて付けていない)
+main() {
 
 SESSION_ID=$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}' 2>/dev/null) || exit 1
 CUR_SESS=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)
@@ -1909,3 +1931,8 @@ while :; do
       ;;
   esac
 done
+
+}
+
+# main と exit は必ず 1 行にする。別の行にすると、main から戻ったあとに「書き換え後のファイルの途中」を読んで暴走する
+main "$@"; exit $?

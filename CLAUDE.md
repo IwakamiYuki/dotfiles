@@ -216,6 +216,10 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - tmux-resurrect で復元すると、sidebar pane は空のシェル pane になる（`C-t b` を押す前に邪魔なら閉じる）
 - 既存 window へは自動追加しない（必要な window で `C-t b`）
 - 起動中のスクリプトを書き換えると bash が壊れた読み方をするため、スクリプトを更新したら sidebar は閉じて開き直す
+  - 本体を `main()` に包み、末尾を `main "$@"; exit $?`（**必ず 1 行**。別の行だと main から戻ったあとに書き換え後の内容を読んで暴走する）にしたので、**この版で起動した sidebar** は書き換えの影響を受けない。それ以前に起動したものは従来どおり開き直す
+  - 端末が消えて `read` が即失敗し続けると、ビジーループで CPU を使い切る（pane が閉じたのに残った sidebar が約 8 日間 99% で居座った実例がある。SIGTERM が効かず `kill -9` が要った）。bash 3.2 は `read -t` のタイムアウトも EOF も終了ステータス 1 で区別できないため、`note_read_failure` が「同じ秒に 20 回を超えて失敗したら終了」で検知する（通常のタイムアウトは 1 秒に高々 2 回）
+  - 取り残しの疑いがあるときは `ps -Ao pid,ppid,%cpu,etime,command -r | grep tmux-agent-sidebar` で、親が 1 で CPU が高いものを探す
+  - テスト: `test_agent_sidebar_usage.py` の `SidebarSurvivalTest`（tmux を使わない）
 
 ### Agent cockpit (tmux/scripts/tmux-agent-cockpit*)
 左に sidebar、右に「sidebar で選択した Agent の **本物の pane**」を出す専用 window。この window だけで、あらゆる window の Claude Code / Codex を確認・指示出しできる。

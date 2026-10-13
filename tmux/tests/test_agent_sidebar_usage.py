@@ -161,5 +161,39 @@ class SidebarUsageTest(unittest.TestCase):
             self.assertLessEqual(len(line), 32, line)
 
 
+class SidebarSurvivalTest(unittest.TestCase):
+    """pane が閉じたあとに sidebar が CPU 99% で居座った件の再発防止。tmux は使わない（普段の tmux に触れない）。"""
+
+    # read_key と同じ read の失敗処理(note_read_failure)だけを sidebar から切り出し、同じ形のループを回す
+    READ_LOOP = (
+        f'eval "$(sed -n \'/^READ_FAIL_MAX=/,/^READ_FAIL_N=/p;/^note_read_failure()/,/^}}/p\' {SIDEBAR})"\n'
+        'TICK=1\nwhile :; do IFS= read -rsn1 -t "$TICK" c || note_read_failure; done\n'
+    )
+
+    def test_端末が無くて_read_が即失敗し続けても_自分で終了する(self):
+        started = time.time()
+        try:
+            proc = subprocess.run(["bash", "-c", self.READ_LOOP], input=b"", capture_output=True, timeout=5)  # EOF = 端末が切れた状態
+        except subprocess.TimeoutExpired:
+            self.fail("5 秒たっても終了せず、ビジーループになっている")
+        self.assertEqual(proc.returncode, 0)
+        self.assertLess(time.time() - started, 3)
+
+    def test_通常の_1_秒タイムアウトでは_終了しない(self):
+        # 入力が来ない(stdin が開いたまま)通常の待機。read は 1 秒ごとに失敗するが、終了してはいけない
+        with subprocess.Popen(["sleep", "6"], stdout=subprocess.PIPE) as idle:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                subprocess.run(["bash", "-c", self.READ_LOOP], stdin=idle.stdout, capture_output=True, timeout=4)
+            idle.kill()
+
+    def test_本体は関数に包み_main_と_exit_を同じ行に置く(self):
+        # 起動中にファイルを書き換えられても暴走しないための形。main と exit が別の行だと、main から戻ったあとに
+        # 書き換え後の内容を途中から読んでしまう（実証済み）
+        with open(SIDEBAR) as f:
+            lines = [line.rstrip("\n") for line in f if line.strip()]
+        self.assertEqual(lines[-1], 'main "$@"; exit $?')
+        self.assertIn("main() {", lines)
+
+
 if __name__ == "__main__":
     unittest.main()
