@@ -5,7 +5,8 @@
       "Skill(create-skill)",
       "Skill(skill-creator)",
       "mcp__codex__codex-reply",
-      "Bash(bash ~/.claude/scripts/statusline.sh)"
+      "Bash(bash ~/.claude/scripts/statusline.sh)",
+      "Bash(tail *)"
     ],
     "deny": [],
     "ask": []
