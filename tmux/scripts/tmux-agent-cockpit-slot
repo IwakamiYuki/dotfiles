@@ -6,6 +6,8 @@
 #
 # 場所によって出すメッセージを変える:
 #   cockpit 内   : 「Agent を選ぶと、ここに表示される」
+#   cockpit 内で window option @agent_cockpit_view=daily のとき: Daily ダッシュボード（tmux-agent-daily の画面）。
+#                  Agent の pane の代わりに、同じ右の枠へ出す。数秒ごとに描き直す（ノートや作業が変わるため）
 #   それ以外の window: 「ここにいた Agent は cockpit に表示中」
 
 set -u
@@ -14,6 +16,8 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 unset LC_ALL
 export LC_CTYPE=en_US.UTF-8 LC_COLLATE=C
 
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+DAILY_REDRAW_SEC=10
 ESC=$'\033'
 DIM="${ESC}[38;5;245m"
 ORANGE="${ESC}[38;5;208m"
@@ -45,12 +49,38 @@ draw() {
   fi
 }
 
+# Daily ダッシュボード。画面の行数・幅に収めて描く（下の 1 行はキーのヒント）。操作は sidebar 側のキー（slot は入力を捨てる）
+draw_daily() {
+  local h w row=1 line out
+  read -r h w < <(stty size 2>/dev/null)
+  h=${h:-24}
+  w=${w:-80}
+  out=$("$BIN_DIR/tmux-agent-daily" --color always --width $((w - 2)) --height $((h - 2)) 2>&1)
+  printf '%s' "${ESC}[2J"
+  while IFS= read -r line; do
+    ((row > h - 2)) && break
+    printf '%s' "${ESC}[${row};2H${line}${RESET}"
+    row=$((row + 1))
+  done <<< "$out"
+  printf '%s' "${ESC}[${h};2H${DIM}d 戻る   o Obsidian で開く   c 作業の一覧をコピー${RESET}"
+}
+
 last=""
+last_daily=-999
 while :; do
-  here=$(tmux display-message -p -t "${TMUX_PANE:-}" '#{@agent_cockpit}' 2>/dev/null)
+  here=$(tmux display-message -p -t "${TMUX_PANE:-}" '#{@agent_cockpit}|#{@agent_cockpit_view}' 2>/dev/null)
+  view=${here#*|}
+  here=${here%%|*}
   size=$(stty size 2>/dev/null)
-  state="${here}|${size}"
-  if [ "$state" != "$last" ]; then
+  state="${here}|${view}|${size}"
+  if [ "$here" = 1 ] && [ "$view" = daily ]; then
+    # 状態・大きさが変わったとき、または DAILY_REDRAW_SEC 秒ごと
+    if [ "$state" != "$last" ] || ((SECONDS - last_daily >= DAILY_REDRAW_SEC)); then
+      draw_daily
+      last_daily=$SECONDS
+      last=$state
+    fi
+  elif [ "$state" != "$last" ]; then
     draw "$here"
     last=$state
   fi

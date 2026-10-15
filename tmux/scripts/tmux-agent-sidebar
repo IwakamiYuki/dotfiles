@@ -666,12 +666,17 @@ card_row() {
 # card_row が行末に置く文字列(通常は空)
 ROW_TAIL=""
 
+# 右の枠の中身が、選択中の Agent と合っていないか。cockpit で、作ったばかりの Agent を検出待ちの間と、Daily ダッシュボードを出している間。
+# このあいだは選択の表示(タブ・罫線)を出さない
+selection_detached() {
+  [ -n "$PENDING_ID" ] || [ "$DAILY_VIEW" = 1 ]
+}
+
 # 選択中のカードを橙の角丸罫線で囲むか。
 # 通常の sidebar: sidebar にフォーカスがあるとき(カーソル)。
 # cockpit: 右の枠にフォーカスがあるとき(sidebar にフォーカスがある間は、罫線ではなく橙の塗りつぶしのタブにする)
 box_cursor() {
-  # cockpit で、作ったばかりの Agent を検出待ちの間は、右の枠の中身と選択が合わないので選択の表示を出さない
-  [ -n "$PENDING_ID" ] && return 1
+  selection_detached && return 1
   if [ "$COCKPIT" = 1 ]; then
     [ "$FOCUSED" != 1 ]
   else
@@ -705,7 +710,7 @@ put_idle() {
   if [ "$i" = "$SEL_IDX" ]; then
     if box_cursor; then
       selected=1
-    elif [ "$COCKPIT" = 1 ] && [ -z "$PENDING_ID" ]; then
+    elif [ "$COCKPIT" = 1 ] && ! selection_detached; then
       tabbed=1
     fi
     [ "$COCKPIT" = 1 ] && arrow_n=208
@@ -772,7 +777,7 @@ put_agent() {
   if [ "$i" = "$SEL_IDX" ]; then
     if box_cursor; then
       selected=1
-    elif [ "$COCKPIT" = 1 ] && [ -z "$PENDING_ID" ]; then
+    elif [ "$COCKPIT" = 1 ] && ! selection_detached; then
       tabbed=1
     fi
     [ "$COCKPIT" = 1 ] && arrow_n=208
@@ -873,6 +878,26 @@ CRED_LAND_PCT=""
 FOOTER_MIN_TERM_H=14
 
 # スマホ用 Web サーバー(tmux-agent-web)の状態。tmux-agent-web が書く状態ファイル(JSON)の pid が生きているかを読む。
+# Daily 欄: 今日の Daily Note(Obsidian)の最終更新からの経過時間と、o で開く操作。USAGE 欄の上の 1 行に出す。
+# ディレクトリは AGENT_SIDEBAR_DAILY_DIR → tmux の @agent_sidebar_daily_dir → Obsidian の設定(tmux-agent-daily --print-dir)の順。
+# ファイル名は <dir>/YYYY-MM-DD.md。どれでも決まらなければ「o で開く」だけを出す(経過時間は出さない)。
+# 設定の解決と mtime の取得で fork するので、DAILY_REFRESH_SEC ごとにしか読まない
+DAILY_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-daily"
+DAILY_URL="obsidian://daily"
+DAILY_OPEN_CMD="${AGENT_SIDEBAR_OPEN_CMD:-open}"
+DAILY_REFRESH_SEC=30
+# 最終更新からの経過がこれを超えたら 黄 / 赤(USAGE 欄と同じ、緑 = 余裕 / 黄 = 注意 / 赤 = 警告)
+DAILY_WARN_SEC=7200
+DAILY_ALERT_SEC=10800
+# cockpit で、右の枠に Daily ダッシュボード(Agent の pane の代わり)を出しているか(0 / 1)。window option @agent_cockpit_view=daily と同じ。
+# 出している間は、右の枠と合わなくなる Agent の選択の表示(タブ・罫線)を出さない
+DAILY_VIEW=0
+DAILY_DIR_RESOLVED=""   # 解決した Daily Note のディレクトリ(c でコピーするとき tmux-agent-daily に渡す)
+DAILY_CLIP_CMD="${AGENT_SIDEBAR_CLIP_CMD:-pbcopy}"
+DAILY_STATE=off   # off(ディレクトリ未設定) | missing(今日のノートが無い) | ok
+DAILY_AGE=0       # ok のときの、最終更新からの経過秒
+DAILY_CHECKED_AT=-999
+
 # 入り切りは w(tmux-agent-web-toggle)。USAGE 欄の下の 1 行(WEB 欄)に出す
 WEB_STATE_FILE="${TMUX_AGENT_WEB_STATE:-${XDG_CACHE_HOME:-$HOME/.cache}/tmux-agent-web/state.json}"
 WEB_ON=0
@@ -1143,7 +1168,77 @@ credits_icons_row() {
   FOOTER_FRAME+="${ESC}[${at};1H    ${out}${ESC}[K${C_RESET}"
 }
 
+# daily_row <行番号>: "📝 Daily 4h00m  o open" を FOOTER_FRAME に積む。経過時間の色は DAILY_WARN_SEC / DAILY_ALERT_SEC で変わる。
+# cockpit では "d view"(右の枠にダッシュボードを出す)も足す。ダッシュボードを出している間は、橙の塗りつぶしのタブにして "d back" にする
+# (Agent の選択タブと同じ見せ方。選択の表示を出していない間、いま右の枠に何が出ているかをここで示す)。
+# 幅に収まらないヒントは省く(行の折り返しで下部欄が崩れないようにする)
+daily_row() {
+  local at=$1 color body body_w bg="" fg="$C_DIM" key=$C_ACTIVE hint="" hint_w=0
+  case $DAILY_STATE in
+    ok)
+      if ((DAILY_AGE >= 3600)); then
+        printf -v body '%dh%02dm' $((DAILY_AGE / 3600)) $((DAILY_AGE % 3600 / 60))
+      else
+        body="$((DAILY_AGE / 60))m"
+      fi
+      body_w=$((${#body} + 1))
+      if ((DAILY_AGE > DAILY_ALERT_SEC)); then color="${ESC}[38;5;196m"
+      elif ((DAILY_AGE > DAILY_WARN_SEC)); then color="${ESC}[38;5;220m"
+      else color="${ESC}[38;5;108m"
+      fi
+      body=" ${color}${body}"
+      ;;
+    missing)
+      body=" ${ESC}[38;5;196m未作成"
+      body_w=7   # 空白 + 日本語 3 文字(6 桁)
+      ;;
+    *)
+      body=""
+      body_w=0
+      ;;
+  esac
+  if [ "$DAILY_VIEW" = 1 ]; then
+    bg="${ESC}[48;5;130m"
+    fg="${ESC}[38;5;252m"
+    key="${ESC}[38;5;231m"
+  fi
+  # 先頭の空白 1 + 📝(2) + 空白 + Daily(5) = 9 桁。ヒントは、空白 2 + "o open"(6) = 8 桁、"d view" / "d back" も空白 2 + 6 桁 = 8 桁
+  if ((9 + body_w + 8 <= width - 1)); then
+    hint="  ${key}o${fg} open"
+    hint_w=8
+  fi
+  if [ "$COCKPIT" = 1 ] && ((9 + body_w + hint_w + 8 <= width - 1)); then
+    if [ "$DAILY_VIEW" = 1 ]; then hint+="  ${key}d${fg} back"; else hint+="  ${key}d${fg} view"; fi
+  fi
+  FOOTER_FRAME+="${ESC}[${at};1H${bg} ${FG_DEFAULT}📝 ${fg}Daily${body}${fg}${hint}${ESC}[K${C_RESET}"
+}
+
 # 下部欄を組み立てる。FOOTER_FRAME に描画文字列、footer_rows に使う行数を入れる
+
+# 今日の Daily Note の最終更新を読み、DAILY_STATE / DAILY_AGE に入れる。opt_daily_dir は収集の周期で tmux の option から読んだもの
+read_daily() {
+  local dir=${AGENT_SIDEBAR_DAILY_DIR:-$opt_daily_dir} today now mtime
+  ((SECONDS - DAILY_CHECKED_AT < DAILY_REFRESH_SEC)) && return 0
+  DAILY_CHECKED_AT=$SECONDS
+  # 指定が無ければ、Obsidian の設定(Daily Notes の folder)から求める。パスの解決は tmux-agent-daily に 1 か所だけ持つ
+  [ -n "$dir" ] || dir=$(AGENT_DAILY_NO_TMUX=1 "$DAILY_BIN" --print-dir 2>/dev/null)
+  DAILY_DIR_RESOLVED=$dir
+  if [ -z "$dir" ]; then
+    DAILY_STATE=off
+    return 0
+  fi
+  read -r today now < <(date '+%Y-%m-%d %s')
+  today=${AGENT_SIDEBAR_TODAY:-$today}
+  mtime=$(stat -f %m "${dir/#\~/$HOME}/$today.md" 2>/dev/null)
+  if [ -z "$mtime" ]; then
+    DAILY_STATE=missing
+    return 0
+  fi
+  DAILY_STATE=ok
+  DAILY_AGE=$((now - mtime))
+  ((DAILY_AGE < 0)) && DAILY_AGE=0
+  return 0
+}
 
 # WEB サーバーの状態ファイルを読み、状態(ON/OFF・ポート・閲覧のみか)が変わったら 0、変わらなければ 1 を返す。
 # fork しない(JSON は json_field の正規表現で読み、pid の生存は kill -0)ので毎 tick 呼んでよい
@@ -1181,8 +1276,10 @@ build_footer() {
   [ -n "$CRED_USED" ] && usage_rows=$((usage_rows + 1))
   [ -n "$CRED_CENTS" ] && usage_rows=$((usage_rows + 1))
   ((usage_rows > 0)) && usage_rows=$((usage_rows + 1))
-  footer_rows=$((usage_rows + 1))
+  footer_rows=$((usage_rows + 2))   # Daily 欄(先頭の 1 行) + USAGE 欄 + WEB 欄(最下行)
   top=$((term_h - footer_rows + 1))
+  daily_row "$top"
+  top=$((top + 1))
 
   if ((usage_rows > 0)); then
     local row=$((top + 1))
@@ -1574,7 +1671,24 @@ mark_active_agent() {  # $1 = アクティブになった Agent の pane_id(空�
 }
 
 # 選択中の Agent の pane を cockpit の右の枠へ入れる(今表示中のものは先に元へ戻る)
+# cockpit で、sidebar から外れた先(右の枠)の Agent を「いまアクティブ」にする。ダッシュボード中は Agent が居ないので、誰もアクティブにしない
+mark_active_cockpit_pane() {
+  if [ "$DAILY_VIEW" = 1 ]; then
+    mark_active_agent ""
+  else
+    mark_active_agent "${cockpit_shown:-${AG_ID[SEL_IDX]:-}}"
+  fi
+}
+
+# Daily ダッシュボードの表示を解除する(Agent は出さない。Agent を出すときは、続けて show が呼ばれる)
+leave_daily_view() {
+  [ "$DAILY_VIEW" = 1 ] || return 0
+  DAILY_VIEW=0
+  "$COCKPIT_BIN" view none >/dev/null 2>&1
+}
+
 cockpit_show_selected() {
+  leave_daily_view
   ((AG_N > 0)) || return 0
   "$COCKPIT_BIN" show "${AG_ID[SEL_IDX]}" >/dev/null 2>&1
   cockpit_shown=${AG_ID[SEL_IDX]}
@@ -1595,6 +1709,7 @@ help_lines() {
       "j k ↓ ↑|選択を移動して、右の枠に表示する" \
       "⏎ l h|右の枠へフォーカス(戻るのは C-t h)" \
       "click|その Agent を右の枠に表示する" \
+      "d|Daily を右の枠に出す / 戻す" \
       "q|cockpit を閉じる(Agent は元へ戻す)"
   else
     printf '%s\n' \
@@ -1602,7 +1717,8 @@ help_lines() {
       "wheel|選択を移動(peek は開かない)" \
       "⏎ l h|その Agent の pane へジャンプ" \
       "click|その Agent の pane へジャンプ" \
-      "p Space|pane をポップアップで peek"
+      "p Space|pane をポップアップで peek" \
+      "d|Daily をポップアップで出す"
   fi
   printf '%s\n' \
     "-" \
@@ -1610,6 +1726,8 @@ help_lines() {
     "f|Claude のセッションを複製(止めない)" \
     "R|Claude を再起動(--resume で入り直す)" \
     "r|即時更新" \
+    "o|Daily Note を Obsidian で開く" \
+    "c|作業の一覧を Markdown でコピー" \
     "-" \
     "C-c|sidebar を閉じる" \
     "?|このヘルプ"
@@ -1655,6 +1773,31 @@ help_text() {
 
 # ? : キー一覧をポップアップで出す。何かキーを押すと閉じる。ポップアップが閉じるまで戻らない(その間は sidebar の再描画も止まる)。
 # 表示は一時ファイルを cat するだけにする(ポップアップの中で sidebar 自身を動かすと、TMUX_PANE が無い等の前提が崩れるため)
+# 前回の Daily Note 更新以降の作業(Markdown の箇条書き)をクリップボードへコピーする。裏で実行する(Python の起動で sidebar を止めない)。
+# 作業が無いときは、クリップボードを書き換えない。結果は display-message に出す
+copy_daily_work() {
+  local dir=$DAILY_DIR_RESOLVED
+  (
+    out=$(if [ -n "$dir" ]; then "$DAILY_BIN" --dir "$dir" --markdown; else AGENT_DAILY_NO_TMUX=1 "$DAILY_BIN" --markdown; fi 2>/dev/null)
+    if [ -z "$out" ]; then
+      tmux display-message "Daily: 前回の更新以降の作業はありません" 2>/dev/null
+    else
+      printf '%s\n' "$out" | $DAILY_CLIP_CMD
+      tmux display-message "Daily: 作業 $(printf '%s\n' "$out" | grep -c $'^\t') 件をコピーしました(ノートに貼れます)" 2>/dev/null
+    fi
+  ) >/dev/null 2>&1 &
+}
+
+# 通常の sidebar の d: Daily ダッシュボードをポップアップで出す(何かキーを押すと閉じる)。cockpit では右の枠に出すので使わない
+show_daily_popup() {
+  local dir=$DAILY_DIR_RESOLVED
+  tmux display-popup -E -w 72 -h 26 -b rounded -S 'fg=colour208' -T " Daily " -t "$TMUX_PANE" \
+    "bash -c '\"\$0\" \${1:+--dir \"\$1\"} --color always --width 68 --height 22; printf \"\\n  any key: close\"; IFS= read -rsn1 _' '$DAILY_BIN' '$dir'" 2>/dev/null
+  last_collect=-999
+  size_dirty=1
+  need_render=1
+}
+
 show_help() {
   local file="/tmp/tmux-agent-sidebar-help-$$.txt" lines title
   help_text > "$file"
@@ -1866,6 +2009,9 @@ read_key() {
     R) KEY=restart ;;
     f) KEY=fork ;;
     n) KEY=new ;;
+    o) KEY=daily_open ;;
+    d) KEY=daily_view ;;
+    c) KEY=daily_copy ;;
     w) KEY=web_toggle ;;
     W) KEY=web_copy ;;
     q) KEY=quit ;;
@@ -1961,9 +2107,10 @@ CLICK_ROW=0
 while :; do
   if ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}' 2>/dev/null)
-    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane <<< "$opts"
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_dir}' 2>/dev/null)
+    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_dir <<< "$opts"
     [ "$opt_cockpit" = 1 ] && COCKPIT=1 || COCKPIT=0
+    [ "$COCKPIT" = 1 ] && [ "$opt_view" = daily ] && DAILY_VIEW=1 || DAILY_VIEW=0
     [ "$opt_scope" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
     [ -z "$AUTO_PREVIEW" ] && AUTO_PREVIEW=key
     apply_icon_style
@@ -1987,6 +2134,7 @@ while :; do
     [ -n "$PENDING_ID" ] && select_pending_agent
     read_limits
     read_credits
+    read_daily
     # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる。
     # cockpit では、枠に入っていた Agent が終了しただけのことがあるので、交換用の枠を戻してから判断する
     if [ "$MAIN_PANES" = "0" ]; then
@@ -2000,7 +2148,7 @@ while :; do
     fi
 
     # cockpit で、まだ何も枠に入っていなければ、選択中の Agent を入れる(開いた直後)
-    if [ "$COCKPIT" = 1 ] && [ -z "$cockpit_shown" ]; then
+    if [ "$COCKPIT" = 1 ] && [ -z "$cockpit_shown" ] && [ "$DAILY_VIEW" != 1 ]; then
       cockpit_show_selected
     fi
 
@@ -2071,16 +2219,19 @@ while :; do
       FOCUSED=0
       need_render=1
       # cockpit では、sidebar から外れた先は右の枠(表示中の Agent)
-      [ "$COCKPIT" = 1 ] && mark_active_agent "${cockpit_shown:-${AG_ID[SEL_IDX]:-}}"
+      [ "$COCKPIT" = 1 ] && mark_active_cockpit_pane
       last_collect=-999
       ;;
     enter)
-      if [ "$COCKPIT" = 1 ]; then
+      if [ "$COCKPIT" = 1 ] && [ "$DAILY_VIEW" = 1 ]; then
+        # ダッシュボード(Daily)を出している間の Enter は、Daily Note を開く(右の枠は操作する pane ではないため)
+        "$DAILY_OPEN_CMD" "$DAILY_URL" >/dev/null 2>&1 &
+      elif [ "$COCKPIT" = 1 ]; then
         # cockpit: 右の枠(Agent の pane)へフォーカスを移す。戻るのは prefix + h
         tmux select-pane -R -t "$TMUX_PANE" 2>/dev/null
         FOCUSED=0
         # 右の枠(表示中の Agent)がアクティブになった。収集を待たずにすぐ反映する
-        mark_active_agent "${cockpit_shown:-${AG_ID[SEL_IDX]:-}}"
+        mark_active_cockpit_pane
         render
         need_render=0
         last_collect=-999
@@ -2126,6 +2277,32 @@ while :; do
       ;;
     web_copy)
       "$WEB_BIN" copy --notify >/dev/null 2>&1 &
+      ;;
+    # Obsidian の Daily Note を開く(cron の通知の -open と同じ URL)。open の起動で sidebar を止めないよう、裏で実行する
+    daily_open)
+      "$DAILY_OPEN_CMD" "$DAILY_URL" >/dev/null 2>&1 &
+      ;;
+    # Daily ダッシュボード。cockpit では右の枠に出す / 戻す(Agent は元へ戻る。戻すときは選択中の Agent を出す)。通常の sidebar ではポップアップ
+    daily_view)
+      FOCUSED=1
+      if [ "$COCKPIT" != 1 ]; then
+        show_daily_popup
+      elif [ "$DAILY_VIEW" = 1 ]; then
+        render
+        need_render=0
+        cockpit_show_selected
+      else
+        DAILY_VIEW=1
+        cockpit_shown=""
+        mark_active_agent ""
+        render
+        need_render=0
+        "$COCKPIT_BIN" view daily >/dev/null 2>&1
+      fi
+      need_render=1
+      ;;
+    daily_copy)
+      copy_daily_work
       ;;
     quit)
       # cockpit の sidebar では、q で cockpit を閉じる(Ctrl-C と同じ終了処理: Agent を元へ戻し、交換用の枠も消して window ごと閉じる)。

@@ -14,10 +14,15 @@
 #   restore: Agent を元へ戻すだけ（slot は cockpit に残る）
 #   heal   : 戻し忘れ・Agent の終了で壊れた状態を直す（sidebar 起動時と、Agent が消えたときに呼ぶ）
 #
-# Usage: tmux-agent-cockpit open | show <pane_id> | restore | teardown | close | heal
+# Usage: tmux-agent-cockpit open | show <pane_id> | view <daily|none> | restore | teardown | close | heal
+#
+# view daily: 右の枠に Agent ではなく Daily ダッシュボード（tmux-agent-daily の画面）を出す。Agent を元へ戻してから、
+#   window option @agent_cockpit_view=daily を立てる。描くのは slot（Agent の pane は入れ替えない）。
+#   show で Agent を出すと解除される。view none でも解除できる（Agent は出さない）
 #
 # 状態は tmux の option に持つ:
 #   window @agent_cockpit=1 / @agent_cockpit_slot=<slot の pane_id> / @agent_cockpit_shown=<表示中の Agent の pane_id>
+#          / @agent_cockpit_view=<右の枠に出している Agent 以外の画面。daily のみ。Agent を出している間は空>
 #   pane   @agent_cockpit_slot_pane=1（slot）/ @agent_origin_widx, @agent_origin_wname, @agent_origin_pidx
 #          （表示中 Agent の元の window 番号・名前と pane 番号。sidebar が元の window の見出しの下に、元の並び順で出すために使う）
 
@@ -168,7 +173,7 @@ do_show() {
     { [ "$shown_ok" = 1 ] && [ "$slot_wid" != "$cock" ]; } || { do_show_slow "$target"; return; }
   fi
 
-  local args=()
+  local args=(set-option -wu -t "$cock" @agent_cockpit_view ';')
   if [ -n "$shown" ]; then
     args+=(swap-pane -d -s "$shown" -t "$slot" ';'
       set-option -pu -t "$shown" @agent_origin_widx ';'
@@ -195,6 +200,7 @@ do_show_slow() {
   shown=$(wopt "$cock" @agent_cockpit_shown)
   [ "$shown" = "$target" ] && return 0
   [ -n "$shown" ] && do_restore
+  tmux set-option -wu -t "$cock" @agent_cockpit_view 2>/dev/null
 
   ensure_slot "$cock" || return 1
   slot=$REPLY
@@ -212,6 +218,22 @@ do_show_slow() {
     clear_origin "$target"
     return 1
   fi
+}
+
+# 右の枠に Agent 以外の画面(daily)を出す / 閉じる(none)。出す前に、表示中の Agent を元へ戻す
+do_view() {
+  local cock
+  cock=$(find_cockpit)
+  [ -z "$cock" ] && { echo "cockpit window がありません（prefix + B で作成）" >&2; return 1; }
+  case ${1:-} in
+    daily)
+      do_restore
+      ensure_slot "$cock" || return 1
+      tmux set-option -w -t "$cock" @agent_cockpit_view daily
+      ;;
+    none) tmux set-option -wu -t "$cock" @agent_cockpit_view 2>/dev/null ;;
+    *) echo "Usage: $0 view <daily|none>" >&2; return 2 ;;
+  esac
 }
 
 do_open() {
@@ -258,9 +280,10 @@ do_close() {
 case "${1:-open}" in
   open) do_open ;;
   show) do_show "${2:?pane_id}" ;;
+  view) do_view "${2:-}" ;;
   restore) do_restore ;;
   teardown) do_teardown ;;
   close) do_close ;;
   heal) do_heal ;;
-  *) echo "Usage: $0 open | show <pane_id> | restore | teardown | close | heal" >&2; exit 2 ;;
+  *) echo "Usage: $0 open | show <pane_id> | view <daily|none> | restore | teardown | close | heal" >&2; exit 2 ;;
 esac

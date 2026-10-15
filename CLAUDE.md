@@ -158,6 +158,17 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     - 起動の直前に `tmux-agent-new` が、anchor がまだ空きシェルか確かめる（実行中のコマンドへ入力してしまわないため）。違えば何もしない
     - 見出しの件数と先頭行の `AGENTS` は Agent だけ数える（欄は数えない）。Agent が起動して欄がカードに変わっても、選択は pane_id で引き継ぐ（`@agent_new_pane` は使わない）
     - cockpit では、欄を選ぶと、その空きシェルの本物の pane が右の枠に入る。そこで `n` を押すと、枠の中のシェルで起動する
+- sidebar 上で `o` → Obsidian の Daily Note を開く（`open obsidian://daily`。以前 crontab から通知していた `-open` と同じ URL。通常の sidebar・cockpit のどちらでも効く）
+  - **Daily 欄**: USAGE 欄の上の 1 行に `📝 Daily 4h00m  o open` を出す。経過時間は「今日の Daily Note の最終更新（mtime）」からで、2 時間超で黄、3 時間超で赤（`DAILY_WARN_SEC` / `DAILY_ALERT_SEC`）。今日のノートが無ければ赤の `未作成`。端末の高さが 14 未満のときは USAGE 欄と同様に出さない。幅に収まらなければヒント（`o open`）を省く
+  - ノートのディレクトリは、環境変数 `AGENT_SIDEBAR_DAILY_DIR` → tmux の option `@agent_sidebar_daily_dir` → **Obsidian の設定**の順で決める。ふだんは何も設定しなくてよい: `~/Library/Application Support/obsidian/obsidian.json` で開いている vault（無ければ vault が 1 つのときその vault）の `.obsidian/daily-notes.json` の `folder` を使うので、プロジェクトが変わって Obsidian の Daily Notes の場所を直せば追従する。ファイル名は `<dir>/YYYY-MM-DD.md`。ファイル名の形式（`format`）が既定以外のときは推測せず、欄は `o` で開くだけになる（option で明示すれば使える）。パスの解決は `tmux-agent-daily --print-dir` に 1 か所だけ持つ（sidebar はそれを呼ぶ）
+  - 設定の解決と mtime（`stat -f %m`）で fork するので、30 秒に 1 回だけ（`DAILY_REFRESH_SEC`）。`AGENT_SIDEBAR_OPEN_CMD`（既定 `open`）はテスト用
+  - **Daily ダッシュボード**（`tmux-agent-daily` の画面）: 「前回の更新（ノートの mtime）以降に動いた Claude Code / Codex のセッション」をリポジトリごとに一覧し、ノートの「やったこと」の抜粋を添える。何を書くか思い出すための画面。時刻はセッションの最終更新（開始ではない）。同名のセッションは 1 行にまとめ、`codex exec`（statusline の翻訳用の非対話実行）は除く
+    - **`d`（cockpit）**: 右の枠の Agent を元へ戻して、ダッシュボードを出す（`tmux-agent-cockpit view daily`。window option `@agent_cockpit_view=daily`。描くのは slot で、10 秒ごとに描き直す。Agent の pane は入れ替えない）。もう一度 `d`、または `j` / `k`・クリックで Agent に戻る（`show` が解除する）。出している間は、右の枠と合わなくなる Agent の選択タブ・罫線を出さず（検出待ちの `PENDING` と同じ扱い。`selection_detached`）、Daily 欄が橙のタブ（背景 130）で `d back` になる。この間の `Enter` は Daily Note を開く（右の枠は操作する pane ではないため）
+    - **`d`（通常の sidebar）**: 同じ画面をポップアップで出す（何かキーを押すと閉じる）
+    - **`c`**: 前回の更新以降の作業を Markdown の箇条書き（リポジトリ → タブ字下げの作業名。ノートの `- mimi` と同じ形）でクリップボードへコピーして、`display-message` で件数を知らせる。作業が無いときはクリップボードを書き換えない。コピーコマンドは `AGENT_SIDEBAR_CLIP_CMD`（既定 `pbcopy`）
+    - ノートへは書き込まない（会話ログには機密が含まれうるうえ、vault は git で同期されるため。貼るのは人が確認してから）
+    - 画面が縦に収まらないときは、作業の一覧を古いリポジトリから省いて `… 他 N 件` にし、「やったこと」は 8 行で切る（`--height`。`c` のコピーは省かない）
+    - 単体でも使える: `tmux-agent-daily`（画面）/ `--markdown`（貼る形）/ `--print-dir`（ディレクトリの解決だけ）
 - sidebar 上で `w` → スマホ用 Web サーバー（`tmux-agent-web`、後述「Agent Web」）を **ON / OFF**。`W`（大文字）→ 起動中なら URL（トークンつき）をクリップボードへ（通常の sidebar・cockpit のどちらでも効く）
   - 最下行の **WEB 欄**に状態を出す（`○ WEB off  w start` / `● WEB ON :8765  w stop W copy`。閲覧のみのときは `ro`）。端末の高さが 14 未満のときは USAGE 欄と同様に出さない。幅に収まらないときはヒント（`W copy`）から省く
   - 実際の入り切りは `tmux-agent-web-toggle`（`R` と同じく、sidebar からは裏で `--notify` つきで呼ぶだけ。起動の待ちで sidebar を止めない）。結果は `display-message` に出る。ON にしたときは URL をクリップボードへコピーする
@@ -247,6 +258,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 **キー**:
 - `Ctrl-t B` → cockpit window を開く（あれば移動）。開くと、選択中の Agent が右の枠に入る
 - cockpit の sidebar で `j` / `k`（`↓` / `↑`、ホイール、クリック）→ 右の枠の Agent が切り替わる。`Enter` / `l` / `h` → 右の枠へフォーカス（戻るのは `Ctrl-t h`）
+- cockpit の sidebar で `d` → 右の枠に Daily ダッシュボードを出す / 戻す（詳細は「Agent Sidebar」の `o` の項）
 - `Ctrl-t &` → cockpit window では **先に Agent を元へ戻してから**閉じる（通常の window は従来どおり確認つき kill-window）
 - cockpit の sidebar で `q`（または `Ctrl-C`）→ 枠の Agent を元へ戻し、不要になった交換用の枠も消して、**cockpit window ごと閉じる**（通常の sidebar では `q` は何もしない。閉じるのは `Ctrl-C`）
 - 「いまアクティブな pane の Agent」(`▶`)は通常 2 秒ごとの収集で更新されるが、フォーカスが動く操作（Enter / フォーカスイベント）の直後は、動き先が分かっているので手元で先に反映してから収集をやり直す（約 30ms で変わる。以前は 1〜2 秒）
@@ -337,7 +349,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 - `w`（sidebar）で起動すると、**`.local` の URL（`<scheme>://<Mac の名前>.local:8765/#token=…`）がクリップボードに入る**。`.local` が引けない端末用の IP の URL は、端末に出る（状態ファイルの `ipUrl`）
 - `--no-tls` で HTTP だけにする。HTTP のままだと、トークンと Cookie が LAN で平文になる（信頼できる自宅の Wi-Fi でだけ使う）
 
-**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
+**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（`test_agent_daily.py` は Daily ダッシュボード、`test_agent_cockpit_daily.py` は cockpit の `view` と slot。sidebar のテストは `TMUX` を外さず、専用ソケットの別 tmux だけを見る。外すと sidebar が普段の tmux に問い合わせてしまう）（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
 入り切りスクリプトのテストは、`AGENT_WEB_CLIP_CMD`（コピー先のコマンド）を偽物にして、本物のクリップボードを書き換えない。`jq` が必要）、
 `cd tmux/tests && node --test`（`assets/agent-web/ansi.js` の ANSI 変換）。
 環境変数 `TMUX_AGENT_WEB_SOCKET`（tmux のソケットパス）はテスト用。
@@ -521,6 +533,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 │   ├── tmux-agent-cockpit-slot    # cockpit の右の枠に常駐する交換用 pane
 │   ├── tmux-agent-restart         # sidebar の R で呼ばれる Claude Code の再起動（終了 → --resume で入り直す）。--fork は f の複製（止めない）
 │   ├── tmux-agent-new             # sidebar の n で呼ばれる、リポジトリでの新規 pane + Claude / Codex の新規起動
+│   ├── tmux-agent-daily           # 前回の Daily Note 更新以降の Claude / Codex の作業を一覧（--markdown でノートに貼る形）
 │   ├── tmux-agent-web             # スマホのブラウザから Agent を確認・操作する Web サーバー（Python。画面は tmux/assets/agent-web/）
 │   ├── tmux-agent-web-toggle      # sidebar の w / W から呼ばれる、tmux-agent-web の入り切り・URL コピー
 │   ├── tmux-window-reorder        # C-t S の window 並び替えポップアップ

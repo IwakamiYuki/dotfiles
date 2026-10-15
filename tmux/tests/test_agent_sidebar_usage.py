@@ -58,10 +58,15 @@ class SidebarUsageTest(unittest.TestCase):
     def tmux(self, *args):
         return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True)
 
-    def render(self, limits=None, cred=None, today=None, colors=False):
+    def render(self, limits=None, cred=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False):
         """sidebar を起動して、描画が出そろった画面を返す。None のファイルは作らない。
         today: 「今日」の日付(YYYY-MM-DD)。着地予想の色が日付で変わるので、固定して確認する。
-        colors: True なら色の制御文字つき(capture-pane -e)で返す。"""
+        colors: True なら色の制御文字つき(capture-pane -e)で返す。
+        daily_dir: Daily Note のディレクトリ(AGENT_SIDEBAR_DAILY_DIR)。None なら未設定。
+        open_cmd: o キーで呼ぶコマンド(AGENT_SIDEBAR_OPEN_CMD)。実際の open は呼ばない。
+        obsidian_config: Obsidian の obsidian.json のパス(AGENT_DAILY_OBSIDIAN_CONFIG)。None なら存在しないパスにして、本物の設定を読まない。
+        extra_env: sidebar に足す環境変数({名前: 値})。
+        cockpit: True なら、描画のあとで window を cockpit にして(@agent_cockpit=1)、cockpit の欄(d のヒント)が出るまで待つ。"""
         rl_file = os.path.join(self.dir, "rate-limits.json")
         cr_file = os.path.join(self.dir, "credits.json")
         for path, data in ((rl_file, limits), (cr_file, cred)):
@@ -79,6 +84,9 @@ class SidebarUsageTest(unittest.TestCase):
                 f"AGENT_SIDEBAR_CLAUDE_CACHE={self.dir}/claude-cache",
                 f"AGENT_SIDEBAR_SESSIONS_DIR={self.dir}/sessions",
                 f"AGENT_SIDEBAR_TODAY={today}" if today else "AGENT_SIDEBAR_TODAY=",
+                f"AGENT_SIDEBAR_DAILY_DIR={daily_dir}" if daily_dir else "AGENT_SIDEBAR_DAILY_DIR=",
+                f"AGENT_SIDEBAR_OPEN_CMD={open_cmd}" if open_cmd else "AGENT_SIDEBAR_OPEN_CMD=true",
+                f"AGENT_DAILY_OBSIDIAN_CONFIG={obsidian_config or self.dir + '/no-obsidian.json'}",
                 f"TMUX_AGENT_WEB_STATE={self.dir}/no-web-state.json",  # 普段の WEB サーバーの状態を読まない
                 "bash",
                 SIDEBAR,
@@ -90,6 +98,10 @@ class SidebarUsageTest(unittest.TestCase):
             ["tmux", "-S", self.sock, "-f", "/dev/null", "new-session", "-d", "-s", "t", "-x", "60", "-y", "24", "-c", "/tmp"],
             check=True,
         )
+        # sidebar が呼ぶ tmux-agent-daily が、本物の ~/.claude や ~/.codex を読まないようにする
+        extra = {"AGENT_DAILY_CLAUDE_PROJECTS": self.dir + "/none-claude", "AGENT_DAILY_CODEX_SESSIONS": self.dir + "/none-codex"}
+        extra.update(extra_env or {})
+        env = env.replace("bash " + SIDEBAR, " ".join(f"{k}={v}" for k, v in extra.items()) + " bash " + SIDEBAR)
         self.tmux("split-window", "-d", "-f", "-h", "-b", "-l", "32", "-t", "t:0.0", env)
         # 最下行の WEB 欄は常に描かれるので、これが出れば 1 回目の描画が済んでいる
         deadline = time.time() + RENDER_TIMEOUT_SEC
@@ -98,9 +110,55 @@ class SidebarUsageTest(unittest.TestCase):
             flags = ["-e", "-p"] if colors else ["-p"]
             screen = self.tmux("capture-pane", *flags, "-t", "t:0.0").stdout
             if "WEB" in screen:
+                if cockpit:
+                    return self.become_cockpit(flags)
                 return screen
             time.sleep(0.2)
         self.fail(f"sidebar が描画されませんでした:\n{screen}")
+
+    def become_cockpit(self, flags):
+        """window を cockpit にして、sidebar が気づく(収集の周期。最大 2 秒)まで待つ。気づくと Daily 欄に d のヒントが出る。"""
+        self.tmux("set-option", "-w", "-t", "t:0", "@agent_cockpit", "1")
+        return self.wait_screen(lambda scr: "d view" in self.daily_row(scr), flags)
+
+    def wait_screen(self, predicate, flags=("-p",)):
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        screen = ""
+        while time.time() < deadline:
+            screen = self.tmux("capture-pane", *flags, "-t", "t:0.0").stdout
+            if predicate(screen):
+                return screen
+            time.sleep(0.2)
+        self.fail(f"期待した画面になりませんでした:\n{screen}")
+
+    def press(self, key):
+        self.tmux("send-keys", "-t", "t:0.0", key)
+
+    def view_option(self):
+        return self.tmux("show-options", "-wqv", "-t", "t:0", "@agent_cockpit_view").stdout.strip()
+
+    def wait_view(self, expected):
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline:
+            if self.view_option() == expected:
+                return
+            time.sleep(0.2)
+        self.fail(f"@agent_cockpit_view が {expected!r} になりませんでした(いま {self.view_option()!r})")
+
+    def daily_work(self, title="ダッシュボード用の作業", cwd="/w/myrepo"):
+        """今日のノートが 4 時間前の更新で、10 分前に動いた Claude のセッションが 1 つある状態を作る。extra_env を返す。"""
+        daily = self.daily_note(4 * 3600)
+        proj = os.path.join(self.dir, "claude", "p")
+        os.makedirs(proj, exist_ok=True)
+        path = os.path.join(proj, "s1.jsonl")
+        with open(path, "w") as f:
+            f.write(json.dumps({"type": "user", "cwd": cwd}) + "\n")
+            f.write(json.dumps({"type": "ai-title", "aiTitle": title}) + "\n")
+        os.utime(path, (time.time() - 600, time.time() - 600))
+        titles = os.path.join(self.dir, "titles-dir")
+        os.makedirs(titles, exist_ok=True)
+        return {"AGENT_SIDEBAR_DAILY_DIR": daily, "AGENT_DAILY_CLAUDE_PROJECTS": os.path.join(self.dir, "claude"),
+                "AGENT_DAILY_TITLE_DIR": titles}
 
     def test_credits_だけなら_今月の支出と上限と使用率を出す(self):
         screen = self.render(cred=credits())
@@ -298,6 +356,177 @@ class SidebarUsageTest(unittest.TestCase):
         # 3 時間前の値。予想なら赤(113%)だが、古い値で赤は出さず、使用率 46% の段階(黄)にする
         color = self.color_for("2026-10-13", used=600, percent=46.2, fetched_at=int(time.time()) - 3 * 3600)
         self.assertEqual(color, self.YELLOW)
+
+
+    # ---- Daily 欄: 今日の Daily Note の最終更新からの経過時間と、o で Obsidian を開く操作 ----
+
+    def daily_note(self, age_sec):
+        """今日の Daily Note を、age_sec 秒前に更新されたことにして作る。ディレクトリを返す。"""
+        d = os.path.join(self.dir, "daily")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, time.strftime("%Y-%m-%d") + ".md")
+        with open(path, "w") as f:
+            f.write("## やったこと\n")
+        mtime = time.time() - age_sec
+        os.utime(path, (mtime, mtime))
+        return d
+
+    def daily_row(self, screen):
+        return next((l for l in screen.splitlines() if "Daily" in l), "")
+
+    def test_daily_ディレクトリが未設定でも_開く操作だけの行を出す(self):
+        row = self.daily_row(self.render())
+        self.assertIn("📝 Daily", row)
+        self.assertIn("o open", row)
+
+    def test_daily_最終更新からの経過時間を出す(self):
+        row = self.daily_row(self.render(daily_dir=self.daily_note(4 * 3600 + 30)))
+        self.assertRegex(row, r"📝 Daily 4h00m\s+o open")
+
+    def test_daily_1時間未満は分だけ出す(self):
+        row = self.daily_row(self.render(daily_dir=self.daily_note(35 * 60 + 10)))
+        self.assertRegex(row, r"📝 Daily 35m\s+o open")
+
+    def test_daily_今日のノートが無ければ_未作成と出す(self):
+        d = os.path.join(self.dir, "empty-daily")
+        os.makedirs(d)
+        self.assertIn("未作成", self.daily_row(self.render(daily_dir=d)))
+
+    def test_daily_経過時間の色は_2時間と3時間で変わる(self):
+        green, yellow, red = "38;5;108m", "38;5;220m", "38;5;196m"
+        for age, color in ((30 * 60, green), (2 * 3600 + 600, yellow), (3 * 3600 + 600, red)):
+            row = self.daily_row(self.render(daily_dir=self.daily_note(age), colors=True))
+            self.assertIn(color, row, f"{age} 秒前: {row!r}")
+
+    def test_daily_欄を足しても_WEB_欄は最下行で_幅にも収まる(self):
+        screen = self.render(limits=rate_limits(), cred=credits(), daily_dir=self.daily_note(600))
+        lines = [l for l in screen.splitlines() if l.strip()]
+        self.assertIn("WEB", lines[-1])
+        for line in screen.splitlines():
+            self.assertLessEqual(display_width(line), 32, line)
+
+    def test_daily_ディレクトリ未設定なら_Obsidian_の設定から求める(self):
+        # vault/.obsidian/daily-notes.json の folder を、Daily Note の置き場にする(プロジェクトが変わっても設定に追従する)
+        vault = os.path.join(self.dir, "vault")
+        os.makedirs(os.path.join(vault, ".obsidian"))
+        with open(os.path.join(vault, ".obsidian", "daily-notes.json"), "w") as f:
+            json.dump({"folder": "daily/proj"}, f)
+        note_dir = os.path.join(vault, "daily", "proj")
+        os.makedirs(note_dir)
+        path = os.path.join(note_dir, time.strftime("%Y-%m-%d") + ".md")
+        with open(path, "w") as f:
+            f.write("x")
+        mtime = time.time() - 4 * 3600 - 30
+        os.utime(path, (mtime, mtime))
+        cfg = os.path.join(self.dir, "obsidian.json")
+        with open(cfg, "w") as f:
+            json.dump({"vaults": {"a": {"path": vault, "open": True}}}, f)
+        self.assertRegex(self.daily_row(self.render(obsidian_config=cfg)), r"📝 Daily 4h00m\s+o open")
+
+    def test_daily_ディレクトリを明示すれば_Obsidian_の設定より優先する(self):
+        d = self.daily_note(35 * 60 + 10)
+        cfg = os.path.join(self.dir, "obsidian.json")
+        with open(cfg, "w") as f:
+            json.dump({"vaults": {"a": {"path": "/nonexistent", "open": True}}}, f)
+        self.assertRegex(self.daily_row(self.render(daily_dir=d, obsidian_config=cfg)), r"📝 Daily 35m")
+
+    # ---- Daily ダッシュボード(cockpit: d で右の枠に出す / c で作業の一覧をコピー / 通常: d でポップアップ) ----
+
+    def clip_cmd(self):
+        """コピー先を、ファイルへ書く偽のコマンドにする。(コマンドのパス, 書き込み先)"""
+        out = os.path.join(self.dir, "clip.txt")
+        fake = os.path.join(self.dir, "fake-clip")
+        with open(fake, "w") as f:
+            f.write(f"#!/bin/sh\ncat > {out}\n")
+        os.chmod(fake, 0o755)
+        return fake, out
+
+    def wait_file(self, path):
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and not os.path.exists(path):
+            time.sleep(0.2)
+        self.assertTrue(os.path.exists(path), f"{path} が作られませんでした")
+        with open(path) as f:
+            return f.read()
+
+    def test_dashboard_cockpit_では_d_のヒントを出し_通常の_sidebar_では出さない(self):
+        self.assertNotIn("d view", self.daily_row(self.render(daily_dir=self.daily_note(600))))
+        screen = self.render(daily_dir=self.daily_note(600), cockpit=True)
+        self.assertRegex(self.daily_row(screen), r"o open\s+d view")
+
+    def test_dashboard_d_で_右の枠に_Daily_を出し_もう一度押すと戻す(self):
+        self.render(daily_dir=self.daily_note(600), cockpit=True)
+        self.press("d")
+        self.wait_view("daily")
+        screen = self.wait_screen(lambda scr: "d back" in self.daily_row(scr))
+        self.assertNotIn("d view", self.daily_row(screen))
+        self.press("d")
+        self.wait_view("")
+        self.wait_screen(lambda scr: "d view" in self.daily_row(scr))
+
+    def test_dashboard_表示中の_Daily_欄は_橙のタブで示す(self):
+        self.render(daily_dir=self.daily_note(600), cockpit=True)
+        self.press("d")
+        self.wait_screen(lambda scr: "d back" in self.daily_row(scr))
+        # 色つきの画面は制御文字で文字列が分断されるので、表示を確かめたあとで、色だけを見る
+        colored = self.tmux("capture-pane", "-e", "-p", "-t", "t:0.0").stdout
+        self.assertIn("48;5;130m", self.daily_row(colored))
+
+    def test_dashboard_j_で_Agent_の選択に戻ると_Daily_表示は解除される(self):
+        self.render(daily_dir=self.daily_note(600), cockpit=True)
+        self.press("d")
+        self.wait_view("daily")
+        self.press("j")
+        self.wait_view("")
+
+    def test_dashboard_表示中の_Enter_は_Obsidian_を開く(self):
+        log = os.path.join(self.dir, "open.log")
+        fake = os.path.join(self.dir, "fake-open")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/sh\necho "$@" > {log}\n')
+        os.chmod(fake, 0o755)
+        self.render(daily_dir=self.daily_note(600), open_cmd=fake, cockpit=True)
+        self.press("d")
+        self.wait_view("daily")
+        self.press("Enter")
+        self.assertEqual(self.wait_file(log).strip(), "obsidian://daily")
+
+    def test_dashboard_通常の_sidebar_の_d_は_落ちずに_描画を続ける(self):
+        # ポップアップは client が無いと出ないので、キーを受けても sidebar が生きていることだけ確かめる
+        self.render(daily_dir=self.daily_note(600))
+        self.press("d")
+        time.sleep(1)
+        self.assertIn("WEB", self.wait_screen(lambda scr: "WEB" in scr))
+
+    def test_dashboard_c_で_前回の更新以降の作業をコピーする(self):
+        fake, out = self.clip_cmd()
+        env = self.daily_work(title="コピー対象の作業")
+        env["AGENT_SIDEBAR_CLIP_CMD"] = fake
+        self.render(extra_env=env)
+        self.press("c")
+        self.assertEqual(self.wait_file(out), "- myrepo\n\t- コピー対象の作業\n")
+
+    def test_dashboard_c_は_作業が無ければクリップボードを書き換えない(self):
+        fake, out = self.clip_cmd()
+        self.render(daily_dir=self.daily_note(600), extra_env={"AGENT_SIDEBAR_CLIP_CMD": fake})
+        self.press("c")
+        time.sleep(1.5)
+        self.assertFalse(os.path.exists(out))
+
+    def test_daily_o_キーで_Obsidian_の_Daily_Note_を開く(self):
+        log = os.path.join(self.dir, "open.log")
+        fake = os.path.join(self.dir, "fake-open")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/sh\necho "$@" > {log}\n')
+        os.chmod(fake, 0o755)
+        self.render(open_cmd=fake)
+        self.tmux("send-keys", "-t", "t:0.0", "o")
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and not os.path.exists(log):
+            time.sleep(0.2)
+        self.assertTrue(os.path.exists(log), "o キーで open が呼ばれませんでした")
+        with open(log) as f:
+            self.assertEqual(f.read().strip(), "obsidian://daily")
 
 
 class SidebarSurvivalTest(unittest.TestCase):
