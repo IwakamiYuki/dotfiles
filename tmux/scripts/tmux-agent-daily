@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""tmux-agent-daily: 今日の Daily Note の更新状況と、前回の更新以降に Claude Code / Codex で動いた作業を一覧する。
+
+    tmux-agent-daily [--markdown | --print-dir] [--dir DIR] [--width N] [--height N] [--color auto|always|never]
+
+Daily Note（Obsidian）を 1 日に何度か更新したいが、何を書くか思い出せない、を助けるための画面の中身。
+「今日のノートの最終更新」から今までに動いたセッションを、リポジトリごとにまとめて出す。
+ノートへは何も書かない（会話ログには機密が含まれうる。vault は git で同期されるため、貼るのは人が確認してから）。
+  既定      : 端末向けの画面（経過時間・作業の一覧・ノートの「やったこと」）
+  --markdown: ノートに貼る箇条書き（リポジトリ → 作業名のタブ字下げ）だけを標準出力へ
+
+Daily Note のディレクトリは `--dir` > 環境変数 AGENT_DAILY_DIR > tmux の option `@agent_sidebar_daily_dir` >
+Obsidian の設定、の順で決める。ファイル名は `<dir>/YYYY-MM-DD.md`。
+  --print-dir: 決めたディレクトリだけを出す（sidebar が使う。決まらなければ終了コード 2）
+
+Obsidian の設定から求めるとき: `~/Library/Application Support/obsidian/obsidian.json` で開いている vault（無ければ、vault が 1 つだけのときその vault）の
+`.obsidian/daily-notes.json` の `folder` を使う。Obsidian 側で Daily Notes の場所を変えれば（プロジェクトが変わったときなど）追従する。
+ファイル名の形式（`format`）が既定の `YYYY-MM-DD` 以外のときは、推測せずに使わない（ディレクトリを明示すれば使える）。
+
+設計の要点:
+  - 「前回の更新」はノートの mtime。ノートが無い日は 0 時から数える。
+  - Claude は ~/.claude/projects/*/<sessionId>.jsonl（サブエージェントのログは除く）。名前は statusline のキャッシュ
+    （/rename を含む）→ トランスクリプトの ai-title → 最後のプロンプト、の順。名前が取れないセッションは出さない。
+  - Codex は ~/.codex/sessions/Y/M/D/rollout-*.jsonl。名前は最初のユーザー発言（AGENTS.md の注入は除く）。
+    statusline が翻訳などに使う非対話の `codex exec` のセッションは、作業ではないので出さない。
+  - 時刻はセッションの最終更新（ファイルの mtime）。開始時刻ではない。
+  - リポジトリ名は cwd の git から求める（worktree は本体のリポジトリにまとまる）。git 管理外は cwd の末尾。
+
+環境変数（主にテスト用）: AGENT_DAILY_NOW（"YYYY-MM-DD HH:MM"）、AGENT_DAILY_CLAUDE_PROJECTS、AGENT_DAILY_CODEX_SESSIONS、
+  AGENT_DAILY_TITLE_DIR（statusline の /tmp/claude-title-<sid>.txt を探す場所）、AGENT_DAILY_NO_TMUX=1（tmux の option を見ない）、
+  AGENT_DAILY_OBSIDIAN_CONFIG（obsidian.json のパス）
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import unicodedata
+from dataclasses import dataclass, field
+from pathlib import Path
+
+TMUX_OPTION = "@agent_sidebar_daily_dir"
+OBSIDIAN_CONFIG = "~/Library/Application Support/obsidian/obsidian.json"
+DAILY_NOTES_SETTINGS = Path(".obsidian") / "daily-notes.json"
+DEFAULT_NOTE_FORMAT = "YYYY-MM-DD"  # ファイル名の形式。ほかの形式は Moment.js の書式なので、読み解かずに対象外にする
+TAIL_BYTES = 300_000  # トランスクリプトは数 MB ある。ai-title は何度も書き直されるので末尾だけ読めばよい
+HEAD_LINES = 200  # cwd や最初のユーザー発言は先頭近くにある
+SECTION_HEADING = "## やったこと"
+UNKNOWN_REPO = "(不明)"
+GIT_TIMEOUT_SEC = 2
+DONE_MAX_LINES = 8  # --height のとき、ノートの「やったこと」を出す最大行数
+
+# 経過時間の段階（sidebar の USAGE 欄と同じ色の意味: 緑 = 余裕 / 黄 = 注意 / 赤 = 警告）
+STALE_WARN_SEC = 2 * 3600
+STALE_ALERT_SEC = 3 * 3600
+COLOR_FRESH, COLOR_WARN, COLOR_ALERT = 108, 220, 196
+COLOR_ACCENT, COLOR_DIM = 208, 245
+
+ESC = "\033"
+RESET = f"{ESC}[0m"
+BOLD = f"{ESC}[1m"
+
+
+@dataclass
+class Note:
+    path: Path
+    exists: bool
+    mtime: float | None
+    done: list[str] = field(default_factory=list)  # 「やったこと」セクションの行
+
+
+@dataclass
+class Session:
+    agent: str  # "Claude" | "Codex"
+    title: str
+    cwd: str
+    mtime: float
+
+
+@dataclass
+class Group:
+    repo: str
+    sessions: list[Session]
+
+
+@dataclass
+class Report:
+    now: dt.datetime
+    note: Note
+    since: float
+    groups: list[Group]
+
+
+# ---------------------------------------------------------------- 表示用の小道具
+
+def format_elapsed(seconds: float) -> str:
+    minutes = max(0, int(seconds // 60))
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h{minutes % 60:02d}m"
+
+
+def display_width(text: str) -> int:
+    """端末での表示幅。CJK・絵文字は 2 桁、結合文字は 0 桁。East Asian Ambiguous は 1 桁（罫線・矢印を崩さない）。"""
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def fit(text: str, width: int) -> str:
+    """表示幅 width に収める。はみ出すときは末尾を `…` にする。"""
+    if display_width(text) <= width:
+        return text
+    out, used = "", 0
+    for ch in text:
+        w = display_width(ch)
+        if used + w > width - 1:
+            break
+        out += ch
+        used += w
+    return out + "…"
+
+
+def staleness_color(seconds: float) -> int:
+    if seconds > STALE_ALERT_SEC:
+        return COLOR_ALERT
+    if seconds > STALE_WARN_SEC:
+        return COLOR_WARN
+    return COLOR_FRESH
+
+
+def first_line(text: str) -> str:
+    for line in text.splitlines():
+        line = " ".join(line.split())
+        if line:
+            return line
+    return ""
+
+
+# ---------------------------------------------------------------- Daily Note
+
+def done_section(text: str) -> list[str]:
+    """「## やったこと」から次の `## ` までの行（前後の空行は落とす）。"""
+    lines: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = line.strip() == SECTION_HEADING
+            continue
+        if inside:
+            lines.append(line.rstrip())
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def read_note(daily_dir: Path, today: dt.date) -> Note:
+    path = daily_dir / f"{today.isoformat()}.md"
+    try:
+        mtime = path.stat().st_mtime
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return Note(path=path, exists=False, mtime=None)
+    return Note(path=path, exists=True, mtime=mtime, done=done_section(text))
+
+
+# ---------------------------------------------------------------- セッションの収集
+
+def read_head(path: Path, max_lines: int = HEAD_LINES):
+    """先頭の JSON 行を順に返す（壊れた行は飛ばす）。"""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for i, raw in enumerate(fh):
+                if i >= max_lines:
+                    return
+                try:
+                    yield json.loads(raw)
+                except ValueError:
+                    continue
+    except OSError:
+        return
+
+
+def read_tail_lines(path: Path) -> list[str]:
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as fh:
+            fh.seek(max(0, size - TAIL_BYTES))
+            data = fh.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    return lines[1:] if size > TAIL_BYTES and lines else lines  # 先頭は途中で切れているので捨てる
+
+
+def last_record(lines: list[str], record_type: str, key: str) -> str:
+    marker = f'"type":"{record_type}"'
+    for raw in reversed(lines):
+        if marker not in raw and f'"type": "{record_type}"' not in raw:
+            continue
+        try:
+            return str(json.loads(raw).get(key) or "")
+        except ValueError:
+            continue
+    return ""
+
+
+def claude_title(session_id: str, tail: list[str], title_dir: Path) -> str:
+    try:
+        cached = first_line((title_dir / f"claude-title-{session_id}.txt").read_text(encoding="utf-8"))
+    except OSError:
+        cached = ""
+    return cached or first_line(last_record(tail, "ai-title", "aiTitle")) or first_line(last_record(tail, "last-prompt", "lastPrompt"))
+
+
+def collect_claude(projects_dir: Path, since: float, title_dir: Path) -> list[Session]:
+    sessions = []
+    for path in projects_dir.glob("*/*.jsonl"):  # `<project>/<sid>/subagents/*.jsonl` は含まれない
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime <= since:
+            continue
+        title = claude_title(path.stem, read_tail_lines(path), title_dir)
+        if not title:
+            continue
+        cwd = next((str(rec["cwd"]) for rec in read_head(path) if rec.get("cwd")), "")
+        sessions.append(Session("Claude", title, cwd, mtime))
+    return sessions
+
+
+def codex_first_prompt(path: Path) -> str:
+    for rec in read_head(path):
+        payload = rec.get("payload") or {}
+        if rec.get("type") != "response_item" or payload.get("type") != "message" or payload.get("role") != "user":
+            continue
+        for part in payload.get("content") or []:
+            text = (part.get("text") or "").lstrip()
+            if text and not text.startswith(("# AGENTS.md", "<")):  # 注入された指示ではなく、人の発言
+                return first_line(text)
+    return ""
+
+
+def collect_codex(sessions_dir: Path, since: float, now: dt.datetime) -> list[Session]:
+    sessions = []
+    first_day = dt.datetime.fromtimestamp(since).date() - dt.timedelta(days=1)  # 日をまたいで続いたセッションも拾う
+    day = first_day
+    while day <= now.date():
+        for path in (sessions_dir / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}").glob("rollout-*.jsonl"):
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime <= since:
+                continue
+            meta = next((rec.get("payload") or {} for rec in read_head(path, 1)), {})
+            if meta.get("source") == "exec" or meta.get("originator") == "codex_exec":
+                continue
+            title = codex_first_prompt(path)
+            if title:
+                sessions.append(Session("Codex", title, str(meta.get("cwd") or ""), mtime))
+        day += dt.timedelta(days=1)
+    return sessions
+
+
+# ---------------------------------------------------------------- リポジトリ名・集計
+
+def repo_name(cwd: str, cache: dict[str, str]) -> str:
+    if not cwd:
+        return UNKNOWN_REPO
+    if cwd in cache:
+        return cache[cwd]
+    name = ""
+    if os.path.realpath(cwd) == os.path.realpath(Path.home()):
+        name = "~"
+    else:
+        try:
+            out = subprocess.run(
+                ["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                common = Path(out.stdout.strip())
+                name = common.parent.name if common.name == ".git" else common.name
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if not name:  # git 管理外・削除済みの worktree: cwd の末尾から `_worktree_…` を除く
+        name = re.sub(r"_worktree_.*$", "", Path(cwd).name) or UNKNOWN_REPO
+    cache[cwd] = name
+    return name
+
+
+def group_by_repo(sessions: list[Session]) -> list[Group]:
+    """リポジトリごとにまとめる。作業した順（セッションの最終更新が古い順）に並べ、同じ名前のセッションは 1 つにまとめる。"""
+    cache: dict[str, str] = {}
+    grouped: dict[str, list[Session]] = {}
+    for s in sorted(sessions, key=lambda s: s.mtime):
+        items = grouped.setdefault(repo_name(s.cwd, cache), [])
+        items[:] = [x for x in items if x.title != s.title]  # 同名は 1 行にまとめ、最後に動いた時刻を残す
+        items.append(s)
+    return [Group(repo, items) for repo, items in grouped.items()]
+
+
+def build_report(daily_dir: Path, now: dt.datetime, claude_dir: Path, codex_dir: Path, title_dir: Path) -> Report:
+    note = read_note(daily_dir, now.date())
+    midnight = dt.datetime.combine(now.date(), dt.time.min).timestamp()
+    since = note.mtime if note.mtime is not None else midnight
+    sessions = collect_claude(claude_dir, since, title_dir) + collect_codex(codex_dir, since, now)
+    return Report(now=now, note=note, since=since, groups=group_by_repo(sessions))
+
+
+# ---------------------------------------------------------------- 出力
+
+def render_markdown(report: Report) -> str:
+    """ノートに貼る箇条書き。ノートの「やったこと」と同じ、リポジトリ → タブ字下げの作業名。"""
+    out = []
+    for group in report.groups:
+        out.append(f"- {group.repo}")
+        out.extend(f"\t- {s.title}" for s in group.sessions)
+    return "".join(line + "\n" for line in out)
+
+
+def group_lines(group: Group, inner: int, paint) -> list[str]:
+    lines = [paint(fit(group.repo, inner), COLOR_ACCENT)]
+    for s in group.sessions:
+        stamp = dt.datetime.fromtimestamp(s.mtime).strftime("%H:%M")
+        title = fit(f"  ・{s.title}", inner - len(stamp) - 1)
+        pad = " " * max(1, inner - display_width(title) - len(stamp))
+        lines.append(title + pad + paint(stamp, COLOR_DIM))
+    return lines
+
+
+def trim_groups(groups: list[list[str]], budget: int) -> tuple[list[list[str]], int]:
+    """リポジトリごとの行を、新しい方（後ろ）を優先して budget 行に収める。(残す行, 省いた作業の数) を返す。"""
+    kept: list[list[str]] = []
+    for lines in reversed(groups):
+        if len(lines) <= budget:
+            kept.insert(0, lines)
+            budget -= len(lines)
+            continue
+        if budget >= 2 and not kept:  # 1 つのリポジトリで溢れるときは、見出しと新しい作業だけ残す
+            kept.insert(0, [lines[0]] + lines[len(lines) - (budget - 1):])
+        break
+    shown = sum(len(lines) - 1 for lines in kept)
+    return kept, sum(len(lines) - 1 for lines in groups) - shown
+
+
+def render_screen(report: Report, width: int, color: bool, height: int | None = None) -> list[str]:
+    """height を渡すと、その行数に収める（作業の一覧は古い方から省き、「やったこと」は DONE_MAX_LINES 行で切る）。"""
+
+    def paint(text: str, code: int | None = None, bold: bool = False) -> str:
+        if not color:
+            return text
+        return f"{BOLD if bold else ''}{ESC}[38;5;{code}m{text}{RESET}" if code is not None else f"{BOLD}{text}{RESET}"
+
+    inner = max(10, width - 2)
+    head = [paint(fit(f"📝 Daily Note  {report.now.date().isoformat()}", inner), COLOR_ACCENT, bold=True)]
+    if report.note.exists:
+        elapsed = report.now.timestamp() - report.since
+        stamp = dt.datetime.fromtimestamp(report.since).strftime("%H:%M")
+        head.append(paint(fit(f"最終更新 {stamp}（{format_elapsed(elapsed)} 前）", inner), staleness_color(elapsed)))
+    else:
+        head.append(paint(fit("今日のノートは未作成", inner), COLOR_ALERT))
+
+    work_head = ["", paint(fit("── 前回の更新以降の作業 ──", inner), COLOR_DIM)]
+    groups = [group_lines(g, inner, paint) for g in report.groups]
+
+    done_head = ["", paint(fit("── 今日のノートの「やったこと」 ──", inner), COLOR_DIM)]
+    if report.note.done:
+        done = [fit(line.replace("\t", "  "), inner) for line in report.note.done]
+        if height is not None and len(done) > DONE_MAX_LINES:
+            done = done[:DONE_MAX_LINES - 1] + [paint(fit(f"  … 他 {len(done) - DONE_MAX_LINES + 1} 行", inner), COLOR_DIM)]
+    else:
+        done = [paint(fit("  （まだ書かれていません）", inner), COLOR_DIM)]
+
+    omitted = 0
+    if height is not None and groups:
+        budget = height - len(head) - len(work_head) - len(done_head) - len(done)
+        if sum(len(g) for g in groups) > max(budget, 3):
+            groups, omitted = trim_groups(groups, max(budget, 3) - 1)  # 1 行は「他 N 件」に使う
+    work = [paint(fit("  作業の記録はありません", inner), COLOR_DIM)] if not groups else []
+    if omitted:
+        work.append(paint(fit(f"  … 他 {omitted} 件", inner), COLOR_DIM))
+    for lines in groups:
+        work.extend(lines)
+
+    lines = head + work_head + work + done_head + done
+    return lines[:height] if height is not None else lines
+
+
+# ---------------------------------------------------------------- 設定・起動
+
+def load_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def detect_obsidian_daily_dir(config: Path) -> Path | None:
+    """Obsidian の設定から Daily Note のディレクトリを求める。決められなければ None。"""
+    vaults = [v for v in (load_json(config).get("vaults") or {}).values() if isinstance(v, dict) and v.get("path")]
+    opened = [v for v in vaults if v.get("open")]
+    chosen = opened[0] if opened else (vaults[0] if len(vaults) == 1 else None)  # 開いている vault が無いときは、1 つだけなら迷わない
+    if chosen is None:
+        return None
+    vault = Path(str(chosen["path"]))
+    if not (vault / DAILY_NOTES_SETTINGS).is_file():  # 設定ファイルが無い = Daily Notes を設定していない（`{}` は「すべて既定値」で有効）
+        return None
+    settings = load_json(vault / DAILY_NOTES_SETTINGS)
+    if settings.get("format", DEFAULT_NOTE_FORMAT) not in ("", DEFAULT_NOTE_FORMAT):
+        return None
+    folder = str(settings.get("folder") or "").strip("/")
+    return vault / folder if folder else vault
+
+
+def resolve_daily_dir(option: str | None) -> Path | None:
+    value = option or os.environ.get("AGENT_DAILY_DIR", "")
+    if not value and not os.environ.get("AGENT_DAILY_NO_TMUX"):
+        try:
+            value = subprocess.run(["tmux", "show-options", "-gqv", TMUX_OPTION], capture_output=True, text=True,
+                                   timeout=GIT_TIMEOUT_SEC).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            value = ""
+    if value:
+        return Path(value).expanduser()
+    return detect_obsidian_daily_dir(Path(os.environ.get("AGENT_DAILY_OBSIDIAN_CONFIG") or OBSIDIAN_CONFIG).expanduser())
+
+
+def current_time() -> dt.datetime:
+    fixed = os.environ.get("AGENT_DAILY_NOW", "")
+    return dt.datetime.strptime(fixed, "%Y-%m-%d %H:%M") if fixed else dt.datetime.now()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Daily Note の更新状況と、前回の更新以降の Claude / Codex の作業を一覧する")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--markdown", action="store_true", help="ノートに貼る箇条書きだけを出す")
+    mode.add_argument("--print-dir", action="store_true", help="Daily Note のディレクトリだけを出す（決まらなければ終了コード 2）")
+    parser.add_argument("--dir", help="Daily Note のディレクトリ（既定: AGENT_DAILY_DIR → tmux の @agent_sidebar_daily_dir → Obsidian の設定）")
+    parser.add_argument("--width", type=int, help="画面の幅（既定: 端末の幅）")
+    parser.add_argument("--height", type=int, help="画面の行数。収まらない分は古い作業から省く（既定: 切り詰めない）")
+    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
+    args = parser.parse_args(argv)
+
+    daily_dir = resolve_daily_dir(args.dir)
+    if daily_dir is None:
+        print(f"Daily Note のディレクトリを決められません。Obsidian の Daily Notes の設定を確認するか、--dir、"
+              f"環境変数 AGENT_DAILY_DIR、tmux の option {TMUX_OPTION} で指定してください。", file=sys.stderr)
+        return 2
+    if args.print_dir:
+        print(daily_dir)
+        return 0
+
+    home = Path.home()
+    report = build_report(
+        daily_dir, current_time(),
+        Path(os.environ.get("AGENT_DAILY_CLAUDE_PROJECTS") or home / ".claude" / "projects"),
+        Path(os.environ.get("AGENT_DAILY_CODEX_SESSIONS") or home / ".codex" / "sessions"),
+        Path(os.environ.get("AGENT_DAILY_TITLE_DIR") or "/tmp"),
+    )
+    if args.markdown:
+        sys.stdout.write(render_markdown(report))
+        return 0
+
+    color = args.color == "always" or (args.color == "auto" and sys.stdout.isatty() and "NO_COLOR" not in os.environ)
+    width = args.width or shutil.get_terminal_size((80, 24)).columns
+    print("\n".join(render_screen(report, width, color, args.height)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
