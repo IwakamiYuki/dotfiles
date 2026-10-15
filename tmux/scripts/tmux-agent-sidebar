@@ -70,6 +70,18 @@ RATE_LIMIT_FILE="${AGENT_SIDEBAR_RATE_LIMITS:-/tmp/claude-rate-limits.json}"
 CREDITS_FILE="${AGENT_SIDEBAR_CREDITS:-/tmp/claude-credits.json}"
 # 取得が止まったとき、この秒数を超えた値には経過時間を添える
 CREDITS_STALE_SEC=900
+# 使った額を「身近なもの」の絵文字に置き換えて並べる、ドル換算のはしご（大きい単位から。"最小単位(セント)|絵文字"）。
+# 大きい単位から順に使い、端数(最小単位に満たない分)は捨てる。為替の設定を持たないよう、円ではなくドルで定義している。
+# 値段は 1 ドル = 約 150 円で、実在する値段をおおよそ丸めたもの(隣り合う単位の比は 3〜5 倍が目安):
+#   📱 iPhone 17 ≒ ¥150,000 / 🎮 Switch 2 ≒ ¥60,000 / 🚄 新幹線 東京〜新大阪 ≒ ¥15,000
+#   🍻 飲み会 1 回 ≒ ¥5,000 / 🍜 ラーメン ≒ ¥1,000 / 🧃 ジュース ≒ ¥150
+CREDITS_LADDER=("100000|📱" "40000|🎮" "10000|🚄" "3300|🍻" "700|🍜" "100|🧃")
+# 絵文字を並べる最大個数(幅に収まる個数とのうち小さい方)。超える分は小さい単位から切り捨てる
+CREDITS_ICON_MAX=13
+# 今月の着地予想(営業日ベース)が上限の何 % かで 💳 の色を変える境目。上限 = 月の予算として扱う。
+#   WARN 以下=緑(余裕) / WARN 超〜ALERT 以下=黄(注意) / ALERT 超=赤(上限を超えそう)
+CREDITS_LAND_WARN_PCT=70
+CREDITS_LAND_ALERT_PCT=100
 GIT_TTL=10
 # トランスクリプトから拾った ai-title のキャッシュ("sessionId|title" の行)。形式は refresh_title_cache を参照
 TITLE_CACHE_FILE="${AGENT_SIDEBAR_TITLE_CACHE:-/tmp/tmux-agent-sidebar-titles.txt}"
@@ -853,6 +865,10 @@ CRED_LIMIT=""
 CRED_PCT=""
 CRED_CUR="USD"
 CRED_AGE=""
+# 使った額(USD)をセントの整数にしたもの。絵文字の行を出すときだけ入る(ドル以外の通貨、1 ドル未満は空)
+CRED_CENTS=""
+# 今月の着地予想が上限の何 % か（整数）。予想できないとき(上限なし・古い値・月初で営業日の経過が 0)は空で、使用率の色に戻る
+CRED_LAND_PCT=""
 # 下部欄を出すのに必要な最小の端末高さ(これ未満では Agent 一覧を優先して出さない)
 FOOTER_MIN_TERM_H=14
 
@@ -954,11 +970,52 @@ fmt_age() {
   else REPLY="$((sec / 60))m"; fi
 }
 
+# 今月の着地予想(営業日ベース)が上限の何 % かを CRED_LAND_PCT に入れる。予想できないときは空。
+#   着地予想 = 使用額 × 今月の営業日数 ÷ 今日までに経過した営業日数（営業日 = 平日。祝日は考慮しない）
+# 営業日で数えるのは、業務での利用が土日にほとんど無いため。金額はセントの整数にして、割り算は最後に 1 回だけ行う（fork しない）。
+# 今日の日付は date で取る(テストでは AGENT_SIDEBAR_TODAY=YYYY-MM-DD で固定する)
+calc_credits_landing() {
+  CRED_LAND_PCT=""
+  [ -n "$CRED_LIMIT" ] || return 0
+  [ -z "$CRED_AGE" ] || return 0   # 取得が止まった古い値からは予想しない
+  local used_c limit_c y m d wd days wd1 i wi total=0 elapsed=0
+  printf -v used_c '%.2f' "$CRED_USED" 2>/dev/null || return 0
+  printf -v limit_c '%.2f' "$CRED_LIMIT" 2>/dev/null || return 0
+  used_c=$((10#${used_c/./}))
+  limit_c=$((10#${limit_c/./}))
+  ((limit_c > 0)) || return 0
+
+  if [ -n "${AGENT_SIDEBAR_TODAY:-}" ]; then
+    set -- $(date -j -f %Y-%m-%d "$AGENT_SIDEBAR_TODAY" '+%Y %m %d %u' 2>/dev/null)
+  else
+    set -- $(date '+%Y %m %d %u' 2>/dev/null)
+  fi
+  [ $# -eq 4 ] || return 0
+  y=$1; m=$((10#$2)); d=$((10#$3)); wd=$4   # wd: 1=月 … 7=日
+
+  case $m in
+    1|3|5|7|8|10|12) days=31 ;;
+    4|6|9|11) days=30 ;;
+    *) if ((y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))); then days=29; else days=28; fi ;;
+  esac
+  wd1=$(((wd - 1 - (d - 1) % 7 + 7) % 7 + 1))   # 今月 1 日の曜日
+
+  for ((i = 1; i <= days; i++)); do
+    wi=$(((wd1 - 1 + i - 1) % 7))               # 0=月 … 6=日
+    if ((wi < 5)); then
+      total=$((total + 1))
+      ((i <= d)) && elapsed=$((elapsed + 1))
+    fi
+  done
+  ((elapsed > 0)) || return 0                    # 月初で営業日がまだ 1 日も経っていない(1 日が土日など)
+  CRED_LAND_PCT=$((used_c * total * 100 / (limit_c * elapsed)))
+}
+
 # usage credits を読む。無効（is_enabled が false）・読めないときは CRED_USED を空にして出さない。
 # 値は fetch-usage-credits.sh が通貨単位に直して書く（最小単位の変換は取得側）
 read_credits() {
-  local json age
-  CRED_USED=""; CRED_LIMIT=""; CRED_PCT=""; CRED_CUR="USD"; CRED_AGE=""
+  local json age cents
+  CRED_USED=""; CRED_LIMIT=""; CRED_PCT=""; CRED_CUR="USD"; CRED_AGE=""; CRED_CENTS=""; CRED_LAND_PCT=""
   [ -r "$CREDITS_FILE" ] || return 0
   json=$(<"$CREDITS_FILE") || return 0
 
@@ -973,6 +1030,11 @@ read_credits() {
   [ -n "$REPLY" ] && { printf -v CRED_PCT '%.0f' "$REPLY" 2>/dev/null || CRED_PCT=""; }
   json_field "$json" currency
   [ -n "$REPLY" ] && CRED_CUR=$REPLY
+  # はしごはドル建てなので、ドルのときだけ。小数点を除くとセントの整数になる("0.50" の先頭の 0 は 10# で 10 進扱い)
+  if [ "$CRED_CUR" = USD ] && printf -v cents '%.2f' "$CRED_USED" 2>/dev/null; then
+    cents=$((10#${cents/./}))
+    ((cents >= 100)) && CRED_CENTS=$cents
+  fi
   json_field "$json" fetched_at
   if [ -n "$REPLY" ]; then
     age=$(($(date +%s) - ${REPLY%.*}))
@@ -981,6 +1043,7 @@ read_credits() {
       CRED_AGE=$REPLY
     fi
   fi
+  calc_credits_landing
 }
 
 # 使用率に応じた色(tmux-rate-limits と同じ段階: 低=橙系 → 80% 以上は赤)を REPLY に入れる
@@ -1023,8 +1086,17 @@ credits_row() {
   local at=$1 used limit color body plain_len piece
   fmt_money "$CRED_USED" "$CRED_CUR" 0
   used=$REPLY
-  limit_color "${CRED_PCT:-0}"
-  color=$REPLY
+  # 色は、今月の着地予想が上限(月の予算)を超えそうか。予想できないときは、今の使用率の段階にする
+  if [ -z "$CRED_LAND_PCT" ]; then
+    limit_color "${CRED_PCT:-0}"
+    color=$REPLY
+  elif ((CRED_LAND_PCT > CREDITS_LAND_ALERT_PCT)); then
+    color="${ESC}[38;5;196m"
+  elif ((CRED_LAND_PCT > CREDITS_LAND_WARN_PCT)); then
+    color="${ESC}[38;5;220m"
+  else
+    color="${ESC}[38;5;108m"
+  fi
   body="${color}${used}"
   plain_len=$((4 + ${#used}))   # 空白1 + ラベル(💳=2桁) + 空白1 + 金額
 
@@ -1049,6 +1121,26 @@ credits_row() {
     ((plain_len + ${#piece} <= width - 1)) && body+="${C_DIM}${piece}"
   fi
   FOOTER_FRAME+="${ESC}[${at};1H ${FG_DEFAULT}💳 ${body}${FG_DEFAULT}${ESC}[K${C_RESET}"
+}
+
+# credits_icons_row <行番号>: 使った額を、はしごの絵文字に分解して 1 行に並べる("🍜🧃🧃" など)。
+# 大きい単位から順に、1 つ上の単位に満たない数だけ並べる。幅に収まらない分は小さい単位から切り捨てる
+credits_icons_row() {
+  local at=$1 cents=$CRED_CENTS rung step icon n total=0 max out=""
+  max=$(((width - 1 - 4) / 2))   # 左の余白(4桁) を除いた幅を、絵文字(2桁)で割る
+  ((max > CREDITS_ICON_MAX)) && max=$CREDITS_ICON_MAX
+  for rung in "${CREDITS_LADDER[@]}"; do
+    step=${rung%%|*}
+    icon=${rung#*|}
+    n=$((cents / step))
+    cents=$((cents % step))
+    while ((n > 0 && total < max)); do
+      out+=$icon
+      total=$((total + 1))
+      n=$((n - 1))
+    done
+  done
+  FOOTER_FRAME+="${ESC}[${at};1H    ${out}${ESC}[K${C_RESET}"
 }
 
 # 下部欄を組み立てる。FOOTER_FRAME に描画文字列、footer_rows に使う行数を入れる
@@ -1087,6 +1179,7 @@ build_footer() {
   [ -n "$LIM_5H_PCT" ] && usage_rows=$((usage_rows + 1))
   [ -n "$LIM_1W_PCT" ] && usage_rows=$((usage_rows + 1))
   [ -n "$CRED_USED" ] && usage_rows=$((usage_rows + 1))
+  [ -n "$CRED_CENTS" ] && usage_rows=$((usage_rows + 1))
   ((usage_rows > 0)) && usage_rows=$((usage_rows + 1))
   footer_rows=$((usage_rows + 1))
   top=$((term_h - footer_rows + 1))
@@ -1106,7 +1199,11 @@ build_footer() {
       limit_row "$row" 1w "$LIM_1W_PCT" "$LIM_1W_RESET"
       row=$((row + 1))
     fi
-    [ -n "$CRED_USED" ] && credits_row "$row"
+    if [ -n "$CRED_USED" ]; then
+      credits_row "$row"
+      row=$((row + 1))
+    fi
+    [ -n "$CRED_CENTS" ] && credits_icons_row "$row"
   fi
 
   if ((WEB_ON)); then

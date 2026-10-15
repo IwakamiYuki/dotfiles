@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import unicodedata
 import unittest
 
 SIDEBAR = os.path.join(os.path.dirname(__file__), "..", "scripts", "tmux-agent-sidebar")
@@ -40,6 +41,10 @@ def credits(**fields):
     return data
 
 
+def display_width(text):
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+
+
 class SidebarUsageTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="sbu.", dir="/tmp")
@@ -53,8 +58,10 @@ class SidebarUsageTest(unittest.TestCase):
     def tmux(self, *args):
         return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True)
 
-    def render(self, limits=None, cred=None):
-        """sidebar を起動して、描画が出そろった画面（文字だけ）を返す。None のファイルは作らない。"""
+    def render(self, limits=None, cred=None, today=None, colors=False):
+        """sidebar を起動して、描画が出そろった画面を返す。None のファイルは作らない。
+        today: 「今日」の日付(YYYY-MM-DD)。着地予想の色が日付で変わるので、固定して確認する。
+        colors: True なら色の制御文字つき(capture-pane -e)で返す。"""
         rl_file = os.path.join(self.dir, "rate-limits.json")
         cr_file = os.path.join(self.dir, "credits.json")
         for path, data in ((rl_file, limits), (cr_file, cred)):
@@ -71,10 +78,13 @@ class SidebarUsageTest(unittest.TestCase):
                 f"AGENT_SIDEBAR_TITLE_CACHE={self.dir}/titles",
                 f"AGENT_SIDEBAR_CLAUDE_CACHE={self.dir}/claude-cache",
                 f"AGENT_SIDEBAR_SESSIONS_DIR={self.dir}/sessions",
+                f"AGENT_SIDEBAR_TODAY={today}" if today else "AGENT_SIDEBAR_TODAY=",
                 "bash",
                 SIDEBAR,
             ]
         )
+        # 1 つのテストで続けて描画できるよう、前の一時サーバーを止める（一時ソケットを明示。普段の tmux には触れない）
+        subprocess.run(["tmux", "-S", self.sock, "kill-server"], capture_output=True)
         subprocess.run(
             ["tmux", "-S", self.sock, "-f", "/dev/null", "new-session", "-d", "-s", "t", "-x", "60", "-y", "24", "-c", "/tmp"],
             check=True,
@@ -84,7 +94,8 @@ class SidebarUsageTest(unittest.TestCase):
         deadline = time.time() + RENDER_TIMEOUT_SEC
         screen = ""
         while time.time() < deadline:
-            screen = self.tmux("capture-pane", "-p", "-t", "t:0.0").stdout
+            flags = ["-e", "-p"] if colors else ["-p"]
+            screen = self.tmux("capture-pane", *flags, "-t", "t:0.0").stdout
             if "WEB" in screen:
                 return screen
             time.sleep(0.2)
@@ -158,7 +169,134 @@ class SidebarUsageTest(unittest.TestCase):
     def test_幅に収まる(self):
         screen = self.render(cred=credits(used=12345.67, limit=100000, percent=12.3))
         for line in screen.splitlines():
-            self.assertLessEqual(len(line), 32, line)
+            self.assertLessEqual(display_width(line), 32, line)
+
+
+    # --- 使った額を、身近なものの絵文字に置き換えて並べる行（ドル換算のはしご） ---
+
+    def icon_row(self, screen):
+        """💳 の行の次の行（絵文字を並べる行）の中身を返す。"""
+        lines = screen.splitlines()
+        for i, line in enumerate(lines):
+            if "💳" in line:
+                return lines[i + 1].strip()
+        self.fail(f"💳 の行がありません:\n{screen}")
+
+    def test_ラーメン1杯とジュース2本(self):
+        screen = self.render(cred=credits(used=9.67))
+        self.assertEqual(self.icon_row(screen), "🍜🧃🧃")
+
+    def test_1つ下の単位が4つ並んでも_まだ繰り上がらない(self):
+        screen = self.render(cred=credits(used=32.43))
+        self.assertEqual(self.icon_row(screen), "🍜🍜🍜🍜🧃🧃🧃🧃")
+
+    def test_33ドルで_飲み会に繰り上がる(self):
+        screen = self.render(cred=credits(used=33))
+        self.assertEqual(self.icon_row(screen), "🍻")
+
+    def test_大きい単位から順に並べる(self):
+        screen = self.render(cred=credits(used=150))
+        self.assertEqual(self.icon_row(screen), "🚄🍻🍜🍜🧃🧃🧃")
+
+    def test_200ドルは新幹線2本(self):
+        screen = self.render(cred=credits(used=200))
+        self.assertEqual(self.icon_row(screen), "🚄🚄")
+
+    def test_1000ドルは_iPhone_1台(self):
+        screen = self.render(cred=credits(used=1000, percent=76.9))
+        self.assertEqual(self.icon_row(screen), "📱")
+
+    def test_上限いっぱいでも収まる(self):
+        screen = self.render(cred=credits(used=1300, percent=100))
+        self.assertEqual(self.icon_row(screen), "📱🚄🚄🚄")
+
+    def test_1ドル未満なら_絵文字の行を出さない(self):
+        screen = self.render(cred=credits(used=0.5, percent=0.04))
+        self.assertIn("💳 $0.50", screen)
+        for icon in "🧃🍜🍻🚄🎮📱":
+            self.assertNotIn(icon, screen)
+
+    def test_ドル以外の通貨では_絵文字の行を出さない(self):
+        screen = self.render(cred=credits(currency="JPY", used=1500, limit=100000, percent=1.5))
+        for icon in "🧃🍜🍻🚄🎮📱":
+            self.assertNotIn(icon, screen)
+
+    def test_絵文字は幅に収まる個数で打ち切る(self):
+        # 幅 32 では 13 個まで。大きい単位を優先して見せる
+        screen = self.render(cred=credits(used=100000, limit=None, percent=None))
+        row = self.icon_row(screen)
+        self.assertEqual(row, "📱" * 13)
+        for line in screen.splitlines():
+            self.assertLessEqual(display_width(line), 32, line)
+
+    def test_絵文字の行を足しても_WEB_欄は最下行に残る(self):
+        screen = self.render(limits=rate_limits(), cred=credits(used=150))
+        lines = [l for l in screen.splitlines() if l.strip()]
+        self.assertIn("WEB", lines[-1])
+        self.assertIn("🚄", lines[-2])
+
+    def test_credits_が無効なら_絵文字も出さない(self):
+        screen = self.render(cred=credits(enabled=False, used=None, limit=None, percent=None))
+        for icon in "🧃🍜🍻🚄🎮📱":
+            self.assertNotIn(icon, screen)
+
+
+    # --- 色: 今月の着地予想（営業日ベース）が上限を超えそうか ---
+    # 2026-10-13(火) は、10 月の営業日 22 日のうち 9 日目まで経過（祝日は考慮しない）。着地予想 = 使用額 × 22 / 9
+
+    GREEN, YELLOW, RED = "108", "220", "196"
+
+    def amount_color(self, screen):
+        """💳 の行の金額につく色(38;5;N の N)を返す。"""
+        m = re.search(r"💳 [^\n]*?\x1b\[38;5;(\d+)m\$", screen)
+        self.assertIsNotNone(m, f"色つきの 💳 行がありません:\n{screen!r}")
+        return m.group(1)
+
+    def color_for(self, today, **cred_fields):
+        screen = self.render(cred=credits(**cred_fields), today=today, colors=True)
+        return self.amount_color(screen)
+
+    def test_着地予想が上限の7割以下なら緑(self):
+        # 300 → 着地 733 / 1300 = 56%
+        self.assertEqual(self.color_for("2026-10-13", used=300, percent=23.1), self.GREEN)
+
+    def test_着地予想が上限の7割を超えたら黄(self):
+        # 500 → 着地 1222 / 1300 = 94%
+        self.assertEqual(self.color_for("2026-10-13", used=500, percent=38.5), self.YELLOW)
+
+    def test_着地予想が上限を超えそうなら赤(self):
+        # 600 → 着地 1466 / 1300 = 113%
+        self.assertEqual(self.color_for("2026-10-13", used=600, percent=46.2), self.RED)
+
+    def test_現在の使用率が低くても_ペースが速ければ赤(self):
+        # 使用率は 46% で、絶対値の段階では黄止まり。月の 9/22 しか経っていないので着地は上限超え
+        self.assertEqual(self.color_for("2026-10-13", used=600, percent=46.2), self.RED)
+
+    def test_土日は_直前の金曜までの営業日で数える(self):
+        # 2026-10-17(土): 営業日は 12 日目まで経過。600 → 着地 1100 / 1300 = 85%
+        self.assertEqual(self.color_for("2026-10-17", used=600, percent=46.2), self.YELLOW)
+
+    def test_30日の月でも営業日を数える(self):
+        # 2026-09-15(火): 9 月の営業日 22 日のうち 11 日目まで。700 → 着地 1400 / 1300 = 108%
+        self.assertEqual(self.color_for("2026-09-15", used=700, percent=53.8), self.RED)
+        self.assertEqual(self.color_for("2026-09-15", used=400, percent=30.8), self.GREEN)
+
+    def test_うるう年の2月は29日で数える(self):
+        # 2024-02-15(木): 2 月の営業日 21 日のうち 11 日目まで。600 → 着地 1145 / 1300 = 88%（20 日と数えると別の値）
+        self.assertEqual(self.color_for("2024-02-15", used=600, percent=46.2), self.YELLOW)
+        self.assertEqual(self.color_for("2024-02-15", used=700, percent=53.8), self.RED)
+
+    def test_月初の営業日がまだ無い日は_現在の使用率の色に戻る(self):
+        # 2026-08-01(土): 営業日の経過が 0 日。使用率 46% の段階の色(黄)を使い、0 で割らない
+        self.assertEqual(self.color_for("2026-08-01", used=600, percent=46.2), self.YELLOW)
+
+    def test_上限なしなら_予想できないので_現在の使用率の色(self):
+        self.assertEqual(self.color_for("2026-10-13", used=600, limit=None, percent=None), "214")
+
+    def test_取得が止まって古い値なら_予想の色を使わない(self):
+        # 3 時間前の値。予想なら赤(113%)だが、古い値で赤は出さず、使用率 46% の段階(黄)にする
+        color = self.color_for("2026-10-13", used=600, percent=46.2, fetched_at=int(time.time()) - 3 * 3600)
+        self.assertEqual(color, self.YELLOW)
 
 
 class SidebarSurvivalTest(unittest.TestCase):
