@@ -125,6 +125,11 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - sidebar 上で `Ctrl-C` → sidebar だけ終了して pane が閉じる。main pane は残る
 - ⚠️ `Ctrl-t a`（Claude 一覧ポップアップ）が使用済みのため、再表示キーは `b`
 - sidebar 上で `j` / `k`（`↓` / `↑`、マウスホイール）→ 選択を移動。`j` / `k`（`↓` / `↑`）はそのまま **ポップアップでプレビュー**も開く（`@agent_sidebar_auto_preview`、後述）。マウスホイールは移動だけで、開かない。選択中のカードはオレンジの角丸罫線で囲まれる（sidebar にフォーカスがあるときだけ表示。このとき 2 行目に操作ヒントも出る）
+- sidebar 上で `?` → **キー一覧をポップアップで表示**（`show_help`。静的な表示で、何かキーを押すと閉じる）。キーが増えたので、2 行目のヒントは主なもの（`j/k` `⏎` `?`）だけにして、全部はここに出す。項目を 1 つおきに薄い背景（236）で縞にして、グループの間に区切り線を入れ、キーと説明の対応を行で追えるようにする
+  - 一覧は sidebar スクリプトの `help_lines`（`キー|説明|補足`、`-` は区切り線）に 1 か所だけ持つ（キーを足したらここだけ直す）。通常の sidebar と cockpit で、効き方が違うキー（`j/k`・`⏎`・`click`・`q`・`p`）は出し分ける
+  - ポップアップ（`display-popup`、橙の角丸の枠、画面中央）の中身は、一時ファイル（`/tmp/tmux-agent-sidebar-help-<pid>.txt`）を `bash -c 'cat …; read -rsn1'` で出すだけ。閉じるまで sidebar の再描画は止まる
+  - **j/k で行を選ぶ案はやめた**: 一覧は 15 行ほどで、選んでも何も起きない（選択が意味を持たない）うえ、再描画で表示が崩れた。**ポップアップの中で sidebar 自身を動かす案もやめた**: ポップアップの中は `TMUX_PANE` が無く、先頭の「tmux の pane 内で実行してください」の確認で起動前に終了して、一瞬で閉じた
+  - 説明は表示幅で収める（日本語は 1 文字 2 桁。`HELP_WIDTH` / `HELP_KEY_COL`）。各行は内側の幅より 1 桁短くする（右端の桁まで書くと、端末によっては折り返して崩れるため）
 - sidebar 上で `Enter` / `l` / `h`、または Agent の行を **クリック** → その Agent の window・pane へジャンプ（`r` で即時更新）
 - sidebar 上で `R`（大文字）→ 選択中の Claude Code を **再起動**（バージョンアップや設定の反映用。通常の sidebar・cockpit のどちらでも効く。ヒント行には出さない）
   - `tmux-agent-restart <pane_id>` が、`claude agents --json` で pane の Agent（pid・sessionId・cwd）を特定 → `SIGTERM` で終了 → 戻ったシェルに `claude <引き継ぐ引数> --resume <sessionId>` を入力して実行する
