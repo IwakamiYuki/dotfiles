@@ -1,1 +1,6 @@
 __pycache__/
+
+# ~/.claude/skills と ~/.codex/skills が claude/skills へのリンクのため、ツールが自動生成するものがここに作られる
+claude/skills/.system/
+claude/skills/.trash/
+claude/skills/synced/
