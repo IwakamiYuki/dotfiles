@@ -88,9 +88,10 @@ C_DIM="${ESC}[38;5;245m"
 C_WORKING="${ESC}[38;5;226m"
 C_WAITING="${ESC}[38;5;196m"
 C_DONE="${ESC}[38;5;46m"
-# IDLE(入力待ち)は DONE(完了・未読)と同じ緑系だが、落ち着いた緑にする。
+# IDLE(入力待ち)は DONE(完了・未読)と同じ緑系だが、くすんだ灰緑にして存在感を抑える。
 # DONE だけ鮮やかな緑 + カードの背景の色味にして、「新しい結果がある」を IDLE と区別する
-C_IDLE="${ESC}[38;5;108m"
+# (IDLE は左端のバーと状態ピルだけが緑。カードの背景には色味を付けない)
+C_IDLE="${ESC}[38;5;65m"
 C_UNKNOWN="${ESC}[38;5;245m"
 C_ACTIVE="${ESC}[38;5;208m"
 C_TITLE_ROW="${ESC}[38;5;252m"
@@ -105,13 +106,13 @@ CARD_BG="${ESC}[48;5;236m"
 # 注意が必要な状態(WAITING / DONE)のカードは背景に色味を付けて、一覧の中で目に入るようにする。
 # 選択中(角丸の罫線で囲む)はそれぞれ一段明るい色にする
 CARD_BG_WAITING="${ESC}[48;5;52m"
-# IDLE(入力待ち)と DONE(完了・未読)は、どちらも緑の色味。DONE のほうを強い緑にして、
-# 「新しい結果がある」を IDLE と区別する
-CARD_BG_IDLE="${ESC}[48;5;22m"
+# DONE(完了・未読)は強い緑の色味。IDLE(入力待ち)は背景に色味を付けず通常のカードと同じにして、
+# 「新しい結果がある」を IDLE と区別する(以前は IDLE も暗い緑で、選択中の IDLE が DONE と同じ色になって紛らわしかった)
+CARD_BG_IDLE="${ESC}[48;5;236m"
 CARD_BG_DONE="${ESC}[48;5;28m"
 CARD_BG_SELECTED="${ESC}[48;5;238m"
 CARD_BG_WAITING_SELECTED="${ESC}[48;5;88m"
-CARD_BG_IDLE_SELECTED="${ESC}[48;5;28m"
+CARD_BG_IDLE_SELECTED="${ESC}[48;5;238m"
 CARD_BG_DONE_SELECTED="${ESC}[48;5;34m"
 # 選択中のカードを囲む罫線の色(テーマのオレンジ)
 C_SELECT="${ESC}[1;38;5;208m"
@@ -752,7 +753,7 @@ put_agent() {
     working) color=$C_WORKING; pill_bg=220; pill_fg=232; label="${SPINNER[SECONDS % ${#SPINNER[@]}]} WORKING"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
     waiting) color=$C_WAITING; pill_bg=196; pill_fg=255; label="WAITING"; bg_normal=$CARD_BG_WAITING; bg_sel=$CARD_BG_WAITING_SELECTED ;;
     done) color=$C_DONE; pill_bg=41; pill_fg=232; label="DONE"; bg_normal=$CARD_BG_DONE; bg_sel=$CARD_BG_DONE_SELECTED ;;
-    idle) color=$C_IDLE; pill_bg=71; pill_fg=232; label="IDLE"; bg_normal=$CARD_BG_IDLE; bg_sel=$CARD_BG_IDLE_SELECTED ;;
+    idle) color=$C_IDLE; pill_bg=65; pill_fg=232; label="IDLE"; bg_normal=$CARD_BG_IDLE; bg_sel=$CARD_BG_IDLE_SELECTED ;;
     *) color=$C_UNKNOWN; pill_bg=240; pill_fg=252; label="UNKNOWN"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
   esac
 
