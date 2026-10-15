@@ -133,6 +133,12 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - Agent の cwd がシェルの cwd と違うとき（worktree へ移った場合など）は、`cd <cwd> &&` を付けて再開する
   - **扱わないケース**: Agent が pane の直下で起動されていて、シェルが無い pane（終了すると pane ごと閉じるため）。戻った先が既知のシェル（zsh / bash / sh / dash / ksh / fish）でないときも、何も入力しない。Codex は未対応
   - 環境変数: `AGENT_RESTART_CLAUDE_CMD`（入力するコマンド名。既定 `claude`）
+- sidebar 上で `f`（fork）→ 選択中の Claude Code の **セッションを複製して、新しい pane で開く**（通常の sidebar・cockpit のどちらでも効く。ヒント行には出さない）。「別のセッションで質問・調査したい。メインは作業を続けたまま」という用途
+  - `tmux-agent-restart <pane_id> --fork (--focus | --notify <sidebar_pane_id>)` が、`claude agents --json` で pane の Agent（pid・sessionId・cwd）を特定 → **Agent は止めずに** 新しい pane で `claude <引き継ぐ引数> --resume <sessionId> --fork-session` を実行する。複製は元の会話を引き継ぐ新しいセッションで、元のセッションには影響しない（`--fork-session` は新しい session ID を付けるだけで、対話セッションとして開く）
+  - WORKING / WAITING でも確認なしで動く（止めないため）。Agent がシェルを介さずに起動されていても使える
+  - 新しい pane の作り方（置き場所・分割の向き・`--focus` で移動 / `--notify` で cockpit の右の枠へ入れる・複製が Agent として検出されたら選択）は `n` と同じ処理（`tmux-agent-new`）に任せる。anchor は複製元の pane。`tmux-agent-new` は環境変数 `AGENT_NEW_CMD`（入力するコマンドの差し替え）と `AGENT_NEW_LABEL`（完了メッセージの名前）を受け付ける
+  - 新しい pane は **Agent の cwd** で開く（セッションは cwd ごとに保存されるため、同じ場所でないと `--resume` で見つからない）
+  - 引き継ぐ引数は `R` と同じ許可リストだけ（落とした数はメッセージに出る）。Codex は未対応。空きシェルの欄では「Agent が起動していません」と出す
 - sidebar 上で `n` → 選択中のカードの **リポジトリで新しい pane を作り**、Claude Code / Codex を新規セッションで起動する（tmux のメニューで `c` = Claude / `x` = Codex を選ぶ。通常の sidebar・cockpit のどちらでも効く）
   - `tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id> | --print)` が処理する（`--print` は、スマホの Web 画面（`tmux-agent-web`）用。Mac のフォーカスを動かさず、作った pane_id だけを標準出力へ返す）
   - **ディレクトリ**: リポジトリの本体（worktree のカードを選んでいても、大本のディレクトリ。見出しのリポジトリと同じ `AG_RKEY`）。git 管理外のグループはそのディレクトリ
@@ -500,7 +506,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 │   ├── tmux-agent-sidebar-preview # sidebar の p で開くポップアップ（pane のライブプレビュー）
 │   ├── tmux-agent-cockpit         # Agent cockpit の制御（open / show / restore / close / heal）
 │   ├── tmux-agent-cockpit-slot    # cockpit の右の枠に常駐する交換用 pane
-│   ├── tmux-agent-restart         # sidebar の R で呼ばれる Claude Code の再起動（終了 → --resume で入り直す）
+│   ├── tmux-agent-restart         # sidebar の R で呼ばれる Claude Code の再起動（終了 → --resume で入り直す）。--fork は f の複製（止めない）
 │   ├── tmux-agent-new             # sidebar の n で呼ばれる、リポジトリでの新規 pane + Claude / Codex の新規起動
 │   ├── tmux-agent-web             # スマホのブラウザから Agent を確認・操作する Web サーバー（Python。画面は tmux/assets/agent-web/）
 │   ├── tmux-agent-web-toggle      # sidebar の w / W から呼ばれる、tmux-agent-web の入り切り・URL コピー
