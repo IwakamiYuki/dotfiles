@@ -70,7 +70,7 @@ class SidebarUsageTest(unittest.TestCase):
                     json.dump(data, f)
         env = " ".join(
             [
-                "env -u TMUX",
+                "env",  # TMUX は外さない: pane に設定される専用ソケットの値を引き継ぎ、sidebar が普段の tmux ではなく一時サーバーを見るようにする
                 f"AGENT_SIDEBAR_RATE_LIMITS={rl_file}",
                 f"AGENT_SIDEBAR_CREDITS={cr_file}",
                 "AGENT_SIDEBAR_CLAUDE_BIN=true",
@@ -79,6 +79,7 @@ class SidebarUsageTest(unittest.TestCase):
                 f"AGENT_SIDEBAR_CLAUDE_CACHE={self.dir}/claude-cache",
                 f"AGENT_SIDEBAR_SESSIONS_DIR={self.dir}/sessions",
                 f"AGENT_SIDEBAR_TODAY={today}" if today else "AGENT_SIDEBAR_TODAY=",
+                f"TMUX_AGENT_WEB_STATE={self.dir}/no-web-state.json",  # 普段の WEB サーバーの状態を読まない
                 "bash",
                 SIDEBAR,
             ]
