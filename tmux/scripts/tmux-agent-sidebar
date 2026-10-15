@@ -10,6 +10,9 @@
 #   cockpit window(prefix + B)の sidebar では、j/k で選択した Agent の本物の pane が右の枠に入る(tmux-agent-cockpit)。
 #                              Enter = 右の枠へフォーカス、マウスクリック = その Agent を枠に入れる(移動はしない)
 #   q                        : cockpit の sidebar だけ。cockpit を閉じる(Ctrl-C と同じ)
+#   R                        : 選択中の Claude Code を再起動(--resume で入り直す。tmux-agent-restart)
+#   n                        : 選択中のカードのリポジトリで Claude / Codex を新規起動(tmux-agent-new)
+#   f                        : 選択中の Claude Code のセッションを複製して新しい pane で開く(止めない。tmux-agent-restart --fork)
 #   p / Space                : 選択中の Agent の pane をポップアップでプレビュー
 #                              （中で j/k 切り替え・Enter 移動。tmux-agent-sidebar-preview）
 #   自動プレビュー(@agent_sidebar_auto_preview): key = j/k を押すとポップアップを開く(既定)、
@@ -1581,6 +1584,21 @@ restart_selected() {
   esac
 }
 
+# 選択中の Claude Code のセッションを複製して、新しい pane で開く(tmux-agent-restart --fork に任せる)。
+# 「別のセッションで質問・調査したい。元の Agent は作業を続けたまま」という用途なので、止めない・確認も挟まない。
+# 複製は元の会話を引き継ぐ新しいセッションで、元のセッションには影響しない。移動 / cockpit の枠への入れ方は n と同じ
+fork_selected() {
+  local i=$SEL_IDX mode
+  ((AG_N > 0)) || return 0
+  case ${AG_TYPE[i]} in
+    Claude) ;;
+    Shell) tmux display-message "fork: Agent が起動していません(n で新規起動)" 2>/dev/null; return 0 ;;
+    *) tmux display-message "fork: ${AG_TYPE[i]} の複製は未対応です" 2>/dev/null; return 0 ;;
+  esac
+  if [ "$COCKPIT" = 1 ]; then mode="--notify '$TMUX_PANE'"; else mode="--focus"; fi
+  tmux run-shell -b "'$RESTART_BIN' '${AG_ID[i]}' --fork $mode" 2>/dev/null
+}
+
 # 選択中のカードのリポジトリで、新しい pane を作って Claude Code / Codex を新規セッションで起動する(メニューで種別を選ぶ)。
 # 置き場所は、そのリポジトリの先頭に表示されている Agent の window(cockpit の枠に入っていれば元の window)。
 # ディレクトリはリポジトリの本体(worktree でも大本のディレクトリ)。実際の処理は tmux-agent-new
@@ -1658,6 +1676,7 @@ read_key() {
     k) KEY=up ;;
     r) KEY=refresh ;;
     R) KEY=restart ;;
+    f) KEY=fork ;;
     n) KEY=new ;;
     w) KEY=web_toggle ;;
     W) KEY=web_copy ;;
@@ -1907,6 +1926,9 @@ while :; do
       ;;
     new)
       new_agent_menu
+      ;;
+    fork)
+      fork_selected
       ;;
     # スマホ用 Web サーバーの入り切り / URL のコピー。起動の待ち(最大 5 秒)で sidebar を止めないよう、裏で実行する。
     # 状態は毎 tick の read_web_state が拾うので、ON/OFF の表示は 1 秒ほどで変わる

@@ -1,8 +1,17 @@
 #!/bin/bash
-# tmux-agent-restart <pane_id> : pane の Claude Code を終了し、同じ pane のシェルで --resume つきに起動し直す。
+# tmux-agent-restart <pane_id> [--fork (--focus | --notify <sidebar_pane_id>)]
+#
+# 通常: pane の Claude Code を終了し、同じ pane のシェルで --resume つきに起動し直す。
 # バージョンアップや設定の反映のために再起動したいとき用(sidebar の R から呼ばれる)。
 #
-# 流れ: claude agents --json から pane の Agent(pid・sessionId・cwd)を特定
+# --fork: Agent を止めずに、そのセッションを複製した新しい Claude Code を、新しい pane で起動する(sidebar の f から呼ばれる)。
+#   「別のセッションで質問・調査したい。メインは作業を続けたまま」という用途。複製は元の会話を引き継ぐ新しいセッションで、
+#   元のセッションには影響しない(claude --resume <id> --fork-session)。作業中・許可待ちでも確認なしで動く。
+#   pane の作り方(置き場所・分割の向き・移動 / cockpit の枠への入れ方)は tmux-agent-new に任せる(anchor = 複製元の pane)。
+#   新しい pane は Agent の cwd で開く(セッションは cwd ごとに保存されているため、同じ場所でないと --resume で見つからない)。
+#   Agent がシェルを介さずに起動されていても使える(pane を終了しないため)
+#
+# 通常の流れ: claude agents --json から pane の Agent(pid・sessionId・cwd)を特定
 #       → SIGTERM で終了 → 戻ったシェルに「claude <引き継ぐ引数> --resume <sessionId>」を入力して実行
 #
 # - 作業中でも止める(確認は呼び出し側の責務。sidebar が WORKING / WAITING のときに y/n を挟む)。
@@ -23,11 +32,25 @@ CLAUDE_CMD="${AGENT_RESTART_CLAUDE_CMD:-claude}"
 EXIT_WAIT_TICKS=50   # 0.2 秒 × 50 = 10 秒まで終了を待つ
 SAFE_VALUE='^[A-Za-z0-9._:/@+-]+$'
 
-say() { tmux display-message "restart: $*" 2>/dev/null; }
+NEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-new"
+
+say() { tmux display-message "$TAG: $*" 2>/dev/null; }
 die() { say "$*"; exit 1; }
 
 pane=${1:-}
-[ -n "$pane" ] || { echo "usage: tmux-agent-restart <pane_id>" >&2; exit 2; }
+usage="usage: tmux-agent-restart <pane_id> [--fork (--focus | --notify <sidebar_pane_id>)]"
+[ -n "$pane" ] || { echo "$usage" >&2; exit 2; }
+fork=0; mode=""; sidebar=""; TAG=restart
+if [ "${2:-}" = --fork ]; then
+  fork=1; TAG=fork; mode=${3:-}; sidebar=${4:-}
+  case $mode in
+    --focus) ;;
+    --notify) [ -n "$sidebar" ] || { echo "$usage" >&2; exit 2; } ;;
+    *) echo "$usage" >&2; exit 2 ;;
+  esac
+elif [ $# -gt 1 ]; then
+  echo "$usage" >&2; exit 2
+fi
 
 # display-message は存在しない pane でもエラーにならないので、返ってきた pane_id の一致で確かめる
 info=$(tmux display-message -p -t "$pane" '#{pane_id}|#{pane_pid}' 2>/dev/null)
@@ -58,7 +81,8 @@ done < <(printf '%s' "$json" | jq -r '.[] | "\(.pid)|\(.sessionId // "")|\(.cwd 
 [ -n "$agent_pid" ] || die "この pane に Claude Code が見つかりません"
 [ -n "$agent_sid" ] || die "sessionId が分からないので再開できません"
 [[ $agent_sid =~ ^[A-Za-z0-9-]+$ ]] || die "sessionId の形式が想定外です"
-[ "$agent_pid" != "$pane_pid" ] || die "シェルを介さずに起動された Agent は未対応です(終了すると pane が閉じます)"
+# 再起動は pane のシェルへ入力し直すので、シェルが無い pane は扱えない(複製は pane を終了しないので関係ない)
+((fork)) || [ "$agent_pid" != "$pane_pid" ] || die "シェルを介さずに起動された Agent は未対応です(終了すると pane が閉じます)"
 
 # 引き継ぐ引数(許可リストだけ)。ps の 1 語目は実行ファイルなので飛ばす
 keep=""
@@ -84,6 +108,15 @@ while [ $# -gt 0 ]; do
     *) dropped=$((dropped + 1)) ;;
   esac
 done
+
+if ((fork)); then
+  [ -d "$agent_cwd" ] || die "ディレクトリがありません ($agent_cwd)"
+  note=""
+  ((dropped > 0)) && note=" (引き継がなかった引数: ${dropped})"
+  # 結果の表示は tmux-agent-new が出す(後から出すと上書きされるので、引き継がなかった数は名前に含める)
+  AGENT_NEW_CMD="$CLAUDE_CMD$keep --resume $agent_sid --fork-session" AGENT_NEW_LABEL="Claude(複製 ${agent_sid:0:8})$note" \
+    exec "$NEW_BIN" claude "$pane" "$agent_cwd" "$mode" ${sidebar:+"$sidebar"}
+fi
 
 # SIGTERM で終了させる(Ctrl-C や /exit は入力欄の状態に左右されるため使わない)
 kill -TERM "$agent_pid" 2>/dev/null || die "終了できませんでした (pid $agent_pid)"

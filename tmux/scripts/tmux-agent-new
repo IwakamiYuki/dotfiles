@@ -7,6 +7,8 @@
 #   (slot は枠に入った Agent の元の位置に居る)。割り出せなければ新しい window にする
 # - 新しい pane は anchor(または slot)を分割して作る。横幅が十分(SPLIT_H_MIN 以上)なら左右、狭ければ上下
 # - 起動はシェルを立ち上げてからコマンドを入力する。Agent が終了してもシェルが残り、tmux-agent-restart(R)がそのまま使える
+# - AGENT_NEW_CMD があれば、それをそのまま入力する(tmux-agent-restart --fork が「--resume <id> --fork-session」つきで呼ぶ)。
+#   AGENT_NEW_LABEL は完了メッセージに出す名前(既定は type)
 # - 起動するコマンドは tmux の option で変えられる(例: --dangerously-skip-permissions を付けたいとき)
 #     @agent_sidebar_claude_cmd（既定 claude）/ @agent_sidebar_codex_cmd（既定 codex）
 # - --here: pane を作らず、anchor の pane のシェルへそのまま入力して起動する(sidebar の「Agent の居ないリポジトリ」の
@@ -46,7 +48,8 @@ case $mode in
 esac
 [ -d "$dir" ] || die "ディレクトリがありません ($dir)"
 
-cmd=$(tmux show-option -gqv "@agent_sidebar_${type}_cmd" 2>/dev/null)
+cmd=${AGENT_NEW_CMD:-}
+[ -n "$cmd" ] || cmd=$(tmux show-option -gqv "@agent_sidebar_${type}_cmd" 2>/dev/null)
 [ -n "$cmd" ] || cmd=$type
 
 # display-message は存在しない pane でもエラーにならないので、返ってきた pane_id の一致で確かめる
@@ -113,4 +116,4 @@ else
   "$(cd "$(dirname "$0")" && pwd)/tmux-agent-cockpit" show "$new" >/dev/null 2>&1
   tmux select-window -t "$new" \; select-pane -t "$new" 2>/dev/null
 fi
-say "$type を起動しました (${dir##*/})"
+say "${AGENT_NEW_LABEL:-$type} を起動しました (${dir##*/})"
