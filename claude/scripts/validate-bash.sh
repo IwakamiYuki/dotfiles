@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Claude Code PreToolUse hook: Bash コマンド検証
-# ファイルリダイレクトと sed/perl インライン編集をブロック
+# sed -i と git add の危険な形をブロック
 
 # 標準入力から JSON を読み込み
 input=$(cat)
@@ -17,37 +17,13 @@ else
     command=$(echo "$input" | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('tool_input', {}).get('command', ''))")
 fi
 
-# 禁止パターンをチェック
-# cat/echo/printf でのファイルリダイレクトを検出
-#
-# 禁止: cat > file, echo "text" > file, printf "text" >> file
-# 許可: command 2>/dev/null, echo "text" >&2, cat file 2>&1
-
-# ファイルへの書き込みリダイレクトを検出
-# 許可: >&数字, 数字>/dev/, 数字>&数字
-# 禁止: > ファイル名, >> ファイル名
-if echo "$command" | grep -qE '(cat|echo|printf)'; then
-    # cat/echo/printf を含む部分コマンドを抽出（パイプや ; までの部分）
-    subcmd=$(echo "$command" | grep -oE '(cat|echo|printf)[^|;]*')
-
-    # ファイルリダイレクトを検出:
-    # - > の前が数字でも & でもない（通常のリダイレクト）
-    # - > の後に /dev/ 以外のファイル名が続く
-    # 重要: この正規表現は >&2 や 2>/dev/null を除外し、> file.txt のみを検出する
-    if echo "$subcmd" | grep -qE '[^0-9&]>>?[[:space:]]*[^&]' && \
-       ! echo "$subcmd" | grep -qE '[^0-9&]>>?[[:space:]]*/dev/'; then
-        echo "ERROR: cat/echo/printf でのファイルリダイレクトは禁止されています。Edit または Write ツールを使用してください。" >&2
-        exit 2
-    fi
-fi
-
-if echo "$command" | grep -qE 'sed.*-[ie]'; then
-    echo "ERROR: sed でのインライン編集は禁止されています。Edit ツールを使用してください。" >&2
-    exit 2
-fi
-
-if echo "$command" | grep -qE 'perl.*-[ip]'; then
-    echo "ERROR: perl でのインライン編集は禁止されています。Edit ツールを使用してください。" >&2
+# sed -i（--in-place）をブロック
+# 理由: macOS（BSD sed）は `sed -i 's/a/b/' f` で拡張子の引数が必須。GNU 流に書くとファイルを壊す
+# （~/.zshrc を空にした事例がある）。他のコマンド（cat > file や perl -pi など）は、
+# 迂回しやすく誤検知も多いため、権限モード / auto mode の判定に任せる。
+# 許可: sed -n 's/a/b/p' f, sed -e 's/a/b/' f | cmd, cmd | grep -i foo
+if echo "$command" | grep -qE '(^|[^[:alnum:]_/.-])sed[[:space:]]+([^|;&]*[[:space:]])?(-[a-zA-Z]*i[^[:space:]]*|--in-place[^[:space:]]*)([[:space:]]|$)'; then
+    echo "ERROR: sed でのインライン編集（-i）は禁止されています。Edit ツールを使用してください。" >&2
     exit 2
 fi
 
