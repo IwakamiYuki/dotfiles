@@ -228,6 +228,13 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
       - はしご（`CREDITS_LADDER`。大きい単位から。ドル建てなので為替の設定は要らない）: `📱 $1,000`（iPhone 17 ≒ ¥15 万）/ `🎮 $400`（Switch 2 ≒ ¥6 万）/ `🚄 $100`（新幹線 東京〜新大阪 ≒ ¥1.5 万）/ `🍻 $33`（飲み会 1 回 ≒ ¥5,000）/ `🍜 $7`（ラーメン ≒ ¥1,000）/ `🧃 $1`（ジュース ≒ ¥150）。1 ドル = 約 150 円で丸めた値
       - 大きい単位から順に使い、端数（$1 未満）は捨てる。隣り合う単位の比は 3〜5 倍で、`$32.43` は `🍜🍜🍜🍜🧃🧃🧃🧃`、`$33` で `🍻` に繰り上がる。個数は幅に収まる範囲（幅 32 で 13 個）までで、超える分は小さい単位から切り捨てる
       - ドル以外の通貨、$1 未満、credits が無効のときは出さない。値段は変わる（2026 年は Switch 2 が 5 月、iPhone が 7 月に値上げ）ので「≒」の目安。品目や値段を替えるときは `CREDITS_LADDER` を直す（絵文字は異体字セレクタなしで 2 桁幅のものにする。`✈️` のような VS16 付きは端末によって幅が崩れる）
+  - **Codex の使用量の行**: データがあれば `🤖 2,542 / 20,000  13%` を、USAGE 区画の最後（💳 と絵文字の行の下）に 1 行足す。単位は **Codex のクレジット**（ChatGPT の「使用状況 > 月間上限」の `2,542/20,000 クレジット使用済み` と同じ値。1 クレジット ≒ $0.04 で、20,000 が $800）。色は 💳 と同じ **今月の着地予想**（`landing_pct` / `landing_color` を共有）。取得が 15 分以上止まっていれば経過時間を添え、着地予想は使わない
+    - 元データは `tmux-agent-codex-usage` が書く `/tmp/codex-usage.json`（`AGENT_SIDEBAR_CODEX_USAGE` で変更）。`codex app-server`（stdio）へ JSON-RPC `account/rateLimits/read` を 1 回送り、`individualLimit`（`limit` / `used` / `resetsAt`）を読む。モデルは呼ばれず、約 0.7 秒。Codex 自身のログインを使うのでトークンは扱わない
+    - ⚠️ **app-server は experimental**。形が変わったら取得失敗として扱い、前回の値を消さず、表示もしない。`individualLimit` が無いアカウントは `enabled=false` を書いて出さない
+    - ⚠️ **Business プランでは `credits.balance` / `primary` / `secondary` が null**（残高も 5h / 1w の枠も無い）。出せるのは個人の月間上限だけ。Plus / Pro など別プランの形は未確認（`individualLimit` が無ければ出さないだけ）
+    - 取得は sidebar が `CODEX_REFRESH_SEC`（60 秒）ごとに裏で起動する（`statusline.sh` は Claude 専用で、Codex だけ使う人には走らないため）。スクリプト側にも TTL（300 秒）・ロック（`.lock`）・直近の試行（`.attempt`）があり、ほとんどの起動は何もせず終わる。裏で動く `codex app-server` は sidebar の子なので、Agent としては検出されない（sidebar の pane は検出の対象外）
+    - 環境変数: `AGENT_SIDEBAR_CODEX_USAGE_BIN`（取得コマンド。テストでは `true` にして本物の codex を起動しない）/ `AGENT_CODEX_USAGE_CACHE` / `AGENT_CODEX_BIN` / `AGENT_CODEX_USAGE_TTL`。手動で試すなら `tmux-agent-codex-usage --force`
+    - テスト: `test_agent_codex_usage.py`（偽の codex で取得・TTL・失敗・ロック）、`test_agent_sidebar_usage.py`（行の描画・色・並び）
   - **種別アイコン（画像）** `@agent_sidebar_type_icon`: `text`（既定。project 名の右に `Claude` / `Codex` の文字）| `image`（project 名の左に 2 桁 × 1 行の画像。project 名の幅が増える）
     - 画像は `tmux/assets/agent-icons/{claude,codex}.png`（出所は同ディレクトリの `NOTICE.md`。Simple Icons の SVG を色付け・PNG 化したもの）
     - Kitty graphics protocol の **Unicode placeholders** を使う: 画像データを tmux のパススルー（`ESC P tmux ; … ESC \`）で端末へ一度登録し、
@@ -353,7 +360,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 - `w`（sidebar）で起動すると、**`.local` の URL（`<scheme>://<Mac の名前>.local:8765/#token=…`）がクリップボードに入る**。`.local` が引けない端末用の IP の URL は、端末に出る（状態ファイルの `ipUrl`）
 - `--no-tls` で HTTP だけにする。HTTP のままだと、トークンと Cookie が LAN で平文になる（信頼できる自宅の Wi-Fi でだけ使う）
 
-**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（`test_agent_daily.py` は Daily ダッシュボード、`test_agent_cockpit_daily.py` は cockpit の `view` と slot。sidebar のテストは `TMUX` を外さず、専用ソケットの別 tmux だけを見る。外すと sidebar が普段の tmux に問い合わせてしまう）（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
+**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（`test_agent_daily.py` は Daily ダッシュボード、`test_agent_cockpit_daily.py` は cockpit の `view` と slot。`test_agent_codex_usage.py` は Codex の使用量の取得。sidebar のテストは `TMUX` を外さず、専用ソケットの別 tmux だけを見る。外すと sidebar が普段の tmux に問い合わせてしまう）（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
 入り切りスクリプトのテストは、`AGENT_WEB_CLIP_CMD`（コピー先のコマンド）を偽物にして、本物のクリップボードを書き換えない。`jq` が必要）、
 `cd tmux/tests && node --test`（`assets/agent-web/ansi.js` の ANSI 変換）。
 環境変数 `TMUX_AGENT_WEB_SOCKET`（tmux のソケットパス）はテスト用。
@@ -538,6 +545,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 │   ├── tmux-agent-restart         # sidebar の R で呼ばれる Claude Code の再起動（終了 → --resume で入り直す）。--fork は f の複製（止めない）
 │   ├── tmux-agent-new             # sidebar の n で呼ばれる、リポジトリでの新規 pane + Claude / Codex の新規起動
 │   ├── tmux-agent-daily           # 前回の Daily Note 更新以降の Claude / Codex の作業を一覧（--markdown でノートに貼る形）
+│   ├── tmux-agent-codex-usage     # Codex の今月の使用量（クレジット）を取得して /tmp/codex-usage.json へ。sidebar の USAGE 欄が読む
 │   ├── tmux-agent-web             # スマホのブラウザから Agent を確認・操作する Web サーバー（Python。画面は tmux/assets/agent-web/）
 │   ├── tmux-agent-web-toggle      # sidebar の w / W から呼ばれる、tmux-agent-web の入り切り・URL コピー
 │   ├── tmux-window-reorder        # C-t S の window 並び替えポップアップ

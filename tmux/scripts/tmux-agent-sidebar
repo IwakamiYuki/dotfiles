@@ -82,6 +82,12 @@ CREDITS_ICON_MAX=13
 #   WARN 以下=緑(余裕) / WARN 超〜ALERT 以下=黄(注意) / ALERT 超=赤(上限を超えそう)
 CREDITS_LAND_WARN_PCT=70
 CREDITS_LAND_ALERT_PCT=100
+# Codex の今月の使用量(クレジット)。tmux-agent-codex-usage が書くファイルを読む。Business の個人の月間上限(individualLimit)
+CODEX_FILE="${AGENT_SIDEBAR_CODEX_USAGE:-/tmp/codex-usage.json}"
+CODEX_USAGE_BIN="${AGENT_SIDEBAR_CODEX_USAGE_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-codex-usage}"
+# 取得の起動の間隔(秒)。取得スクリプト側にも TTL(既定 300 秒)があるので、ほとんどは起動しただけで終わる
+CODEX_REFRESH_SEC=60
+CODEX_FETCHED_AT=-999
 GIT_TTL=10
 # トランスクリプトから拾った ai-title のキャッシュ("sessionId|title" の行)。形式は refresh_title_cache を参照
 TITLE_CACHE_FILE="${AGENT_SIDEBAR_TITLE_CACHE:-/tmp/tmux-agent-sidebar-titles.txt}"
@@ -892,6 +898,12 @@ CRED_AGE=""
 CRED_CENTS=""
 # 今月の着地予想が上限の何 % か（整数）。予想できないとき(上限なし・古い値・月初で営業日の経過が 0)は空で、使用率の色に戻る
 CRED_LAND_PCT=""
+# Codex の使用量。CX_USED が空なら出さない。単位はクレジット
+CX_USED=""
+CX_LIMIT=""
+CX_PCT=""
+CX_AGE=""
+CX_LAND_PCT=""
 # 下部欄を出すのに必要な最小の端末高さ(これ未満では Agent 一覧を優先して出さない)
 FOOTER_MIN_TERM_H=14
 # 下部欄の 2 つ目の区画(Daily 欄・WEB 欄)の見出し。操作して使う道具をまとめる
@@ -1020,6 +1032,17 @@ fmt_money() {
   REPLY="$sym$out"
 }
 
+# fmt_int <数値>: 四捨五入した整数を桁区切りにして REPLY に入れる（fork しない）。Codex のクレジット用
+fmt_int() {
+  local s out=""
+  printf -v s '%.0f' "$1" 2>/dev/null || s=0
+  while ((${#s} > 3)); do
+    out=",${s: -3}$out"
+    s=${s%???}
+  done
+  REPLY=$s$out
+}
+
 # 経過秒を "12m" / "3h" / "2d" にして REPLY に入れる
 fmt_age() {
   local sec=$1
@@ -1036,19 +1059,26 @@ calc_credits_landing() {
   CRED_LAND_PCT=""
   [ -n "$CRED_LIMIT" ] || return 0
   [ -z "$CRED_AGE" ] || return 0   # 取得が止まった古い値からは予想しない
+  landing_pct "$CRED_USED" "$CRED_LIMIT" && CRED_LAND_PCT=$REPLY
+}
+
+# landing_pct <使用額> <上限>: 今月の着地予想が上限の何 % かを REPLY に入れる(整数)。予想できないときは 1 を返す。
+# 金額の単位は問わない(ドルでも Codex のクレジットでも、比だけを見る)。💳 と Codex の行が共有する
+landing_pct() {
+  REPLY=""
   local used_c limit_c y m d wd days wd1 i wi total=0 elapsed=0
-  printf -v used_c '%.2f' "$CRED_USED" 2>/dev/null || return 0
-  printf -v limit_c '%.2f' "$CRED_LIMIT" 2>/dev/null || return 0
+  printf -v used_c '%.2f' "$1" 2>/dev/null || return 1
+  printf -v limit_c '%.2f' "$2" 2>/dev/null || return 1
   used_c=$((10#${used_c/./}))
   limit_c=$((10#${limit_c/./}))
-  ((limit_c > 0)) || return 0
+  ((limit_c > 0)) || return 1
 
   if [ -n "${AGENT_SIDEBAR_TODAY:-}" ]; then
     set -- $(date -j -f %Y-%m-%d "$AGENT_SIDEBAR_TODAY" '+%Y %m %d %u' 2>/dev/null)
   else
     set -- $(date '+%Y %m %d %u' 2>/dev/null)
   fi
-  [ $# -eq 4 ] || return 0
+  [ $# -eq 4 ] || return 1
   y=$1; m=$((10#$2)); d=$((10#$3)); wd=$4   # wd: 1=月 … 7=日
 
   case $m in
@@ -1065,8 +1095,8 @@ calc_credits_landing() {
       ((i <= d)) && elapsed=$((elapsed + 1))
     fi
   done
-  ((elapsed > 0)) || return 0                    # 月初で営業日がまだ 1 日も経っていない(1 日が土日など)
-  CRED_LAND_PCT=$((used_c * total * 100 / (limit_c * elapsed)))
+  ((elapsed > 0)) || return 1                    # 月初で営業日がまだ 1 日も経っていない(1 日が土日など)
+  REPLY=$((used_c * total * 100 / (limit_c * elapsed)))
 }
 
 # usage credits を読む。無効（is_enabled が false）・読めないときは CRED_USED を空にして出さない。
@@ -1104,6 +1134,42 @@ read_credits() {
   calc_credits_landing
 }
 
+# Codex の今月の使用量(クレジット)を読む。無効・読めないときは CX_USED を空にして出さない。
+# ファイルは tmux-agent-codex-usage が書く。取得は sidebar が CODEX_REFRESH_SEC ごとに裏で起動する(TTL 内なら何もせず終わる)
+read_codex_usage() {
+  local json age
+  if ((SECONDS - CODEX_FETCHED_AT >= CODEX_REFRESH_SEC)); then
+    CODEX_FETCHED_AT=$SECONDS
+    "$CODEX_USAGE_BIN" >/dev/null 2>&1 &
+    disown 2>/dev/null
+  fi
+  CX_USED=""; CX_LIMIT=""; CX_PCT=""; CX_AGE=""; CX_LAND_PCT=""
+  [ -r "$CODEX_FILE" ] || return 0
+  json=$(<"$CODEX_FILE") || return 0
+
+  json_field "$json" enabled
+  [ "$REPLY" = true ] || return 0
+  json_field "$json" used
+  [ -z "$REPLY" ] && return 0
+  CX_USED=$REPLY
+  json_field "$json" limit
+  CX_LIMIT=$REPLY
+  [ -n "$CX_LIMIT" ] || { CX_USED=""; return 0; }
+  json_field "$json" percent
+  [ -n "$REPLY" ] && { printf -v CX_PCT '%.0f' "$REPLY" 2>/dev/null || CX_PCT=""; }
+  json_field "$json" fetched_at
+  if [ -n "$REPLY" ]; then
+    age=$(($(date +%s) - ${REPLY%.*}))
+    if ((age >= CREDITS_STALE_SEC)); then
+      fmt_age "$age"
+      CX_AGE=$REPLY
+    fi
+  fi
+  if [ -z "$CX_AGE" ] && landing_pct "$CX_USED" "$CX_LIMIT"; then
+    CX_LAND_PCT=$REPLY
+  fi
+}
+
 # 使用率に応じた色(tmux-rate-limits と同じ段階: 低=橙系 → 80% 以上は赤)を REPLY に入れる
 limit_color() {
   local pct=$1
@@ -1137,6 +1203,21 @@ limit_row() {
   FOOTER_FRAME+="${ESC}[${at};1H ${C_DIM}${label}${FG_DEFAULT} ${color}${filled_str// /█}${C_RULE}${empty_str// /░}${FG_DEFAULT} ${color}${pct_str}${C_DIM}${rs}${FG_DEFAULT}${ESC}[K${C_RESET}"
 }
 
+# landing_color <着地予想の %> <使用率>: 金額の色を REPLY に入れる。
+# 色は、今月の着地予想が上限(月の予算)を超えそうか。予想できない(空)ときは、今の使用率の段階にする
+landing_color() {
+  local land=$1 pct=$2
+  if [ -z "$land" ]; then
+    limit_color "$pct"
+  elif ((land > CREDITS_LAND_ALERT_PCT)); then
+    REPLY="${ESC}[38;5;196m"
+  elif ((land > CREDITS_LAND_WARN_PCT)); then
+    REPLY="${ESC}[38;5;220m"
+  else
+    REPLY="${ESC}[38;5;108m"
+  fi
+}
+
 # credits_row <行番号>: "💳 $29.84 / $1,300  2%  3h" を FOOTER_FRAME に積む。
 # 幅に収まる範囲で、金額 → 上限 → 使用率 → 古さ(取得が止まっているとき)の順に足す。
 # 色は使用率で limit_color と同じ段階に変える（上限なしは使用率が無いので低い段階の色）
@@ -1144,17 +1225,8 @@ credits_row() {
   local at=$1 used limit color body plain_len piece
   fmt_money "$CRED_USED" "$CRED_CUR" 0
   used=$REPLY
-  # 色は、今月の着地予想が上限(月の予算)を超えそうか。予想できないときは、今の使用率の段階にする
-  if [ -z "$CRED_LAND_PCT" ]; then
-    limit_color "${CRED_PCT:-0}"
-    color=$REPLY
-  elif ((CRED_LAND_PCT > CREDITS_LAND_ALERT_PCT)); then
-    color="${ESC}[38;5;196m"
-  elif ((CRED_LAND_PCT > CREDITS_LAND_WARN_PCT)); then
-    color="${ESC}[38;5;220m"
-  else
-    color="${ESC}[38;5;108m"
-  fi
+  landing_color "$CRED_LAND_PCT" "${CRED_PCT:-0}"
+  color=$REPLY
   body="${color}${used}"
   plain_len=$((4 + ${#used}))   # 空白1 + ラベル(💳=2桁) + 空白1 + 金額
 
@@ -1179,6 +1251,38 @@ credits_row() {
     ((plain_len + ${#piece} <= width - 1)) && body+="${C_DIM}${piece}"
   fi
   FOOTER_FRAME+="${ESC}[${at};1H ${FG_DEFAULT}💳 ${body}${FG_DEFAULT}${ESC}[K${C_RESET}"
+}
+
+# codex_row <行番号>: "🤖 2,533 / 20,000   13%  3h" を FOOTER_FRAME に積む。Codex の今月の使用量(クレジット)。
+# 幅に収まる範囲で、使用量 → 上限 → 使用率 → 古さ(取得が止まっているとき)の順に足す。色は 💳 と同じ(着地予想)
+codex_row() {
+  local at=$1 used limit color body plain_len piece
+  fmt_int "$CX_USED"
+  used=$REPLY
+  landing_color "$CX_LAND_PCT" "${CX_PCT:-0}"
+  color=$REPLY
+  body="${color}${used}"
+  plain_len=$((4 + ${#used}))   # 空白1 + ラベル(🤖=2桁) + 空白1 + 使用量
+
+  fmt_int "$CX_LIMIT"
+  limit=$REPLY
+  piece=" / $limit"
+  if ((plain_len + ${#piece} <= width - 1)); then
+    body+="${C_DIM}${piece}"
+    plain_len=$((plain_len + ${#piece}))
+  fi
+  if [ -n "$CX_PCT" ]; then
+    printf -v piece '%4s%%' "$CX_PCT"
+    if ((plain_len + ${#piece} <= width - 1)); then
+      body+="${color}${piece}"
+      plain_len=$((plain_len + ${#piece}))
+    fi
+  fi
+  if [ -n "$CX_AGE" ]; then
+    piece="  $CX_AGE"
+    ((plain_len + ${#piece} <= width - 1)) && body+="${C_DIM}${piece}"
+  fi
+  FOOTER_FRAME+="${ESC}[${at};1H ${FG_DEFAULT}🤖 ${body}${FG_DEFAULT}${ESC}[K${C_RESET}"
 }
 
 # credits_icons_row <行番号>: 使った額を、はしごの絵文字に分解して 1 行に並べる("🍜🧃🧃" など)。
@@ -1338,6 +1442,7 @@ build_footer() {
   [ -n "$LIM_1W_PCT" ] && usage_rows=$((usage_rows + 1))
   [ -n "$CRED_USED" ] && usage_rows=$((usage_rows + 1))
   [ -n "$CRED_CENTS" ] && usage_rows=$((usage_rows + 1))
+  [ -n "$CX_USED" ] && usage_rows=$((usage_rows + 1))
   ((usage_rows > 0)) && usage_rows=$((usage_rows + 1))
   # 下部欄は 2 つの区画: USAGE(データがあるとき。見出し + 行)と、TOOLS(常に。見出し + Daily 欄 + WEB 欄で 3 行。WEB が最下行)
   footer_rows=$((usage_rows + 3))
@@ -1361,7 +1466,11 @@ build_footer() {
       credits_row "$row"
       row=$((row + 1))
     fi
-    [ -n "$CRED_CENTS" ] && credits_icons_row "$row"
+    if [ -n "$CRED_CENTS" ]; then
+      credits_icons_row "$row"
+      row=$((row + 1))
+    fi
+    [ -n "$CX_USED" ] && codex_row "$row"
   fi
 
   if ((WEB_ON)); then
@@ -2200,6 +2309,7 @@ while :; do
     [ -n "$PENDING_ID" ] && select_pending_agent
     read_limits
     read_credits
+    read_codex_usage
     read_daily
     # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる。
     # cockpit では、枠に入っていた Agent が終了しただけのことがあるので、交換用の枠を戻してから判断する

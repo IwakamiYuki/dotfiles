@@ -41,6 +41,20 @@ def credits(**fields):
     return data
 
 
+def codex_usage(**fields):
+    data = {
+        "enabled": True,
+        "used": 2533.19,
+        "limit": 20000.0,
+        "percent": 12.66,
+        "unit": "credits",
+        "resets_at": 1793491200,
+        "fetched_at": int(time.time()),
+    }
+    data.update(fields)
+    return data
+
+
 def display_width(text):
     return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
 
@@ -58,7 +72,7 @@ class SidebarUsageTest(unittest.TestCase):
     def tmux(self, *args):
         return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True)
 
-    def render(self, limits=None, cred=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False):
+    def render(self, limits=None, cred=None, codex=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False):
         """sidebar を起動して、描画が出そろった画面を返す。None のファイルは作らない。
         today: 「今日」の日付(YYYY-MM-DD)。着地予想の色が日付で変わるので、固定して確認する。
         colors: True なら色の制御文字つき(capture-pane -e)で返す。
@@ -69,7 +83,8 @@ class SidebarUsageTest(unittest.TestCase):
         cockpit: True なら、描画のあとで window を cockpit にして(@agent_cockpit=1)、cockpit の欄(d のヒント)が出るまで待つ。"""
         rl_file = os.path.join(self.dir, "rate-limits.json")
         cr_file = os.path.join(self.dir, "credits.json")
-        for path, data in ((rl_file, limits), (cr_file, cred)):
+        cx_file = os.path.join(self.dir, "codex-usage.json")
+        for path, data in ((rl_file, limits), (cr_file, cred), (cx_file, codex)):
             if data is not None:
                 with open(path, "w") as f:
                     json.dump(data, f)
@@ -78,6 +93,8 @@ class SidebarUsageTest(unittest.TestCase):
                 "env",  # TMUX は外さない: pane に設定される専用ソケットの値を引き継ぎ、sidebar が普段の tmux ではなく一時サーバーを見るようにする
                 f"AGENT_SIDEBAR_RATE_LIMITS={rl_file}",
                 f"AGENT_SIDEBAR_CREDITS={cr_file}",
+                f"AGENT_SIDEBAR_CODEX_USAGE={cx_file}",
+                "AGENT_SIDEBAR_CODEX_USAGE_BIN=true",  # 本物の codex は起動しない
                 "AGENT_SIDEBAR_CLAUDE_BIN=true",
                 f"AGENT_SIDEBAR_ALERT_STATE={self.dir}/none",
                 f"AGENT_SIDEBAR_TITLE_CACHE={self.dir}/titles",
@@ -659,6 +676,85 @@ class SidebarUsageTest(unittest.TestCase):
         self.assertTrue(os.path.exists(log), "o キーで open が呼ばれませんでした")
         with open(log) as f:
             self.assertEqual(f.read().strip(), "obsidian://daily")
+
+
+    # --- Codex の今月の使用量(クレジット)の行 ---
+    # 着地予想の色は、上の 💳 と同じ(2026-10-13 は営業日 22 日のうち 9 日目。着地予想 = 使用量 × 22 / 9)
+
+    def codex_color(self, today, **fields):
+        screen = self.render(codex=codex_usage(**fields), today=today, colors=True)
+        m = re.search(r"🤖 [^\n]*?\x1b\[38;5;(\d+)m\d", screen)
+        self.assertIsNotNone(m, f"色つきの 🤖 行がありません:\n{screen!r}")
+        return m.group(1)
+
+    def test_使用量と上限と使用率を桁区切りで出す(self):
+        screen = self.render(codex=codex_usage())
+        self.assertIn("USAGE", screen)
+        self.assertRegex(screen, r"🤖 2,533 / 20,000\s+13%")
+
+    def test_Codex_だけなら_5h_と_1w_と_credits_は出さない(self):
+        screen = self.render(codex=codex_usage())
+        for word in ("5h", "1w", "💳"):
+            self.assertNotIn(word, screen)
+
+    def test_データが無ければ_出さない(self):
+        screen = self.render()
+        self.assertNotIn("🤖", screen)
+        self.assertNotIn("USAGE", screen)
+
+    def test_無効なら_出さない(self):
+        screen = self.render(codex={"enabled": False, "fetched_at": int(time.time())})
+        self.assertNotIn("🤖", screen)
+
+    def test_上限が読めなければ_出さない(self):
+        screen = self.render(codex=codex_usage(limit=None, percent=None))
+        self.assertNotIn("🤖", screen)
+
+    def test_取得が止まっていれば_経過時間を添える(self):
+        screen = self.render(codex=codex_usage(fetched_at=int(time.time()) - 3 * 3600))
+        self.assertRegex(screen, r"🤖 2,533 / 20,000\s+13%\s+3h")
+
+    def test_5h_1w_と_credits_と並べても_順番は_credits_の後ろで_WEB_欄が最下行(self):
+        screen = self.render(limits=rate_limits(), cred=credits(used=150), codex=codex_usage())
+        lines = [l for l in screen.splitlines() if l.strip()]
+        self.assertIn("WEB", lines[-1])
+        tools = next(i for i, l in enumerate(lines) if "TOOLS" in l)
+        self.assertIn("🤖", lines[tools - 1])  # USAGE 区画の最後
+        self.assertIn("🚄", lines[tools - 2])  # 💳 の絵文字の行の次
+        for line in screen.splitlines():
+            self.assertLessEqual(display_width(line), 32, line)
+
+    def test_codex_着地予想が上限の7割以下なら緑(self):
+        # 5000 → 着地 12222 / 20000 = 61%
+        self.assertEqual(self.codex_color("2026-10-13", used=5000, percent=25), self.GREEN)
+
+    def test_codex_着地予想が上限の7割を超えたら黄(self):
+        # 8000 → 着地 19555 / 20000 = 97%
+        self.assertEqual(self.codex_color("2026-10-13", used=8000, percent=40), self.YELLOW)
+
+    def test_codex_着地予想が上限を超えそうなら赤(self):
+        # 10000 → 着地 24444 / 20000 = 122%
+        self.assertEqual(self.codex_color("2026-10-13", used=10000, percent=50), self.RED)
+
+    def test_取得が止まった古い値は_着地予想を使わず_使用率の段階の色(self):
+        # 10000(使用率 50%)は、新しければ着地予想で赤。古い値は予想しないので使用率 50% の段階(黄系 220)
+        screen = self.render(
+            codex=codex_usage(used=10000, percent=50, fetched_at=int(time.time()) - 3 * 3600),
+            today="2026-10-13",
+            colors=True,
+        )
+        m = re.search(r"🤖 [^\n]*?\x1b\[38;5;(\d+)m\d", screen)
+        self.assertEqual(m.group(1), "220")
+
+    def test_取得を裏で起動する(self):
+        marker = os.path.join(self.dir, "fetched")
+        fake = os.path.join(self.dir, "fake-fetch")
+        with open(fake, "w") as f:
+            f.write(f"#!/bin/bash\ntouch {marker}\n")
+        os.chmod(fake, 0o755)
+        self.render(extra_env={"AGENT_SIDEBAR_CODEX_USAGE_BIN": fake})
+        self.wait_screen(lambda _: os.path.exists(marker))
+        self.assertTrue(os.path.exists(marker))
 
 
 class SidebarSurvivalTest(unittest.TestCase):
