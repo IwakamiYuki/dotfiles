@@ -10,26 +10,39 @@ fi
 echo "🤖 コミットメッセージを考え中..."
 echo
 
-# AI で候補生成（codex が git diff を直接取得）
+# diff を取得して codex に標準入力で渡す（codex 内の git 実行に依存しない）
+STAGED_DIFF="$(git diff --staged)"
+
+PROMPT='以下は git diff --staged の出力です。この変更に基づいて、適切なコミットメッセージを日本語で3つ提案してください。Conventional Commits の形式（feat:, fix:, refactor:, docs:, test:, chore:, style:, perf: のいずれか）で、スコープは含めず "type: description" の形式で出力してください。各提案は 1 行ずつ、番号や前置き・説明・コードブロックなしで、純粋に 3 行だけ出力してください。'
+
+# stderr も取り込み、ログとして残す（デバッグ用）
+LOG_FILE="$(mktemp -t ai-commit.XXXXXX.log)"
 RAW_RESPONSE="$(
-  PATH=/opt/homebrew/bin:$PATH codex exec \
-    "現在のリポジトリで git diff --staged を実行して、ステージされた変更を確認してください。その変更に基づいて適切なコミットメッセージを日本語で3つ提案してください。Conventional Commitsの形式（feat:, fix:, refactor: など）で、スコープは含めず type: description の形式で出力してください。各提案は1行ずつ、番号や説明なしで出力してください。" \
-    2>/dev/null || true
+  printf '%s\n\n--- git diff --staged ---\n%s\n' "$PROMPT" "$STAGED_DIFF" \
+    | PATH=/opt/homebrew/bin:$PATH codex exec - 2>"$LOG_FILE" || true
 )"
 
-# Conventional Commits 形式でフィルタリング
-CANDIDATES="$(echo "$RAW_RESPONSE" | grep -E '^(feat|fix|refactor|docs|test|chore|style|perf):' | head -3 || true)"
+# ANSI エスケープシーケンスと CR を除去
+CLEAN_RESPONSE="$(printf '%s' "$RAW_RESPONSE" | sed -E $'s/\x1B\\[[0-9;]*[A-Za-z]//g; s/\r//g')"
 
-# フィルタリング後に候補がない場合、最初の3行を使用（形式チェックを緩和）
-if [ -z "$CANDIDATES" ]; then
-  CANDIDATES="$(echo "$RAW_RESPONSE" | grep -v '^$' | head -3 || true)"
-fi
+# Conventional Commits 形式でフィルタリング（先頭空白を許容）
+CANDIDATES="$(printf '%s\n' "$CLEAN_RESPONSE" | grep -E '^[[:space:]]*(feat|fix|refactor|docs|test|chore|style|perf):' | sed -E 's/^[[:space:]]+//' | head -3 || true)"
 
 if [ -z "$CANDIDATES" ]; then
   echo "❌ コミットメッセージを考えられませんでした。"
-  echo "📋 AI の応答: $RAW_RESPONSE"
+  echo
+  echo "📋 codex の応答（先頭 30 行）:"
+  printf '%s\n' "$CLEAN_RESPONSE" | head -30
+  echo
+  if [ -s "$LOG_FILE" ]; then
+    echo "📋 codex stderr（先頭 20 行）:"
+    head -20 "$LOG_FILE"
+  fi
+  echo
+  echo "ログ全文: $LOG_FILE"
   exit 1
 fi
+rm -f "$LOG_FILE"
 
 echo "✨ 🤖 候補を用意しました！"
 echo
