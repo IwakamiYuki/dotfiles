@@ -246,6 +246,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - tmux-resurrect で復元すると、sidebar pane は空のシェル pane になる（`C-t b` を押す前に邪魔なら閉じる）
 - 既存 window へは自動追加しない（必要な window で `C-t b`）
 - 起動中のスクリプトを書き換えると bash が壊れた読み方をするため、スクリプトを更新したら sidebar は閉じて開き直す
+- **sidebar の生死の記録**: stderr を捨てているため、放置中に sidebar が消えても理由が残らなかった。そこで `/tmp/tmux-agent-sidebar-life.log`（`AGENT_SIDEBAR_LIFE_LOG`）に、起動時 `START`、終了時 `EXIT reason=<経路> status=<終了ステータス>` を 1 行ずつ追記する（200KB を超えたら末尾 300 行だけ残す）。reason は `SIGINT` / `SIGTERM` / `SIGHUP` / `read_failures` / `collect_empty` / `cockpit_no_main_panes` / `no_main_panes` / `quit_key`。**`EXIT` の行が無いまま止まっている sidebar は、SIGKILL など trap できない強制終了**（外から殺された）。cockpit の sidebar は終了時に `teardown` で Agent を元へ戻すので、`EXIT` が残っているのに Agent が枠に残っているなら teardown の失敗を疑う
   - 本体を `main()` に包み、末尾を `main "$@"; exit $?`（**必ず 1 行**。別の行だと main から戻ったあとに書き換え後の内容を読んで暴走する）にしたので、**この版で起動した sidebar** は書き換えの影響を受けない。それ以前に起動したものは従来どおり開き直す
   - 端末が消えて `read` が即失敗し続けると、ビジーループで CPU を使い切る（pane が閉じたのに残った sidebar が約 8 日間 99% で居座った実例がある。SIGTERM が効かず `kill -9` が要った）。bash 3.2 は `read -t` のタイムアウトも EOF も終了ステータス 1 で区別できないため、`note_read_failure` が「同じ秒に 20 回を超えて失敗したら終了」で検知する（通常のタイムアウトは 1 秒に高々 2 回）
   - 取り残しの疑いがあるときは `ps -Ao pid,ppid,%cpu,etime,command -r | grep tmux-agent-sidebar` で、親が 1 で CPU が高いものを探す
@@ -256,7 +257,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 本物の pane なので、カーソル・上へのスクロール（コピーモード）・マウス・貼り付けがそのまま使える（`capture-pane` の代理表示では出来ない）。
 
 **キー**:
-- `Ctrl-t B` → cockpit window を開く（あれば移動）。開くと、選択中の Agent が右の枠に入る
+- `Ctrl-t B` → cockpit window を開く（あれば移動）。開くと、選択中の Agent が右の枠に入る。**window があっても sidebar が消えていれば、sidebar を付け直す**（放置中に sidebar だけが終了した場合に、window を選ぶだけでは再開できなかった）
 - cockpit の sidebar で `j` / `k`（`↓` / `↑`、ホイール、クリック）→ 右の枠の Agent が切り替わる。`Enter` / `l` / `h` → 右の枠へフォーカス（戻るのは `Ctrl-t h`）
 - cockpit の sidebar で `d` → 右の枠に Daily ダッシュボードを出す / 戻す（詳細は「Agent Sidebar」の `o` の項）
 - `Ctrl-t &` → cockpit window では **先に Agent を元へ戻してから**閉じる（通常の window は従来どおり確認つき kill-window）
