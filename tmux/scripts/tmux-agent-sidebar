@@ -22,7 +22,8 @@
 #   Claude : `claude agents --json`（pid / status / cwd）。pid の祖先をたどって pane に紐付ける。
 #            未読の完了(done)は tmux-claude-agents-status が書く状態ファイルを参照する。
 #   Codex  : ps の引数（codex 本体、または node 経由の codex スクリプト）で検出し、祖先の pane に紐付ける。
-#            状態を確実に判定する手段が無いため status は常に unknown（推測しない）。
+#            状態・名前・モデルは Codex の常駐デーモンのスレッド(tmux-agent-codex-threads)から取り、pane とは cwd で一意に対応するときだけ使う。
+#            取れないとき・対応が曖昧なときは status が unknown（推測しない）。
 #   Shell  : Agent が 1 つも居ないリポジトリにある、空いているシェル(zsh 等)の pane。「+ New agent」の欄として出し、
 #            n で、その pane のシェルへ Claude / Codex を入力して起動する(tmux-agent-new --here)。
 #            home のシェル・コマンド実行中の pane は対象外。同じリポジトリには欄を 1 つだけ出す(prune_shells)。
@@ -88,6 +89,12 @@ CODEX_USAGE_BIN="${AGENT_SIDEBAR_CODEX_USAGE_BIN:-$(cd "$(dirname "$0")" && pwd)
 # 取得の起動の間隔(秒)。取得スクリプト側にも TTL(既定 300 秒)があるので、ほとんどは起動しただけで終わる
 CODEX_REFRESH_SEC=60
 CODEX_FETCHED_AT=-999
+# Codex のスレッド(状態・名前・モデル)。tmux-agent-codex-threads が Codex の常駐デーモンから集めて書く。
+# 取得は sidebar が CODEX_THREADS_TTL 秒ごとに裏で起動する(複数の sidebar で共有)。CODEX_THREADS_MAX_AGE 秒より古い内容は読まない
+CODEX_THREADS_CACHE="${AGENT_SIDEBAR_CODEX_THREADS_CACHE:-/tmp/tmux-agent-sidebar-codex.txt}"
+CODEX_THREADS_BIN="${AGENT_SIDEBAR_CODEX_THREADS_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-codex-threads}"
+CODEX_THREADS_TTL=3
+CODEX_THREADS_MAX_AGE=30
 GIT_TTL=10
 # トランスクリプトから拾った ai-title のキャッシュ("sessionId|title" の行)。形式は refresh_title_cache を参照
 TITLE_CACHE_FILE="${AGENT_SIDEBAR_TITLE_CACHE:-/tmp/tmux-agent-sidebar-titles.txt}"
@@ -244,6 +251,26 @@ refresh_claude_cache() {
   printf '%s\n%s\n' "$lines" "$updates" > "$tmp" && mv "$tmp" "$CLAUDE_CACHE_FILE"
 }
 
+# Codex のスレッドのキャッシュを、CODEX_THREADS_TTL 秒ごとに裏で更新する(待たない)。
+# 起動の記録(.attempt)は、キャッシュ本体の更新時刻とは別に持つ(取得が失敗し続けても、古い内容を新しく見せないため)
+refresh_codex_threads() {
+  local now mtime
+  now=$(date +%s)
+  mtime=$(stat -f %m "$CODEX_THREADS_CACHE.attempt" 2>/dev/null || echo 0)
+  [ $((now - mtime)) -lt "$CODEX_THREADS_TTL" ] && return 0
+  touch "$CODEX_THREADS_CACHE.attempt" 2>/dev/null
+  "$CODEX_THREADS_BIN" >/dev/null 2>&1 &
+  disown 2>/dev/null
+}
+
+# Codex のスレッドのキャッシュを、awk の入力(X| の行)として出す。古い(取得が止まった)内容は出さない
+codex_threads_lines() {
+  local now mtime
+  now=$(date +%s)
+  mtime=$(stat -f %m "$CODEX_THREADS_CACHE" 2>/dev/null) || return 0
+  [ $((now - mtime)) -lt "$CODEX_THREADS_MAX_AGE" ] && cat "$CODEX_THREADS_CACHE" 2>/dev/null
+}
+
 # 稼働中の各セッションのトランスクリプトから最新の ai-title を拾い、TITLE_CACHE_FILE に "sessionId|title" で書く。
 # TITLE_CACHE_TTL 秒に一度だけ実行する(複数の sidebar が同時に走らないよう、先に更新時刻を進める)
 refresh_title_cache() {
@@ -273,6 +300,9 @@ refresh_title_cache() {
 
 read -r -d '' AWK_COLLECT <<'EOF' || true
 function base(p,   n, a) { n = split(p, a, "/"); return a[n] }
+
+# 末尾の / を除く(cwd の突き合わせ用。ルートは / のまま)
+function trim_slash(p) { if (length(p) > 1) sub(/\/+$/, "", p); return p }
 
 # 会話タイトル。statusline 機構が書くキャッシュを優先し(/rename の名前も入る)、無ければトランスクリプトの ai-title。
 # 未設定の既定タイトルは出さない
@@ -341,6 +371,14 @@ tag == "C" {
   c_pid[nc] = f[1]; c_status[nc] = f[2]; c_wait[nc] = f[3]; c_cwd[nc] = f[4]; c_name[nc] = f[5]; c_sid[nc] = f[6]
 }
 
+# X|threadId|cwd|status|flags|name|model|effort|since|updatedAt  （Codex のロード中のスレッド。tmux-agent-codex-threads が作る）
+tag == "X" {
+  nx++
+  split(rest, f, "|")
+  x_cwd[nx] = trim_slash(f[2]); x_status[nx] = f[3]; x_flags[nx] = f[4]; x_name[nx] = f[5]
+  x_model[nx] = f[6]; x_effort[nx] = f[7]; x_since[nx] = f[8]
+}
+
 # T|sessionId|title  （トランスクリプトの ai-title。refresh_title_cache が作る）
 tag == "T" {
   k = index(rest, "|")
@@ -393,15 +431,43 @@ END {
     add(pi, "Claude", project, status, c_wait[i], elapsed, display, cwd)
   }
 
-  # --- Codex（status は判定手段が無いため unknown 固定） ---
+  # --- Codex ---
+  # 状態・名前・モデルは、Codex の常駐デーモンのスレッド(X)から取る。スレッドと pane は cwd で対応付ける。
+  # 対応が一意なとき(その cwd の Codex の pane もスレッドも 1 つだけ)に限る。同じ cwd に複数あると、どのスレッドか確かめる手段が無いので
+  # 推測せず、従来どおり unknown にする。デーモンに届かないとき(スレッドが無い)も unknown
+  nk = 0
   for (pid in ppid) {
     a1 = base(arg1[pid]); a2 = base(arg2[pid])
     if (!(a1 == "codex" || (a1 ~ /^node/ && a2 == "codex"))) continue
     pi = pane_of(pid)
     if (pi == "" || codex_seen[pi]) continue
     codex_seen[pi] = 1
-    project = base(p_path[pi])
-    add(pi, "Codex", project, "unknown", "", "", "", p_path[pi])
+    codex_pane[++nk] = pi
+    codex_panes_in[trim_slash(p_path[pi])]++
+  }
+  for (j = 1; j <= nx; j++) threads_in[x_cwd[j]]++
+  for (k = 1; k <= nk; k++) {
+    pi = codex_pane[k]
+    cwd = p_path[pi]
+    project = base(cwd)
+    xj = 0
+    key = trim_slash(cwd)
+    if (codex_panes_in[key] == 1 && threads_in[key] == 1) {
+      for (j = 1; j <= nx; j++) if (x_cwd[j] == key) xj = j
+    }
+    status = "unknown"; detail = ""; elapsed = ""; display = ""
+    if (xj > 0) {
+      display = x_name[xj]
+      model = x_model[xj]; if (x_effort[xj] != "") model = model " " x_effort[xj]
+      if (x_status[xj] == "idle") { status = "idle"; detail = model }
+      else if (x_status[xj] == "active") {
+        if (x_flags[xj] ~ /waitingOnApproval/) { status = "waiting"; detail = "approval" }
+        else if (x_flags[xj] ~ /waitingOnUserInput/) { status = "waiting"; detail = "input" }
+        else { status = "working"; detail = model }
+      }
+      if (status != "unknown" && x_since[xj] != "") { elapsed = now - x_since[xj]; if (elapsed < 0) elapsed = 0 }
+    }
+    add(pi, "Codex", project, status, detail, elapsed, display, cwd)
   }
 
   # --- Shell（Agent の居ない、空いているシェルの pane） ---
@@ -437,12 +503,14 @@ collect() {
 
   refresh_claude_cache
   refresh_title_cache
+  refresh_codex_threads
   {
     tmux list-panes "${list_args[@]}" -F \
       '#{session_name}|#{window_id}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{@agent_sidebar}|#{window_active}|#{pane_active}|#{window_name}|#{@agent_origin_widx}|#{@agent_origin_wname}|#{@agent_origin_pidx}|#{@agent_cockpit_slot_pane}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null |
       awk '{ print "P|" $0 }'
     ps -axo pid=,ppid=,args= | awk '{ print "S|" $0 }'
     cat "$CLAUDE_CACHE_FILE" 2>/dev/null
+    codex_threads_lines
     awk '{ print "T|" $0 }' "$TITLE_CACHE_FILE" 2>/dev/null
     awk '{ print "A|" $0 }' "$ALERT_STATE_FILE" 2>/dev/null
   } | awk -v self="$TMUX_PANE" -v now="$(date +%s)" -v home="$HOME" "$AWK_COLLECT"

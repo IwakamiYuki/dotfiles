@@ -60,6 +60,7 @@ MAX_HISTORY_LINES = 5000
 PASTE_ENTER_DELAY = 0.15
 AGENT_CACHE_TTL = 1.5
 CLAUDE_CACHE_TTL = 3.0
+CODEX_THREADS_TTL = 3.0
 GIT_CACHE_TTL = 10.0
 TITLE_CACHE_TTL = 30.0
 TRANSCRIPT_TAIL_BYTES = 300_000
@@ -137,6 +138,8 @@ class Config:
     tls_key: str = ""
     assets_dir: str = str(Path(os.path.realpath(__file__)).parent.parent / "assets" / "agent-web")
     new_bin: str = str(Path(os.path.realpath(__file__)).parent / "tmux-agent-new")  # 新規起動（sidebar の n と同じスクリプト）
+    # Codex のスレッド(状態・名前・モデル)を Codex の常駐デーモンから集めるスクリプト(sidebar と同じ)。空なら使わない(Codex は unknown のまま)
+    codex_threads_bin: str = str(Path(os.path.realpath(__file__)).parent / "tmux-agent-codex-threads")
 
 
 def config_from_env() -> Config:
@@ -148,6 +151,7 @@ def config_from_env() -> Config:
         sessions_dir=e("AGENT_SIDEBAR_SESSIONS_DIR", base.sessions_dir),
         projects_dir=e("AGENT_SIDEBAR_PROJECTS_DIR", base.projects_dir),
         alert_state=e("AGENT_SIDEBAR_ALERT_STATE", base.alert_state),
+        codex_threads_bin=e("TMUX_AGENT_WEB_CODEX_THREADS_BIN", base.codex_threads_bin),
     )
 
 
@@ -261,6 +265,45 @@ def _base(path: str) -> str:
     return os.path.basename(path.rstrip("/")) or path
 
 
+def _same_path(path: str) -> str:
+    """cwd の突き合わせ用。末尾の / を除く(ルートは / のまま)。"""
+    return path.rstrip("/") or path
+
+
+def parse_codex_threads(text: str) -> List[dict]:
+    """tmux-agent-codex-threads の出力(X|threadId|cwd|status|flags|name|model|effort|since|updatedAt)を読む。"""
+    threads = []
+    for line in text.splitlines():
+        f = line.split("|")
+        if len(f) < 10 or f[0] != "X":
+            continue
+        threads.append(
+            {"id": f[1], "cwd": _same_path(f[2]), "status": f[3], "flags": f[4], "name": f[5],
+             "model": f[6], "effort": f[7], "since": _int(f[8], None)}
+        )
+    return threads
+
+
+def codex_view(thread: Optional[dict], now: float) -> Tuple[str, str, Optional[int], str]:
+    """Codex のスレッドから (状態, 補足, 経過秒, 名前) を作る。スレッドが無い・読めない状態は unknown。"""
+    if thread is None:
+        return "unknown", "", None, ""
+    model = " ".join(x for x in (thread["model"], thread["effort"]) if x)
+    if thread["status"] == "idle":
+        status, detail = "idle", model
+    elif thread["status"] == "active":
+        if "waitingOnApproval" in thread["flags"]:
+            status, detail = "waiting", "approval"
+        elif "waitingOnUserInput" in thread["flags"]:
+            status, detail = "waiting", "input"
+        else:
+            status, detail = "working", model
+    else:
+        return "unknown", "", None, thread["name"]
+    elapsed = max(0, int(now - thread["since"])) if thread["since"] is not None else None
+    return status, detail, elapsed, thread["name"]
+
+
 def build_agents(
     panes: List[Pane],
     procs: Dict[int, Tuple[int, str]],
@@ -271,6 +314,7 @@ def build_agents(
     title_of: Callable[[str], str],
     meta_of: Callable[[int], Tuple[Optional[int], str]],
     git_of: Callable[[str], GitInfo],
+    codex_threads: Optional[List[dict]] = None,
 ) -> List[dict]:
     """sidebar の collect と同じ方式で Agent を pane に紐付け、リポジトリ → worktree → window → pane の順に並べる。"""
     by_pid = {p.pid: p for p in panes if not p.sidebar}
@@ -290,7 +334,11 @@ def build_agents(
         status = claude_status(str(c.get("status", "")), bool(alerting.get(parent)))
         found.append((p, "Claude", status, str(c.get("waitingFor") or ""), elapsed, name, str(c.get("cwd") or p.path)))
 
+    # Codex: 状態・名前・モデルは、Codex の常駐デーモンのスレッドから取る(sidebar の collect と同じ規則)。スレッドと pane は cwd で対応付け、
+    # 一意なとき(その cwd の Codex の pane もスレッドも 1 つだけ)に限る。同じ cwd に複数あると、どのスレッドか確かめる手段が無いので
+    # 推測せず unknown にする
     codex_seen = set()
+    codex_panes = []
     for pid, (_, args) in procs.items():
         argv = args.split()
         if not argv:
@@ -302,7 +350,14 @@ def build_agents(
         if p is None or p.pane_id in codex_seen:
             continue
         codex_seen.add(p.pane_id)
-        found.append((p, "Codex", "unknown", "", None, "", p.path))
+        codex_panes.append(p)
+    threads = codex_threads or []
+    for p in codex_panes:
+        key = _same_path(p.path)
+        mine = [t for t in threads if t["cwd"] == key]
+        unique = len(mine) == 1 and sum(1 for q in codex_panes if _same_path(q.path) == key) == 1
+        status, detail, elapsed, name = codex_view(mine[0] if unique else None, now)
+        found.append((p, "Codex", status, detail, elapsed, name, p.path))
 
     agents = []
     for p, kind, status, detail, elapsed, name, cwd in found:
@@ -401,6 +456,7 @@ class Collector:
         self._lock = threading.Lock()
         self._agents: Tuple[float, List[dict]] = (0.0, [])
         self._claude: Tuple[float, List[dict]] = (0.0, [])
+        self._codex_threads_cache: Tuple[float, List[dict]] = (0.0, [])
         self._git: Dict[str, Tuple[float, GitInfo]] = {}
 
     # tmux
@@ -429,6 +485,7 @@ class Collector:
         return build_agents(
             panes, procs, self._claude_agents(), self._alerting(), now=time.time(),
             title_of=self.titles.title_of, meta_of=self._meta_of, git_of=self._git_of,
+            codex_threads=self._codex_threads(),
         )
 
     def _claude_agents(self) -> List[dict]:
@@ -443,6 +500,19 @@ class Collector:
             pass
         self._claude = (time.time(), self._claude[1])  # 失敗時は前回の値を残す
         return self._claude[1]
+
+    def _codex_threads(self) -> List[dict]:
+        """Codex のスレッド。取得スクリプト(--stdout)を CODEX_THREADS_TTL 秒ごとに呼ぶ。失敗したら空(古い状態を残さない)。"""
+        if not self.cfg.codex_threads_bin:
+            return []
+        if time.time() - self._codex_threads_cache[0] < CODEX_THREADS_TTL:
+            return self._codex_threads_cache[1]
+        try:
+            threads = parse_codex_threads(_out(_run([self.cfg.codex_threads_bin, "--stdout"])))
+        except (OSError, subprocess.TimeoutExpired):
+            threads = []
+        self._codex_threads_cache = (time.time(), threads)
+        return threads
 
     def _alerting(self) -> Dict[int, bool]:
         """tmux-claude-agents-status が書く "ppid:status:alerting" の行。"""

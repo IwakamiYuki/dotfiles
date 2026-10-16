@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""起動中の Codex のスレッド（状態・名前・モデル）を取得して、sidebar 用のキャッシュへ書く。
+
+取得元: Codex の常駐デーモン（~/.codex/app-server-control/app-server-control.sock。WebSocket）。
+TUI の codex はこのデーモンにつながっていて、`thread/loaded/list`（ロード中のスレッド）と
+`thread/read`（スレッドのメタデータ。状態 status を含む）で、起動中の Codex の状態が分かる。読み取りだけで、スレッドは変更しない。
+⚠️ app-server は experimental。形が変わったら取得失敗として扱い、空のキャッシュを書く（sidebar は従来どおり unknown にする）。
+
+キャッシュ（1 スレッド 1 行。sidebar の collect が読む）:
+  X|threadId|cwd(実体のパス)|status|flags|name|model|effort|since|updatedAt
+  status: idle | active | notLoaded | systemError。flags: active のときの待ちの種類（waitingOnApproval / waitingOnUserInput。カンマ区切り）
+  since: その状態を観測し始めた時刻（秒）。API に状態の開始時刻が無いので、前回のキャッシュと比べて、変わったときに更新する。
+         初めて見た idle のスレッドは updatedAt（最後の更新）、初めて見た active は今
+  サブエージェントのスレッド（parentThreadId あり）と一時スレッド（ephemeral）は含めない
+
+デーモンに届かないとき（Codex が動いていない・デーモンが無い）は、空のキャッシュを書く（古い状態を残さない）。
+
+環境変数（主にテスト用）:
+  AGENT_CODEX_SOCK                デーモンのソケット（既定 ~/.codex/app-server-control/app-server-control.sock）
+  AGENT_CODEX_THREADS_CACHE       キャッシュのパス（既定 /tmp/tmux-agent-sidebar-codex.txt）
+  --stdout                        キャッシュへ書かず、標準出力へ出す（手動の確認用）
+"""
+import base64
+import json
+import os
+import socket
+import struct
+import sys
+import time
+
+SOCK = os.environ.get("AGENT_CODEX_SOCK", os.path.expanduser("~/.codex/app-server-control/app-server-control.sock"))
+CACHE = os.environ.get("AGENT_CODEX_THREADS_CACHE", "/tmp/tmux-agent-sidebar-codex.txt")
+TIMEOUT_SEC = 4
+# 問い合わせるスレッド数の上限（ロード中のスレッドは通常、数個）
+MAX_THREADS = 40
+
+
+class WebSocket:
+    """app-server の unix ソケット上の WebSocket（テキストフレームだけ）。"""
+
+    def __init__(self, path):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(TIMEOUT_SEC)
+        self.sock.connect(path)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall(
+            (
+                "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            ).encode()
+        )
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise OSError("handshake closed")
+            buf += chunk
+        head, self.buf = buf.split(b"\r\n\r\n", 1)
+        if b" 101 " not in head.split(b"\r\n")[0]:
+            raise OSError("websocket upgrade refused")
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def _need(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise OSError("connection closed")
+            self.buf += chunk
+
+    def _frame(self, opcode, payload):
+        mask = os.urandom(4)
+        n = len(payload)
+        if n < 126:
+            head = bytes([0x80 | opcode, 0x80 | n])
+        elif n < 65536:
+            head = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack(">H", n)
+        else:
+            head = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack(">Q", n)
+        self.sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+    def send(self, obj):
+        self._frame(1, json.dumps(obj).encode())
+
+    def recv(self):
+        """次のテキストメッセージ（dict）を返す。ping には pong を返し、閉じられたら OSError。"""
+        while True:
+            self._need(2)
+            opcode = self.buf[0] & 0x0F
+            length = self.buf[1] & 0x7F
+            offset = 2
+            if length == 126:
+                self._need(4)
+                length = struct.unpack(">H", self.buf[2:4])[0]
+                offset = 4
+            elif length == 127:
+                self._need(10)
+                length = struct.unpack(">Q", self.buf[2:10])[0]
+                offset = 10
+            self._need(offset + length)
+            payload = self.buf[offset : offset + length]
+            self.buf = self.buf[offset + length :]
+            if opcode == 8:
+                raise OSError("connection closed by server")
+            if opcode == 9:
+                self._frame(10, payload)
+                continue
+            if opcode == 1:
+                return json.loads(payload)
+
+
+class Client:
+    def __init__(self, ws):
+        self.ws = ws
+        self.next_id = 1
+
+    def call(self, method, params=None):
+        """JSON-RPC を 1 つ送って、その応答の result を返す。error のときは None（通知など他のメッセージは読み捨てる）。"""
+        request_id = self.next_id
+        self.next_id += 1
+        message = {"id": request_id, "method": method}
+        if params is not None:
+            message["params"] = params
+        self.ws.send(message)
+        deadline = time.time() + TIMEOUT_SEC
+        while time.time() < deadline:
+            data = self.ws.recv()
+            if data.get("id") == request_id:
+                return None if "error" in data else data.get("result")
+        raise OSError("timeout")
+
+
+def clean(value):
+    """キャッシュは「|」区切り 1 行なので、区切りと改行を空白にする。"""
+    return str(value if value is not None else "").replace("|", " ").replace("\n", " ").replace("\t", " ").strip()
+
+
+def real_cwd(cwd):
+    """tmux の pane_current_path は実体のパス（/tmp は /private/tmp）なので、突き合わせられるよう実体にそろえる。"""
+    return os.path.realpath(cwd) if cwd else ""
+
+
+def read_previous(path):
+    """前回のキャッシュから {threadId: (状態の鍵, since)} を読む。"""
+    previous = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                p = line.rstrip("\n").split("|")
+                if len(p) >= 10 and p[0] == "X":
+                    previous[p[1]] = ("%s/%s" % (p[3], p[4]), int(p[8]))
+    except (OSError, ValueError):
+        pass
+    return previous
+
+
+def fetch_threads():
+    """ロード中のスレッドのメタデータ（thread/read の thread）のリストを返す。デーモンに届かなければ OSError。"""
+    ws = WebSocket(SOCK)
+    try:
+        client = Client(ws)
+        client.call("initialize", {"clientInfo": {"name": "tmux-agent-sidebar", "title": "tmux-agent-sidebar", "version": "0"}})
+        ws.send({"method": "initialized"})
+        loaded = client.call("thread/loaded/list", {})
+        if not isinstance(loaded, dict):
+            raise OSError("unexpected thread/loaded/list")
+        threads = []
+        for thread_id in (loaded.get("data") or [])[:MAX_THREADS]:
+            result = client.call("thread/read", {"threadId": thread_id, "includeTurns": False})
+            thread = (result or {}).get("thread")
+            if isinstance(thread, dict):
+                threads.append(thread)
+        return threads
+    finally:
+        ws.close()
+
+
+def to_lines(threads, previous, now):
+    lines = []
+    for thread in threads:
+        if thread.get("parentThreadId") or thread.get("ephemeral"):
+            continue
+        status = thread.get("status") or {}
+        kind = status.get("type") or ""
+        flags = ",".join(status.get("activeFlags") or []) if kind == "active" else ""
+        updated = thread.get("updatedAt")
+        updated = int(updated) if isinstance(updated, (int, float)) else now
+        key = "%s/%s" % (kind, flags)
+        before = previous.get(thread.get("id"))
+        if before and before[0] == key:
+            since = before[1]
+        else:
+            since = updated if kind == "idle" and not before else now
+        lines.append(
+            "|".join(
+                [
+                    "X",
+                    clean(thread.get("id")),
+                    clean(real_cwd(thread.get("cwd"))),
+                    clean(kind),
+                    clean(flags),
+                    clean(thread.get("name")),
+                    clean(thread.get("model")),
+                    clean(thread.get("reasoningEffort")),
+                    str(since),
+                    str(updated),
+                ]
+            )
+        )
+    return lines
+
+
+def main():
+    now = int(time.time())
+    to_stdout = "--stdout" in sys.argv[1:]
+    try:
+        lines = to_lines(fetch_threads(), read_previous(CACHE), now)
+    except (OSError, ValueError, KeyError):
+        lines = []
+    text = "".join(line + "\n" for line in lines)
+    if to_stdout:
+        sys.stdout.write(text)
+        return 0
+    tmp = "%s.%d" % (CACHE, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, CACHE)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

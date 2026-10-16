@@ -115,6 +115,58 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(by_type["Codex"]["pane"], "%2")
         self.assertEqual(by_type["Codex"]["status"], "unknown")
 
+    # --- Codex のスレッド(状態・名前・モデル)。pane とは cwd で一意に対応するときだけ使う ---
+
+    def thread(self, cwd="/work/repo", status="idle", flags="", name="設計書の確認", since=900):
+        return {"id": "t", "cwd": cwd, "status": status, "flags": flags, "name": name, "model": "gpt-6-astra",
+                "effort": "low", "since": since}
+
+    def codex_agent(self, threads, panes=None, procs=None):
+        out = aw.build_agents(
+            panes or self.panes, procs or self.procs, [], {}, now=1000, title_of=lambda sid: "",
+            meta_of=lambda pid: (None, ""), git_of=GIT, codex_threads=threads,
+        )
+        return [a for a in out if a["type"] == "Codex"]
+
+    def test_codex_は_スレッドが一意なら_状態と名前とモデルが付く(self):
+        (a,) = self.codex_agent([self.thread()])
+        self.assertEqual((a["status"], a["name"], a["detail"], a["elapsed"]), ("idle", "設計書の確認", "gpt-6-astra low", 100))
+
+    def test_codex_作業中と待ちの状態(self):
+        (a,) = self.codex_agent([self.thread(status="active")])
+        self.assertEqual((a["status"], a["detail"]), ("working", "gpt-6-astra low"))
+        (a,) = self.codex_agent([self.thread(status="active", flags="waitingOnApproval")])
+        self.assertEqual((a["status"], a["detail"]), ("waiting", "approval"))
+        (a,) = self.codex_agent([self.thread(status="active", flags="waitingOnUserInput")])
+        self.assertEqual((a["status"], a["detail"]), ("waiting", "input"))
+
+    def test_codex_ロードされていないスレッドは_unknown(self):
+        (a,) = self.codex_agent([self.thread(status="notLoaded")])
+        self.assertEqual(a["status"], "unknown")
+        self.assertIsNone(a["elapsed"])
+
+    def test_codex_スレッドが無い_cwd_が違う_なら_unknown(self):
+        for threads in (None, [], [self.thread(cwd="/elsewhere")]):
+            (a,) = self.codex_agent(threads)
+            self.assertEqual(a["status"], "unknown", threads)
+
+    def test_codex_同じ_cwd_に複数あれば_推測せず_unknown(self):
+        # スレッドが 2 つ
+        (a,) = self.codex_agent([self.thread(name="一つ目"), self.thread(name="二つ目")])
+        self.assertEqual((a["status"], a["name"]), ("unknown", "repo"))
+        # pane が 2 つ(同じ cwd)でスレッドが 1 つ
+        panes = self.panes + [pane(pane_id="%5", pid=500, window=3, index=0)]
+        procs = {**self.procs, 500: (1, "-zsh"), 510: (500, "codex")}
+        out = self.codex_agent([self.thread()], panes, procs)
+        self.assertEqual(len(out), 2)
+        self.assertEqual({a["status"] for a in out}, {"unknown"})
+
+    def test_codex_スレッドの出力を読む(self):
+        text = "X|t1|/work/repo/|active|waitingOnApproval|a b|gpt|high|1790000000|1790000001\nbad\nX|short\n"
+        threads = aw.parse_codex_threads(text)
+        self.assertEqual(len(threads), 1)
+        self.assertEqual((threads[0]["cwd"], threads[0]["flags"], threads[0]["since"]), ("/work/repo", "waitingOnApproval", 1790000000))
+
     def test_sidebar_panes_are_not_agents(self):
         out = self.agents([{"pid": 310, "status": "idle", "cwd": "/w", "name": "", "sessionId": ""}])
         self.assertNotIn("%3", [a["pane"] for a in out])
@@ -334,6 +386,7 @@ class ServerIntegrationTest(unittest.TestCase):
         cls.cfg = aw.Config(
             tmux_socket=cls.sock, claude_bin=str(fake), sessions_dir=cls.tmp, projects_dir=cls.tmp,
             alert_state=os.path.join(cls.tmp, "none"), title_dir=cls.tmp, token=cls.TOKEN, quiet=True,
+            codex_threads_bin="",  # 本物の Codex のデーモンへは問い合わせない
         )
         cls.start_server(read_only=False)
 
@@ -757,7 +810,7 @@ class PersistentLoginTest(unittest.TestCase):
         cfg = aw.Config(
             tmux_socket=os.path.join(self.tmp, "no-such-socket"), claude_bin="true", sessions_dir=self.tmp,
             projects_dir=self.tmp, alert_state=os.path.join(self.tmp, "none"), title_dir=self.tmp,
-            token=token, quiet=True, sessions_path=self.sessions,
+            token=token, quiet=True, sessions_path=self.sessions, codex_threads_bin="",
         )
         srv = aw.make_server("127.0.0.1", 0, cfg, frozenset({"127.0.0.1"}))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -896,7 +949,7 @@ class DualProtocolServerTest(unittest.TestCase):
     def serve(self, tls=True):
         cfg = aw.Config(
             tmux_socket=os.path.join(self.tmp, "none"), claude_bin="true", sessions_dir=self.tmp, projects_dir=self.tmp,
-            alert_state=os.path.join(self.tmp, "none"), title_dir=self.tmp, token=self.TOKEN, quiet=True,
+            alert_state=os.path.join(self.tmp, "none"), title_dir=self.tmp, token=self.TOKEN, quiet=True, codex_threads_bin="",
             tls_cert=self.files["server_crt"] if tls else "", tls_key=self.files["server_key"] if tls else "",
         )
         srv = aw.make_server("127.0.0.1", 0, cfg, frozenset({"127.0.0.1"}))
@@ -999,7 +1052,7 @@ class TlsCommandLineTest(unittest.TestCase):
     def start(self, *extra):
         cmd = [sys.executable, str(SCRIPT), "--host", "127.0.0.1", "--port", "0", "--state-file", self.state,
                "--tls-dir", self.tls_dir, *extra]
-        p = subprocess.Popen(cmd, env=dict(os.environ, TMUX_AGENT_WEB_TOKEN=self.TOKEN),
+        p = subprocess.Popen(cmd, env=dict(os.environ, TMUX_AGENT_WEB_TOKEN=self.TOKEN, TMUX_AGENT_WEB_CODEX_THREADS_BIN=""),
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.procs.append(p)
         state = wait_for(lambda: (aw.read_state(self.state) or {}).get("pid") == p.pid and aw.read_state(self.state))
@@ -1121,7 +1174,7 @@ class RunningServerTest(unittest.TestCase):
         return [sys.executable, str(SCRIPT), "--host", "127.0.0.1", "--port", "0", "--state-file", self.state, *extra]
 
     def env(self):
-        return dict(os.environ, TMUX_AGENT_WEB_TOKEN=self.TOKEN)
+        return dict(os.environ, TMUX_AGENT_WEB_TOKEN=self.TOKEN, TMUX_AGENT_WEB_CODEX_THREADS_BIN="")
 
     def start(self, *extra):
         p = subprocess.Popen(self.command(*extra), env=self.env(), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

@@ -72,7 +72,7 @@ class SidebarUsageTest(unittest.TestCase):
     def tmux(self, *args):
         return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True)
 
-    def render(self, limits=None, cred=None, codex=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False, windows=None, preset=None):
+    def render(self, limits=None, cred=None, codex=None, codex_threads=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False, windows=None, preset=None):
         """sidebar を起動して、描画が出そろった画面を返す。None のファイルは作らない。
         today: 「今日」の日付(YYYY-MM-DD)。着地予想の色が日付で変わるので、固定して確認する。
         colors: True なら色の制御文字つき(capture-pane -e)で返す。
@@ -87,6 +87,10 @@ class SidebarUsageTest(unittest.TestCase):
         rl_file = os.path.join(self.dir, "rate-limits.json")
         cr_file = os.path.join(self.dir, "credits.json")
         cx_file = os.path.join(self.dir, "codex-usage.json")
+        self.threads_file = os.path.join(self.dir, "codex-threads.txt")
+        if codex_threads is not None:
+            with open(self.threads_file, "w") as f:
+                f.write("".join(line + "\n" for line in codex_threads))
         for path, data in ((rl_file, limits), (cr_file, cred), (cx_file, codex)):
             if data is not None:
                 with open(path, "w") as f:
@@ -98,6 +102,8 @@ class SidebarUsageTest(unittest.TestCase):
                 f"AGENT_SIDEBAR_CREDITS={cr_file}",
                 f"AGENT_SIDEBAR_CODEX_USAGE={cx_file}",
                 "AGENT_SIDEBAR_CODEX_USAGE_BIN=true",  # 本物の codex は起動しない
+                f"AGENT_SIDEBAR_CODEX_THREADS_CACHE={self.threads_file}",
+                "AGENT_SIDEBAR_CODEX_THREADS_BIN=true",  # 本物のデーモンへは問い合わせない
                 "AGENT_SIDEBAR_CLAUDE_BIN=true",
                 f"AGENT_SIDEBAR_ALERT_STATE={self.dir}/none",
                 f"AGENT_SIDEBAR_TITLE_CACHE={self.dir}/titles",
@@ -868,6 +874,100 @@ class SidebarUsageTest(unittest.TestCase):
         self.assertNotIn(self.PLACEHOLDER, screen)
         self.assertIn("💳", screen)
         self.assertIn("🤖", screen)
+
+    # --- Codex のスレッド(状態・名前・モデル)をカードに出す ---
+
+    def thread_line(self, cwd=None, status="idle", flags="", name="設計書の確認", model="gpt-6-astra", effort="low", since=None):
+        """tmux-agent-codex-threads が書く X| の行。cwd は実体のパス(tmux の pane_current_path と同じ形)。"""
+        cwd = cwd or os.path.realpath(self.dir)
+        since = since if since is not None else int(time.time()) - 125
+        return f"X|01a0-{abs(hash((cwd, name)))}|{cwd}|{status}|{flags}|{name}|{model}|{effort}|{since}|{since}"
+
+    def start_codex_pane(self, cwd=None, first=True):
+        """argv[0] が codex のプロセスを pane で動かす(sidebar は ps の引数で Codex を検出する)。first なら元の main pane を置き換え、そうでなければ分割して足す。"""
+        cwd = cwd or os.path.realpath(self.dir)
+        cmd = "exec -a codex sleep 600"
+        if first:
+            main = [l.split()[0] for l in self.tmux("list-panes", "-t", "t:0", "-F", "#{pane_id} #{@agent_sidebar}").stdout.splitlines() if l.split()[-1:] != ["1"]][0]
+            self.tmux("respawn-pane", "-k", "-t", main, "-c", cwd, cmd)
+        else:
+            self.tmux("split-window", "-d", "-t", "t:0.1", "-c", cwd, cmd)
+
+    def codex_card(self, screen):
+        """画面の Codex のカードの行(名前・状態)を返す。"""
+        return [l for l in screen.splitlines() if l.strip()]
+
+    def test_codex_スレッドが一意なら_名前と状態とモデルを出す(self):
+        self.render(codex_threads=[self.thread_line()])
+        self.start_codex_pane()
+        screen = self.wait_screen(lambda scr: "設計書の確認" in scr)
+        self.assertIn("IDLE", screen)
+        self.assertIn("gpt-6-astra low", screen)
+        self.assertNotIn("UNKNOWN", screen)
+        self.assertRegex(screen, r"IDLE.*2m")  # 125 秒前から idle
+
+    def test_codex_作業中は_WORKING(self):
+        self.render(codex_threads=[self.thread_line(status="active", flags="")])
+        self.start_codex_pane()
+        screen = self.wait_screen(lambda scr: "WORKING" in scr)
+        self.assertIn("設計書の確認", screen)
+
+    def test_codex_承認待ちは_WAITING_で_理由を添える(self):
+        self.render(codex_threads=[self.thread_line(status="active", flags="waitingOnApproval")])
+        self.start_codex_pane()
+        screen = self.wait_screen(lambda scr: "WAITING" in scr)
+        self.assertIn("approval", screen)
+
+    def test_codex_入力待ちは_WAITING_で_input(self):
+        self.render(codex_threads=[self.thread_line(status="active", flags="waitingOnUserInput")])
+        self.start_codex_pane()
+        screen = self.wait_screen(lambda scr: "WAITING" in scr)
+        self.assertIn("input", screen)
+
+    def test_codex_スレッドの情報が無ければ_unknown(self):
+        self.render()
+        self.start_codex_pane()
+        screen = self.wait_screen(lambda scr: "UNKNOWN" in scr)
+        self.assertNotIn("設計書の確認", screen)
+
+    def test_codex_cwd_が違うスレッドは使わない(self):
+        self.render(codex_threads=[self.thread_line(cwd="/somewhere/else")])
+        self.start_codex_pane()
+        screen = self.wait_screen(lambda scr: "UNKNOWN" in scr)
+        self.assertNotIn("設計書の確認", screen)
+
+    def test_codex_同じ_cwd_に_pane_もスレッドも複数あれば_推測せず_unknown(self):
+        self.render(codex_threads=[self.thread_line(name="一つ目"), self.thread_line(name="二つ目")])
+        self.start_codex_pane()
+        self.start_codex_pane(first=False)
+        screen = self.wait_screen(lambda scr: scr.count("UNKNOWN") >= 2)
+        self.assertNotIn("一つ目", screen)
+        self.assertNotIn("二つ目", screen)
+
+    def test_codex_pane_が複数でスレッドが一つなら_どれか分からないので_unknown(self):
+        self.render(codex_threads=[self.thread_line()])
+        self.start_codex_pane()
+        self.start_codex_pane(first=False)
+        screen = self.wait_screen(lambda scr: scr.count("UNKNOWN") >= 2)
+        self.assertNotIn("設計書の確認", screen)
+
+    def test_codex_取得が止まって古いキャッシュは使わない(self):
+        self.render(codex_threads=[self.thread_line()])
+        old = time.time() - 3600
+        os.utime(self.threads_file, (old, old))
+        self.start_codex_pane()
+        screen = self.wait_screen(lambda scr: "UNKNOWN" in scr)
+        self.assertNotIn("設計書の確認", screen)
+
+    def test_codex_スレッドの取得を裏で起動する(self):
+        marker = os.path.join(self.dir, "threads-fetched")
+        fake = os.path.join(self.dir, "fake-threads")
+        with open(fake, "w") as f:
+            f.write(f"#!/bin/bash\ntouch {marker}\n")
+        os.chmod(fake, 0o755)
+        self.render(extra_env={"AGENT_SIDEBAR_CODEX_THREADS_BIN": fake})
+        self.wait_screen(lambda _: os.path.exists(marker))
+        self.assertTrue(os.path.exists(marker))
 
     def test_取得を裏で起動する(self):
         marker = os.path.join(self.dir, "fetched")
