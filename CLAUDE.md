@@ -270,6 +270,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - `Ctrl-t B` → cockpit window を開く（あれば移動）。開くと、選択中の Agent が右の枠に入る。**window があっても sidebar が消えていれば、sidebar を付け直す**（放置中に sidebar だけが終了した場合に、window を選ぶだけでは再開できなかった）
 - cockpit の sidebar で `j` / `k`（`↓` / `↑`、ホイール、クリック）→ 右の枠の Agent が切り替わる。`Enter` / `l` / `h` → 右の枠へフォーカス（戻るのは `Ctrl-t h`）
 - **Claude Code の通知（terminal-notifier）をクリック** → cockpit があれば、**元の window へ飛ばず、cockpit の右の枠へその Agent を入れて、そこへフォーカスする**（`claude/hooks/focus-tmux-pane.sh` が `tmux-agent-cockpit show <pane_id>` を呼ぶ）。sidebar の選択も、`@agent_new_pane`（`n` と同じ経路）で追従する。cockpit が無い session、枠へ入れられなかったとき、Agent がすでに cockpit の中にいるときは、従来どおり対象の window・pane へ飛ぶ。tmux の外から呼ばれるので、ソケットは `FOCUS_SOCKET_PATH`（`TMUX=<ソケット>,0,0` で cockpit スクリプトへ渡す）。環境変数 `FOCUS_COCKPIT_BIN`（cockpit スクリプトの場所）・`FOCUS_LOG` はテスト用
+- **cockpit を閉じて開き直しても、直前の選択に戻る**: cockpit の sidebar は、選択（Agent）とダッシュボードの表示が変わったときだけ、tmux のグローバル option `@agent_sidebar_last_sel`（`pane_id|種別`）と `@agent_sidebar_last_view`（`daily` か空）に書く（変化のないときは tmux を呼ばない）。起動した最初の 1 回だけ読み戻す。優先順位は、すでに枠に入っている Agent（sidebar だけを付け直したとき）→ 保存した選択 → 既定（いま見ている Agent、無ければ先頭）。保存した Agent が無くなっていれば既定になる。ダッシュボードを出していたなら、ダッシュボードに戻る。option は tmux が生きている間だけ残る（tmux を再起動すると pane_id が変わるため、既定に戻る）。通常の sidebar は対象外（右の枠が無く、選択の意味が薄いため）
 - cockpit の sidebar で `d` → 右の枠に Daily ダッシュボードを出す / 戻す（詳細は「Agent Sidebar」の `o` の項）
 - `Ctrl-t &` → cockpit window では **先に Agent を元へ戻してから**閉じる（通常の window は従来どおり確認つき kill-window）
 - cockpit の sidebar で `q`（または `Ctrl-C`）→ 枠の Agent を元へ戻し、不要になった交換用の枠も消して、**cockpit window ごと閉じる**（通常の sidebar では `q` は何もしない。閉じるのは `Ctrl-C`）

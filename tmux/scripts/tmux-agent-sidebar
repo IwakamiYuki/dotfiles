@@ -931,6 +931,13 @@ DAILY_ALERT_SEC=10800
 # cockpit で、右の枠に Daily ダッシュボード(Agent の pane の代わり)を出しているか(0 / 1)。window option @agent_cockpit_view=daily と同じ。
 # 出している間は、右の枠と合わなくなる Agent の選択の表示(タブ・罫線)を出さない
 DAILY_VIEW=0
+# cockpit を閉じて開き直した(または sidebar を付け直した)とき、直前の選択に戻すための記録。tmux のグローバル option に持つ(tmux が生きている間は残る):
+#   @agent_sidebar_last_sel  = 選んでいた Agent("pane_id|種別")  / @agent_sidebar_last_view = ダッシュボードを出していたなら daily
+# 通常の sidebar は右の枠が無く、選択の意味が薄いので、cockpit だけが保存・復元する
+RESTORE_DONE=0
+LAST_SAVED=""
+opt_last_sel=""
+opt_last_view=""
 DAILY_DIR_RESOLVED=""   # 解決した Daily Note のディレクトリ(c でコピーするとき tmux-agent-daily に渡す)
 DAILY_CLIP_CMD="${AGENT_SIDEBAR_CLIP_CMD:-pbcopy}"
 # 長く更新されていないとき(DAILY_ALERT_SEC 超)、勤務時間帯だけ、📝 を ⏰ と交互に出して目を引く(1 秒ごと。端末の点滅属性は絵文字に効かない)。
@@ -1861,6 +1868,35 @@ mark_active_cockpit_pane() {
   fi
 }
 
+# cockpit の sidebar が起動した最初の 1 回だけ、直前の選択に戻す。優先順位:
+#   すでに枠に入っている Agent(sidebar だけを付け直したとき。枠の中身に選択を合わせる)→ 保存した選択 → 既定(いま見ている Agent、無ければ先頭)
+# 保存した Agent が無くなっていれば、parse_records の既定の探し方に任せる。ダッシュボードを出していたなら、ダッシュボードに戻す
+restore_cockpit_selection() {
+  [ "$COCKPIT" = 1 ] || return 0
+  [ "$RESTORE_DONE" = 1 ] && return 0
+  RESTORE_DONE=1
+  if [ -n "$cockpit_shown" ]; then
+    SEL_KEY="$cockpit_shown|"   # 種別は不明。pane_id だけで探される
+  elif [ -n "$opt_last_sel" ]; then
+    SEL_KEY=$opt_last_sel
+  fi
+  if [ -z "$cockpit_shown" ] && [ "$opt_last_view" = daily ] && [ "$DAILY_VIEW" != 1 ]; then
+    DAILY_VIEW=1
+    "$COCKPIT_BIN" view daily >/dev/null 2>&1
+  fi
+}
+
+# cockpit で、選択(とダッシュボードの表示)が変わったときだけ、tmux の option に書く。変化のないときは tmux を呼ばない
+save_cockpit_selection() {
+  [ "$COCKPIT" = 1 ] || return 0
+  [ -n "$SEL_KEY" ] || return 0
+  local view=""
+  [ "$DAILY_VIEW" = 1 ] && view=daily
+  [ "$SEL_KEY|$view" = "$LAST_SAVED" ] && return 0
+  LAST_SAVED="$SEL_KEY|$view"
+  tmux set-option -g @agent_sidebar_last_sel "$SEL_KEY" ';' set-option -g @agent_sidebar_last_view "$view" 2>/dev/null
+}
+
 # Daily ダッシュボードの表示を解除する(Agent は出さない。Agent を出すときは、続けて show が呼ばれる)
 leave_daily_view() {
   [ "$DAILY_VIEW" = 1 ] || return 0
@@ -2291,8 +2327,8 @@ CLICK_ROW=0
 while :; do
   if ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_daily_dir}' 2>/dev/null)
-    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_daily_dir <<< "$opts"
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_last_sel}|#{@agent_sidebar_last_view}|#{@agent_sidebar_daily_dir}' 2>/dev/null)
+    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_last_sel opt_last_view opt_daily_dir <<< "$opts"
     [ "$opt_cockpit" = 1 ] && COCKPIT=1 || COCKPIT=0
     [ "$COCKPIT" = 1 ] && [ "$opt_view" = daily ] && DAILY_VIEW=1 || DAILY_VIEW=0
     [ "$opt_scope" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
@@ -2309,6 +2345,7 @@ while :; do
     records=$(collect)
     # tmux が応答しない（server 終了）場合は終了する
     [ -z "$records" ] && { EXIT_REASON=collect_empty; exit 0; }
+    restore_cockpit_selection
     parse_records "$records"
     if [ -n "$new_pane" ]; then
       tmux set-option -pu -t "$TMUX_PANE" @agent_new_pane 2>/dev/null
@@ -2357,6 +2394,7 @@ while :; do
 
   # WEB 欄の ON/OFF が変わったときだけ再描画する(w で入り切りした直後も、収集(2 秒ごと)を待たずに反映される)
   read_web_state && need_render=1
+  save_cockpit_selection
 
   if ((need_render)); then
     render

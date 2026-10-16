@@ -72,7 +72,7 @@ class SidebarUsageTest(unittest.TestCase):
     def tmux(self, *args):
         return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True)
 
-    def render(self, limits=None, cred=None, codex=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False):
+    def render(self, limits=None, cred=None, codex=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False, windows=None, preset=None):
         """sidebar を起動して、描画が出そろった画面を返す。None のファイルは作らない。
         today: 「今日」の日付(YYYY-MM-DD)。着地予想の色が日付で変わるので、固定して確認する。
         colors: True なら色の制御文字つき(capture-pane -e)で返す。
@@ -80,7 +80,10 @@ class SidebarUsageTest(unittest.TestCase):
         open_cmd: o キーで呼ぶコマンド(AGENT_SIDEBAR_OPEN_CMD)。実際の open は呼ばない。
         obsidian_config: Obsidian の obsidian.json のパス(AGENT_DAILY_OBSIDIAN_CONFIG)。None なら存在しないパスにして、本物の設定を読まない。
         extra_env: sidebar に足す環境変数({名前: 値})。
-        cockpit: True なら、描画のあとで window を cockpit にして(@agent_cockpit=1)、cockpit の欄(d のヒント)が出るまで待つ。"""
+        cockpit: True なら、描画のあとで window を cockpit にして(@agent_cockpit=1)、cockpit の欄(d のヒント)が出るまで待つ。
+          "early" なら、sidebar を起動する前から cockpit にする(本物の C-t B と同じ順序。起動時の復元を試すとき)。
+        windows: 別 window を作るディレクトリのリスト。それぞれ空きシェルの pane になり、sidebar の選択肢(カード)が増える。pane_id は self.extra_panes に入る。
+        preset: sidebar を起動する前に、tmux のグローバル option に入れる値({名前: 値。callable なら self.extra_panes を渡して求める})。"""
         rl_file = os.path.join(self.dir, "rate-limits.json")
         cr_file = os.path.join(self.dir, "credits.json")
         cx_file = os.path.join(self.dir, "codex-usage.json")
@@ -116,6 +119,21 @@ class SidebarUsageTest(unittest.TestCase):
             ["tmux", "-S", self.sock, "-f", "/dev/null", "new-session", "-d", "-s", "t", "-x", "60", "-y", "24", "-c", "/tmp"],
             check=True,
         )
+        self.extra_panes = []
+        for d in windows or []:
+            os.makedirs(d, exist_ok=True)
+            self.tmux("new-window", "-d", "-t", "t:", "-c", d)
+            self.extra_panes.append(self.tmux("list-panes", "-t", f"t:{len(self.extra_panes) + 1}", "-F", "#{pane_id}").stdout.split()[0])
+        for name, value in (preset or {}).items():
+            self.tmux("set-option", "-g", name, value(self.extra_panes) if callable(value) else value)
+        if cockpit == "early":
+            # 本物の tmux-agent-cockpit open と同じ: cockpit window の中身は slot だけ(元のシェルは slot に置き換わる)
+            slot_cmd = os.path.join(os.path.dirname(SIDEBAR), "tmux-agent-cockpit-slot")
+            self.tmux("respawn-pane", "-k", "-t", "t:0.0", slot_cmd)
+            slot = self.tmux("list-panes", "-t", "t:0", "-F", "#{pane_id}").stdout.split()[0]
+            self.tmux("set-option", "-p", "-t", slot, "@agent_cockpit_slot_pane", "1")
+            self.tmux("set-option", "-w", "-t", "t:0", "@agent_cockpit_slot", slot)
+            self.tmux("set-option", "-w", "-t", "t:0", "@agent_cockpit", "1")
         # sidebar が呼ぶ tmux-agent-daily が、本物の ~/.claude や ~/.codex を読まないようにする
         extra = {"AGENT_DAILY_CLAUDE_PROJECTS": self.dir + "/none-claude", "AGENT_DAILY_CODEX_SESSIONS": self.dir + "/none-codex"}
         extra.update(extra_env or {})
@@ -128,6 +146,9 @@ class SidebarUsageTest(unittest.TestCase):
             flags = ["-e", "-p"] if colors else ["-p"]
             screen = self.tmux("capture-pane", *flags, "-t", "t:0.0").stdout
             if "WEB" in screen:
+                if cockpit == "early":
+                    # ダッシュボードに復元された場合は d view ではなく d back になる
+                    return self.wait_screen(lambda scr: any(h in self.daily_row(scr) for h in ("d view", "d back")), flags)
                 if cockpit:
                     return self.become_cockpit(flags)
                 return screen
@@ -661,6 +682,77 @@ class SidebarUsageTest(unittest.TestCase):
             if "TOOLS" in line or "USAGE" in line:
                 self.assertTrue(line.startswith("──"), line)
                 self.assertEqual(display_width(line), 31, line)  # sidebar の幅 32 の 1 桁手前まで(右端の桁は折り返しを避けて空ける)
+
+    # ---- cockpit を閉じて開き直したとき、直前に選んでいた Agent(またはダッシュボード)に戻る ----
+
+    def option(self, name):
+        return self.tmux("show-options", "-gqv", name).stdout.strip()
+
+    def shown(self):
+        return self.tmux("show-options", "-wqv", "-t", "t:0", "@agent_cockpit_shown").stdout.strip()
+
+    def wait_shown(self, predicate, what):
+        deadline = time.time() + RENDER_TIMEOUT_SEC * 2
+        while time.time() < deadline:
+            if predicate(self.shown()):
+                return self.shown()
+            time.sleep(0.2)
+        self.fail(f"{what}(いま @agent_cockpit_shown={self.shown()!r})")
+
+    def two_windows(self):
+        return [os.path.join(self.dir, "repo-a"), os.path.join(self.dir, "repo-b")]
+
+    def test_restore_cockpit_で選択を変えると_その_Agent_を保存する(self):
+        self.render(cockpit="early", windows=self.two_windows())
+        first = self.wait_shown(bool, "枠に最初の Agent が入りません")
+        self.press("j")
+        moved = self.wait_shown(lambda v: v and v != first, "j で別の Agent に切り替わりません")
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and not self.option("@agent_sidebar_last_sel").startswith(moved + "|"):
+            time.sleep(0.2)
+        self.assertTrue(self.option("@agent_sidebar_last_sel").startswith(moved + "|"), self.option("@agent_sidebar_last_sel"))
+
+    def test_restore_保存した_Agent_を_起動時に選んで枠へ入れる(self):
+        target = lambda panes: f"{panes[1]}|Shell"  # noqa: E731
+        self.render(cockpit="early", windows=self.two_windows(), preset={"@agent_sidebar_last_sel": target})
+        self.assertEqual(self.wait_shown(bool, "枠に Agent が入りません"), self.extra_panes[1])
+
+    def test_restore_保存した_Agent_が無ければ_既定の選択にする(self):
+        self.render(cockpit="early", windows=self.two_windows(), preset={"@agent_sidebar_last_sel": "%9999|Shell"})
+        self.assertNotEqual(self.wait_shown(bool, "枠に Agent が入りません"), "%9999")
+
+    def test_restore_すでに枠に入っている_Agent_を_保存した値より優先する(self):
+        # sidebar だけを付け直したとき(Agent は枠に入ったまま)、選択を枠の中身に合わせる
+        self.render(cockpit="early", windows=self.two_windows(), preset={"@agent_sidebar_last_sel": lambda panes: f"{panes[1]}|Shell"})
+        shown = self.wait_shown(bool, "枠に Agent が入りません")
+        self.assertEqual(shown, self.extra_panes[1])
+
+    def test_restore_ダッシュボードを出していたなら_ダッシュボードに戻る(self):
+        self.render(cockpit="early", windows=self.two_windows(),
+                    preset={"@agent_sidebar_last_view": "daily"}, daily_dir=self.daily_note(600))
+        self.wait_view("daily")
+        self.assertEqual(self.shown(), "")
+
+    def test_restore_ダッシュボードを出した状態も保存する(self):
+        self.render(cockpit="early", windows=self.two_windows(), daily_dir=self.daily_note(600))
+        self.wait_shown(bool, "枠に Agent が入りません")
+        self.press("d")
+        self.wait_view("daily")
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and self.option("@agent_sidebar_last_view") != "daily":
+            time.sleep(0.2)
+        self.assertEqual(self.option("@agent_sidebar_last_view"), "daily")
+        self.press("d")  # 戻すと、保存も「ダッシュボードではない」に戻る
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and self.option("@agent_sidebar_last_view") != "":
+            time.sleep(0.2)
+        self.assertEqual(self.option("@agent_sidebar_last_view"), "")
+
+    def test_restore_通常の_sidebar_は_選択を保存しない(self):
+        self.render(windows=self.two_windows())
+        self.press("j")
+        time.sleep(2.5)
+        self.assertEqual(self.option("@agent_sidebar_last_sel"), "")
 
     def test_daily_o_キーで_Obsidian_の_Daily_Note_を開く(self):
         log = os.path.join(self.dir, "open.log")
