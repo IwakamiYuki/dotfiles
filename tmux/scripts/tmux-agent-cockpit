@@ -240,7 +240,11 @@ do_open() {
   local cock slot sb
   cock=$(find_cockpit)
   if [ -n "$cock" ]; then
+    # sidebar が消えている(放置中に終了した等)と、window を選ぶだけでは sidebar が戻らず、再開できなくなる。無ければ付け直す
+    sb=$(find_sidebar "$cock")
+    [ -n "$sb" ] || { "$BIN_DIR/tmux-agent-sidebar-open" "$cock"; sb=$(find_sidebar "$cock"); }
     tmux select-window -t "$cock"
+    [ -n "$sb" ] && tmux select-pane -t "$sb"
     return 0
   fi
   slot=$(tmux new-window -n cockpit -P -F '#{pane_id}' "'$BIN_DIR/tmux-agent-cockpit-slot'") || return 1
