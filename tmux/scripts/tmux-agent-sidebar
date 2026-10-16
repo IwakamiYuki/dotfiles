@@ -894,9 +894,11 @@ CRED_CENTS=""
 CRED_LAND_PCT=""
 # 下部欄を出すのに必要な最小の端末高さ(これ未満では Agent 一覧を優先して出さない)
 FOOTER_MIN_TERM_H=14
+# 下部欄の 2 つ目の区画(Daily 欄・WEB 欄)の見出し。操作して使う道具をまとめる
+FOOTER_TOOLS_TITLE="TOOLS"
 
 # スマホ用 Web サーバー(tmux-agent-web)の状態。tmux-agent-web が書く状態ファイル(JSON)の pid が生きているかを読む。
-# Daily 欄: 今日の Daily Note(Obsidian)の最終更新からの経過時間と、o で開く操作。USAGE 欄の上の 1 行に出す。
+# Daily 欄: 今日の Daily Note(Obsidian)の最終更新からの経過時間と、o で開く操作。TOOLS 区画の 1 行目(WEB 欄の上)に出す。
 # ディレクトリは AGENT_SIDEBAR_DAILY_DIR → tmux の @agent_sidebar_daily_dir → Obsidian の設定(tmux-agent-daily --print-dir)の順。
 # ファイル名は <dir>/YYYY-MM-DD.md。どれでも決まらなければ「o で開く」だけを出す(経過時間は出さない)。
 # 設定の解決と mtime の取得で fork するので、DAILY_REFRESH_SEC ごとにしか読まない
@@ -912,6 +914,19 @@ DAILY_ALERT_SEC=10800
 DAILY_VIEW=0
 DAILY_DIR_RESOLVED=""   # 解決した Daily Note のディレクトリ(c でコピーするとき tmux-agent-daily に渡す)
 DAILY_CLIP_CMD="${AGENT_SIDEBAR_CLIP_CMD:-pbcopy}"
+# 長く更新されていないとき(DAILY_ALERT_SEC 超)、勤務時間帯だけ、📝 を ⏰ と交互に出して目を引く(1 秒ごと。端末の点滅属性は絵文字に効かない)。
+# 夜や休日はノートが古くて当然なので、平日(%u)の DAILY_WORK_FROM 時以上 DAILY_WORK_TO 時未満だけ。
+# DAILY_WORK_TO は 24 を超えてよい(25 = 翌 1 時)。24 時を過ぎた分は前日の続きとして数える(前日の曜日・前日のノートで判定する)。
+# tmux の option @agent_sidebar_daily_blink を off にすると止まる(環境変数 AGENT_SIDEBAR_DAILY_BLINK が先)。
+# 「古いか」は DAILY_REFRESH_SEC ごとの判定(DAILY_STALE)、「点滅させるか」は描画のたびの判定(daily_blinking)で、option の変更がすぐ効く
+DAILY_BLINK_ICON="⏰"
+DAILY_WORK_DAYS="${AGENT_SIDEBAR_DAILY_WORK_DAYS:-12345}"
+DAILY_WORK_FROM="${AGENT_SIDEBAR_DAILY_WORK_FROM:-9}"
+DAILY_WORK_TO="${AGENT_SIDEBAR_DAILY_WORK_TO:-25}"
+# 今日のノートがまだ無いときは、この時刻(時)以降に点滅する(朝一番から点滅しないための猶予)
+DAILY_MISSING_FROM="${AGENT_SIDEBAR_DAILY_MISSING_FROM:-10}"
+DAILY_STALE=0
+opt_daily_blink=""
 DAILY_STATE=off   # off(ディレクトリ未設定) | missing(今日のノートが無い) | ok
 DAILY_AGE=0       # ok のときの、最終更新からの経過秒
 DAILY_CHECKED_AT=-999
@@ -1215,6 +1230,8 @@ daily_row() {
       body_w=0
       ;;
   esac
+  local icon="📝"
+  daily_blinking && ((SECONDS % 2)) && icon=$DAILY_BLINK_ICON
   if [ "$DAILY_VIEW" = 1 ]; then
     bg="${ESC}[48;5;130m"
     fg="${ESC}[38;5;252m"
@@ -1228,16 +1245,24 @@ daily_row() {
   if [ "$COCKPIT" = 1 ] && ((9 + body_w + hint_w + 8 <= width - 1)); then
     if [ "$DAILY_VIEW" = 1 ]; then hint+="  ${key}d${fg} back"; else hint+="  ${key}d${fg} view"; fi
   fi
-  FOOTER_FRAME+="${ESC}[${at};1H${bg} ${FG_DEFAULT}📝 ${fg}Daily${body}${fg}${hint}${ESC}[K${C_RESET}"
+  FOOTER_FRAME+="${ESC}[${at};1H${bg} ${FG_DEFAULT}${icon} ${fg}Daily${body}${fg}${hint}${ESC}[K${C_RESET}"
+}
+
+# 下部欄の区画の見出し: "── USAGE ───────"。title は両側の空白を含める
+footer_heading() {
+  local at=$1 title=$2 fill
+  printf -v fill '%*s' $((width - 1 - 2 - ${#title})) ''
+  FOOTER_FRAME+="${ESC}[${at};1H${C_RULE}──${C_GROUP}${BOLD_ON}${title}${BOLD_OFF}${C_RULE}${fill// /─}${ESC}[K${C_RESET}"
 }
 
 # 下部欄を組み立てる。FOOTER_FRAME に描画文字列、footer_rows に使う行数を入れる
 
 # 今日の Daily Note の最終更新を読み、DAILY_STATE / DAILY_AGE に入れる。opt_daily_dir は収集の周期で tmux の option から読んだもの
 read_daily() {
-  local dir=${AGENT_SIDEBAR_DAILY_DIR:-$opt_daily_dir} today now mtime
+  local dir=${AGENT_SIDEBAR_DAILY_DIR:-$opt_daily_dir} today now mtime wd hour
   ((SECONDS - DAILY_CHECKED_AT < DAILY_REFRESH_SEC)) && return 0
   DAILY_CHECKED_AT=$SECONDS
+  DAILY_STALE=0
   # 指定が無ければ、Obsidian の設定(Daily Notes の folder)から求める。パスの解決は tmux-agent-daily に 1 か所だけ持つ
   [ -n "$dir" ] || dir=$(AGENT_DAILY_NO_TMUX=1 "$DAILY_BIN" --print-dir 2>/dev/null)
   DAILY_DIR_RESOLVED=$dir
@@ -1245,17 +1270,37 @@ read_daily() {
     DAILY_STATE=off
     return 0
   fi
-  read -r today now < <(date '+%Y-%m-%d %s')
+  read -r today now wd hour < <(date '+%Y-%m-%d %s %u %H')
+  hour=$((10#$hour))
+  if ((hour < DAILY_WORK_TO - 24)); then
+    # 24 時を過ぎた深夜(DAILY_WORK_TO が 25 なら 0 時台)は、前日の続き。前日の日付・曜日で、時刻は 24 を足した値として扱う
+    read -r today wd < <(date -v-1d '+%Y-%m-%d %u')
+    hour=$((hour + 24))
+  fi
   today=${AGENT_SIDEBAR_TODAY:-$today}
   mtime=$(stat -f %m "${dir/#\~/$HOME}/$today.md" 2>/dev/null)
   if [ -z "$mtime" ]; then
     DAILY_STATE=missing
+    # 今日のノートがまだ無いのも「更新されていない」。勤務日で、猶予(DAILY_MISSING_FROM)後〜勤務時間の終わりまで点滅する
+    if [[ $DAILY_WORK_DAYS == *$wd* ]] && ((hour >= DAILY_MISSING_FROM && hour < DAILY_WORK_TO)); then
+      DAILY_STALE=1
+    fi
     return 0
   fi
   DAILY_STATE=ok
   DAILY_AGE=$((now - mtime))
   ((DAILY_AGE < 0)) && DAILY_AGE=0
+  # 点滅の対象: 長く更新されていない × 勤務日 × 勤務時間帯
+  if ((DAILY_AGE > DAILY_ALERT_SEC)) && [[ $DAILY_WORK_DAYS == *$wd* ]] \
+    && ((hour >= DAILY_WORK_FROM && hour < DAILY_WORK_TO)); then
+    DAILY_STALE=1
+  fi
   return 0
+}
+
+# いま Daily 欄のアイコンを点滅させるか(描画と、1 秒ごとの再描画の要否で使う)。ダッシュボードを見ている間は、すでに注目しているので点滅させない
+daily_blinking() {
+  [ "$DAILY_STALE" = 1 ] && [ "$DAILY_VIEW" != 1 ] && [ "${AGENT_SIDEBAR_DAILY_BLINK:-${opt_daily_blink:-on}}" != off ]
 }
 
 # WEB サーバーの状態ファイルを読み、状態(ON/OFF・ポート・閲覧のみか)が変わったら 0、変わらなければ 1 を返す。
@@ -1282,7 +1327,7 @@ read_web_state() {
 
 # 下部欄: レートリミット(USAGE。データがあるときだけ)と、最下行の WEB 欄(スマホ用サーバーの ON/OFF)
 build_footer() {
-  local top fill usage_rows=0 web plain
+  local top usage_rows=0 web plain
   FOOTER_FRAME=""
   footer_rows=0
   ((term_h < FOOTER_MIN_TERM_H)) && return 0
@@ -1294,18 +1339,16 @@ build_footer() {
   [ -n "$CRED_USED" ] && usage_rows=$((usage_rows + 1))
   [ -n "$CRED_CENTS" ] && usage_rows=$((usage_rows + 1))
   ((usage_rows > 0)) && usage_rows=$((usage_rows + 1))
-  footer_rows=$((usage_rows + 2))   # Daily 欄(先頭の 1 行) + USAGE 欄 + WEB 欄(最下行)
+  # 下部欄は 2 つの区画: USAGE(データがあるとき。見出し + 行)と、TOOLS(常に。見出し + Daily 欄 + WEB 欄で 3 行。WEB が最下行)
+  footer_rows=$((usage_rows + 3))
   top=$((term_h - footer_rows + 1))
-  daily_row "$top"
-  top=$((top + 1))
 
   if ((usage_rows > 0)); then
     local row=$((top + 1))
     FOOTER_RLEN=0
     [ -n "$LIM_5H_PCT" ] && [ -n "$LIM_5H_RESET" ] && FOOTER_RLEN=$((2 + ${#LIM_5H_RESET}))
     [ -n "$LIM_1W_PCT" ] && [ -n "$LIM_1W_RESET" ] && ((2 + ${#LIM_1W_RESET} > FOOTER_RLEN)) && FOOTER_RLEN=$((2 + ${#LIM_1W_RESET}))
-    printf -v fill '%*s' $((width - 1 - 2 - 7)) ''
-    FOOTER_FRAME+="${ESC}[${top};1H${C_RULE}──${C_GROUP}${BOLD_ON} USAGE ${BOLD_OFF}${C_RULE}${fill// /─}${ESC}[K${C_RESET}"
+    footer_heading "$top" " USAGE "
     if [ -n "$LIM_5H_PCT" ]; then
       limit_row "$row" 5h "$LIM_5H_PCT" "$LIM_5H_RESET"
       row=$((row + 1))
@@ -1337,6 +1380,8 @@ build_footer() {
   else
     web="${C_DIM}○ WEB off  ${C_ACTIVE}w${C_DIM} start"
   fi
+  footer_heading $((term_h - 2)) " $FOOTER_TOOLS_TITLE "
+  daily_row $((term_h - 1))
   FOOTER_FRAME+="${ESC}[${term_h};1H ${web}${ESC}[K${C_RESET}"
 }
 
@@ -2128,8 +2173,8 @@ CLICK_ROW=0
 while :; do
   if ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_dir}' 2>/dev/null)
-    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_dir <<< "$opts"
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_daily_dir}' 2>/dev/null)
+    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_daily_dir <<< "$opts"
     [ "$opt_cockpit" = 1 ] && COCKPIT=1 || COCKPIT=0
     [ "$COCKPIT" = 1 ] && [ "$opt_view" = daily ] && DAILY_VIEW=1 || DAILY_VIEW=0
     [ "$opt_scope" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
@@ -2201,7 +2246,7 @@ while :; do
 
   read_key
   # 入力が無かった tick でも、working の Agent がいればスピナーを進めるために再描画する
-  [ -z "$KEY" ] && ((N_WORK > 0)) && need_render=1
+  [ -z "$KEY" ] && { ((N_WORK > 0)) || daily_blinking; } && need_render=1
   case $KEY in
     down | up | wheel_down | wheel_up)
       # 入力が届いた時点でこの pane にフォーカスがあるので、選択のハイライトを出す

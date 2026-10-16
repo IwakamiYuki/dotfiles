@@ -88,6 +88,7 @@ class SidebarUsageTest(unittest.TestCase):
                 f"AGENT_SIDEBAR_OPEN_CMD={open_cmd}" if open_cmd else "AGENT_SIDEBAR_OPEN_CMD=true",
                 f"AGENT_DAILY_OBSIDIAN_CONFIG={obsidian_config or self.dir + '/no-obsidian.json'}",
                 f"TMUX_AGENT_WEB_STATE={self.dir}/no-web-state.json",  # 普段の WEB サーバーの状態を読まない
+                "AGENT_SIDEBAR_DAILY_BLINK=off",  # 点滅は、点滅のテストだけが extra_env で有効にする
                 "bash",
                 SIDEBAR,
             ]
@@ -191,7 +192,8 @@ class SidebarUsageTest(unittest.TestCase):
 
     def test_5h_だけ過ぎていて_1w_は有効なら_1w_だけ出す(self):
         screen = self.render(limits=rate_limits(five_resets="1000000000"))
-        self.assertNotIn("5h", screen)
+        # 行のラベル(行頭の 5h)だけを見る。1w の残り時間("94998d15h" など)が、時刻によって "5h" で終わるため、部分一致は不安定
+        self.assertNotRegex(screen, r"(?m)^ 5h ")
         self.assertIn("1w", screen)
 
     def test_期限切れの窓しか無ければ_USAGE_欄ごと出さない(self):
@@ -292,7 +294,9 @@ class SidebarUsageTest(unittest.TestCase):
         screen = self.render(limits=rate_limits(), cred=credits(used=150))
         lines = [l for l in screen.splitlines() if l.strip()]
         self.assertIn("WEB", lines[-1])
-        self.assertIn("🚄", lines[-2])
+        # 絵文字の行は、USAGE 区画の最後(TOOLS の見出しの直前)
+        tools = next(i for i, l in enumerate(lines) if "TOOLS" in l)
+        self.assertIn("🚄", lines[tools - 1])
 
     def test_credits_が無効なら_絵文字も出さない(self):
         screen = self.render(cred=credits(enabled=False, used=None, limit=None, percent=None))
@@ -360,11 +364,11 @@ class SidebarUsageTest(unittest.TestCase):
 
     # ---- Daily 欄: 今日の Daily Note の最終更新からの経過時間と、o で Obsidian を開く操作 ----
 
-    def daily_note(self, age_sec):
-        """今日の Daily Note を、age_sec 秒前に更新されたことにして作る。ディレクトリを返す。"""
+    def daily_note(self, age_sec, days_ago=0):
+        """今日(days_ago=1 なら昨日)の Daily Note を、age_sec 秒前に更新されたことにして作る。ディレクトリを返す。"""
         d = os.path.join(self.dir, "daily")
         os.makedirs(d, exist_ok=True)
-        path = os.path.join(d, time.strftime("%Y-%m-%d") + ".md")
+        path = os.path.join(d, time.strftime("%Y-%m-%d", time.localtime(time.time() - days_ago * 86400)) + ".md")
         with open(path, "w") as f:
             f.write("## やったこと\n")
         mtime = time.time() - age_sec
@@ -512,6 +516,134 @@ class SidebarUsageTest(unittest.TestCase):
         self.press("c")
         time.sleep(1.5)
         self.assertFalse(os.path.exists(out))
+
+    # ---- Daily 欄の点滅: 長く更新されていないとき、勤務時間帯だけ 📝 と ⏰ を入れ替える ----
+
+    BLINK_ON = {"AGENT_SIDEBAR_DAILY_BLINK": "on", "AGENT_SIDEBAR_DAILY_WORK_DAYS": "1234567",
+                "AGENT_SIDEBAR_DAILY_WORK_FROM": "0", "AGENT_SIDEBAR_DAILY_WORK_TO": "24"}
+
+    def seen_icons(self, seconds=3.5):
+        """Daily 欄の先頭のアイコンを、seconds 秒のあいだ繰り返し読んで、見えたものの集合を返す。"""
+        seen = set()
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            row = self.daily_row(self.tmux("capture-pane", "-p", "-t", "t:0.0").stdout).strip()
+            for icon in ("📝", "⏰"):
+                if row.startswith(icon):
+                    seen.add(icon)
+            time.sleep(0.25)
+        return seen
+
+    def test_blink_3時間超えて勤務時間帯なら_アイコンが入れ替わる(self):
+        self.render(daily_dir=self.daily_note(4 * 3600), extra_env=self.BLINK_ON)
+        self.assertEqual(self.seen_icons(), {"📝", "⏰"})
+
+    def test_blink_更新から3時間以内なら_点滅しない(self):
+        self.render(daily_dir=self.daily_note(2 * 3600 + 600), extra_env=self.BLINK_ON)
+        self.assertEqual(self.seen_icons(), {"📝"})
+
+    def test_blink_勤務日でなければ_点滅しない(self):
+        env = dict(self.BLINK_ON, AGENT_SIDEBAR_DAILY_WORK_DAYS="0")  # %u は 1〜7 なので、どの日にも当たらない
+        self.render(daily_dir=self.daily_note(4 * 3600), extra_env=env)
+        self.assertEqual(self.seen_icons(), {"📝"})
+
+    def test_blink_勤務時間帯でなければ_点滅しない(self):
+        env = dict(self.BLINK_ON, AGENT_SIDEBAR_DAILY_WORK_FROM="24", AGENT_SIDEBAR_DAILY_WORK_TO="25")
+        self.render(daily_dir=self.daily_note(4 * 3600), extra_env=env)
+        self.assertEqual(self.seen_icons(), {"📝"})
+
+    def test_blink_off_なら_点滅しない(self):
+        env = dict(self.BLINK_ON, AGENT_SIDEBAR_DAILY_BLINK="off")
+        self.render(daily_dir=self.daily_note(4 * 3600), extra_env=env)
+        self.assertEqual(self.seen_icons(), {"📝"})
+
+    def test_blink_tmux_option_で止められる(self):
+        env = dict(self.BLINK_ON, AGENT_SIDEBAR_DAILY_BLINK="")  # 環境変数は空 → tmux option を見る(未設定は on)
+        self.render(daily_dir=self.daily_note(4 * 3600), extra_env=env)
+        self.assertEqual(self.seen_icons(), {"📝", "⏰"})
+        self.tmux("set-option", "-g", "@agent_sidebar_daily_blink", "off")
+        time.sleep(2.5)  # option は収集の周期(2 秒)で読み直す
+        self.assertEqual(self.seen_icons(2), {"📝"})
+
+    # 24 時を過ぎた深夜(25 時 = 翌 1 時)は、前日の続きとして数える。WORK_TO=48 にすると、いつ実行しても「前日の続き」になる
+    LATE_NIGHT = {"AGENT_SIDEBAR_DAILY_BLINK": "on", "AGENT_SIDEBAR_DAILY_WORK_DAYS": "1234567",
+                  "AGENT_SIDEBAR_DAILY_WORK_FROM": "0", "AGENT_SIDEBAR_DAILY_WORK_TO": "48"}
+
+    def test_blink_24時を過ぎた深夜は_前日のノートで判定して点滅する(self):
+        # 未作成の点滅(猶予 10 時以降)が働かないよう MISSING_FROM を遠ざけ、前日のノートの古さだけで点滅することを確かめる
+        env = dict(self.LATE_NIGHT, AGENT_SIDEBAR_DAILY_MISSING_FROM="48")
+        self.render(daily_dir=self.daily_note(4 * 3600, days_ago=1), extra_env=env)
+        self.assertEqual(self.seen_icons(), {"📝", "⏰"})
+
+    def test_blink_24時を過ぎた深夜は_今日のノートを見ない(self):
+        # 前日のノートが無く、今日のノートだけがある(4 時間前の更新)ときは、前日のノートが「未作成」扱いで、猶予の時刻(10 時)前なので点滅しない
+        env = dict(self.LATE_NIGHT, AGENT_SIDEBAR_DAILY_MISSING_FROM="48")
+        self.render(daily_dir=self.daily_note(4 * 3600), extra_env=env)
+        self.assertEqual(self.seen_icons(), {"📝"})
+
+    def test_blink_深夜の判定は_前日の曜日で行う(self):
+        # WORK_DAYS に前日の曜日(%u)だけを入れると点滅し、今日の曜日だけを入れると点滅しない
+        import datetime
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoweekday()
+        today = datetime.date.today().isoweekday()
+        d = self.daily_note(4 * 3600, days_ago=1)
+        base = dict(self.LATE_NIGHT, AGENT_SIDEBAR_DAILY_MISSING_FROM="48")
+        self.render(daily_dir=d, extra_env=dict(base, AGENT_SIDEBAR_DAILY_WORK_DAYS=str(yesterday)))
+        self.assertEqual(self.seen_icons(), {"📝", "⏰"})
+        if today != yesterday:  # (常に真だが、曜日の取り違えを明示するため)
+            self.render(daily_dir=d, extra_env=dict(base, AGENT_SIDEBAR_DAILY_WORK_DAYS=str(today)))
+            self.assertEqual(self.seen_icons(), {"📝"})
+
+    def empty_daily_dir(self):
+        d = os.path.join(self.dir, "empty-daily")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def test_blink_ノートが未作成でも_勤務時間帯の猶予後なら点滅する(self):
+        # 今日のノートがまだ無いのは、一番知らせたい場面(cron の最初の通知も 10:20 だった)
+        env = dict(self.BLINK_ON, AGENT_SIDEBAR_DAILY_MISSING_FROM="0")
+        self.render(daily_dir=self.empty_daily_dir(), extra_env=env)
+        self.assertEqual(self.seen_icons(), {"📝", "⏰"})
+
+    def test_blink_ノートが未作成でも_猶予の時刻前なら点滅しない(self):
+        env = dict(self.BLINK_ON, AGENT_SIDEBAR_DAILY_MISSING_FROM="24")  # 朝一番から点滅しないための猶予
+        self.render(daily_dir=self.empty_daily_dir(), extra_env=env)
+        self.assertEqual(self.seen_icons(), {"📝"})
+
+    def test_blink_ノートが未作成でも_勤務日でなければ点滅しない(self):
+        env = dict(self.BLINK_ON, AGENT_SIDEBAR_DAILY_MISSING_FROM="0", AGENT_SIDEBAR_DAILY_WORK_DAYS="0")
+        self.render(daily_dir=self.empty_daily_dir(), extra_env=env)
+        self.assertEqual(self.seen_icons(), {"📝"})
+
+    # ---- 下部欄の区画: USAGE(データがあるとき)と TOOLS(Daily 欄・WEB 欄。常に) ----
+
+    def footer_lines(self, screen):
+        return [l for l in screen.splitlines() if l.strip()]
+
+    def test_tools_Daily_と_WEB_を_TOOLS_の見出しでまとめる(self):
+        lines = self.footer_lines(self.render(limits=rate_limits(), cred=credits(), daily_dir=self.daily_note(600)))
+        tools = next(i for i, l in enumerate(lines) if "TOOLS" in l)
+        self.assertIn("Daily", lines[tools + 1])
+        self.assertIn("WEB", lines[tools + 2])
+        self.assertEqual(len(lines), tools + 3)  # WEB 欄が最下行
+
+    def test_tools_USAGE_の下に_TOOLS_が来る(self):
+        lines = self.footer_lines(self.render(limits=rate_limits()))
+        usage = next(i for i, l in enumerate(lines) if "USAGE" in l)
+        tools = next(i for i, l in enumerate(lines) if "TOOLS" in l)
+        self.assertLess(usage, tools)
+        self.assertIn("5h", lines[usage + 1])
+
+    def test_tools_USAGE_のデータが無くても_TOOLS_は出す(self):
+        screen = self.render()
+        self.assertNotIn("USAGE", screen)
+        self.assertIn("TOOLS", screen)
+
+    def test_tools_見出しは_罫線で幅いっぱいに引く(self):
+        for line in self.render(limits=rate_limits()).splitlines():
+            if "TOOLS" in line or "USAGE" in line:
+                self.assertTrue(line.startswith("──"), line)
+                self.assertEqual(display_width(line), 31, line)  # sidebar の幅 32 の 1 桁手前まで(右端の桁は折り返しを避けて空ける)
 
     def test_daily_o_キーで_Obsidian_の_Daily_Note_を開く(self):
         log = os.path.join(self.dir, "open.log")
