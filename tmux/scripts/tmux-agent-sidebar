@@ -491,6 +491,13 @@ type_icon_cells() {
   REPLY="${ESC}[38;5;${id}m${KITTY_PH}${KITTY_D0}${KITTY_D0}${KITTY_PH}${KITTY_D0}${KITTY_D1}${FG_DEFAULT}"
 }
 
+# USAGE 欄の行頭のラベル(2 桁)を REPLY に入れる。種別 $1(Claude / Codex)を画像で示せるときはその画像、
+# 示せないとき(text モード・画像が読めない)は絵文字 $2。Agent 一覧のカードと同じアイコンにそろえる
+usage_label() {
+  type_icon_cells "$1"
+  [ -n "$REPLY" ] || REPLY=$2
+}
+
 # 1 文字の端末上の表示幅(0 / 1 / 2)を REPLY に入れる。ASCII 以外は UTF-8 のバイトからコードポイントを
 # 復元して判定する。East Asian Ambiguous(’ “ — → ▶ 罫線 など)は tmux / Ghostty の既定どおり 1 桁。
 # (以前は ASCII 以外を一律 2 桁と数えていたため、’ や — を含む行で右端の罫線が左へずれていた)
@@ -1218,7 +1225,7 @@ landing_color() {
   fi
 }
 
-# credits_row <行番号>: "💳 $29.84 / $1,300  2%  3h" を FOOTER_FRAME に積む。
+# credits_row <行番号>: "💳 $29.84 / $1,300  2%  3h" を FOOTER_FRAME に積む。行頭は Claude の画像アイコン(出せなければ 💳)。
 # 幅に収まる範囲で、金額 → 上限 → 使用率 → 古さ(取得が止まっているとき)の順に足す。
 # 色は使用率で limit_color と同じ段階に変える（上限なしは使用率が無いので低い段階の色）
 credits_row() {
@@ -1250,10 +1257,11 @@ credits_row() {
     piece="  $CRED_AGE"
     ((plain_len + ${#piece} <= width - 1)) && body+="${C_DIM}${piece}"
   fi
-  FOOTER_FRAME+="${ESC}[${at};1H ${FG_DEFAULT}💳 ${body}${FG_DEFAULT}${ESC}[K${C_RESET}"
+  usage_label Claude 💳
+  FOOTER_FRAME+="${ESC}[${at};1H ${FG_DEFAULT}${REPLY} ${body}${FG_DEFAULT}${ESC}[K${C_RESET}"
 }
 
-# codex_row <行番号>: "🤖 2,533 / 20,000   13%  3h" を FOOTER_FRAME に積む。Codex の今月の使用量(クレジット)。
+# codex_row <行番号>: "🤖 2,533 / 20,000   13%  3h" を FOOTER_FRAME に積む。Codex の今月の使用量(クレジット)。行頭は Codex の画像アイコン(出せなければ 🤖)。
 # 幅に収まる範囲で、使用量 → 上限 → 使用率 → 古さ(取得が止まっているとき)の順に足す。色は 💳 と同じ(着地予想)
 codex_row() {
   local at=$1 used limit color body plain_len piece
@@ -1282,7 +1290,8 @@ codex_row() {
     piece="  $CX_AGE"
     ((plain_len + ${#piece} <= width - 1)) && body+="${C_DIM}${piece}"
   fi
-  FOOTER_FRAME+="${ESC}[${at};1H ${FG_DEFAULT}🤖 ${body}${FG_DEFAULT}${ESC}[K${C_RESET}"
+  usage_label Codex 🤖
+  FOOTER_FRAME+="${ESC}[${at};1H ${FG_DEFAULT}${REPLY} ${body}${FG_DEFAULT}${ESC}[K${C_RESET}"
 }
 
 # credits_icons_row <行番号>: 使った額を、はしごの絵文字に分解して 1 行に並べる("🍜🧃🧃" など)。

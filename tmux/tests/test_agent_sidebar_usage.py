@@ -746,6 +746,37 @@ class SidebarUsageTest(unittest.TestCase):
         m = re.search(r"🤖 [^\n]*?\x1b\[38;5;(\d+)m\d", screen)
         self.assertEqual(m.group(1), "220")
 
+    PLACEHOLDER = "\U0010EEEE"  # Kitty graphics の Unicode placeholder(Agent 一覧のカードと同じ画像アイコンの文字)
+
+    def use_image_icons(self):
+        """画像アイコンの条件(type_icon=image と allow-passthrough)を一時サーバーに設定して、sidebar が気づくまで待つ。"""
+        self.tmux("set-option", "-g", "@agent_sidebar_type_icon", "image")
+        self.tmux("set-option", "-g", "allow-passthrough", "on")
+        return self.wait_screen(lambda scr: self.PLACEHOLDER in scr)
+
+    def test_画像モードなら_Codex_の行頭は_Codex_のアイコン(self):
+        self.render(codex=codex_usage())
+        screen = self.use_image_icons()
+        row = next(l for l in screen.splitlines() if "2,533" in l)
+        self.assertTrue(row.lstrip().startswith(self.PLACEHOLDER), row)
+        self.assertNotIn("🤖", screen)
+        self.assertRegex(row, r"2,533 / 20,000\s+13%")
+        self.assertIn("38;5;251m" + self.PLACEHOLDER, self.tmux("capture-pane", "-e", "-p", "-t", "t:0.0").stdout)  # 画像 ID 251 = Codex
+
+    def test_画像モードなら_credits_の行頭は_Claude_のアイコン(self):
+        self.render(cred=credits())
+        screen = self.use_image_icons()
+        row = next(l for l in screen.splitlines() if "29.84" in l)
+        self.assertTrue(row.lstrip().startswith(self.PLACEHOLDER), row)
+        self.assertNotIn("💳", screen)
+        self.assertIn("38;5;250m" + self.PLACEHOLDER, self.tmux("capture-pane", "-e", "-p", "-t", "t:0.0").stdout)  # 画像 ID 250 = Claude
+
+    def test_画像モードでない時は_絵文字のまま(self):
+        screen = self.render(cred=credits(), codex=codex_usage())
+        self.assertNotIn(self.PLACEHOLDER, screen)
+        self.assertIn("💳", screen)
+        self.assertIn("🤖", screen)
+
     def test_取得を裏で起動する(self):
         marker = os.path.join(self.dir, "fetched")
         fake = os.path.join(self.dir, "fake-fetch")

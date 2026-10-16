@@ -228,13 +228,14 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
       - はしご（`CREDITS_LADDER`。大きい単位から。ドル建てなので為替の設定は要らない）: `📱 $1,000`（iPhone 17 ≒ ¥15 万）/ `🎮 $400`（Switch 2 ≒ ¥6 万）/ `🚄 $100`（新幹線 東京〜新大阪 ≒ ¥1.5 万）/ `🍻 $33`（飲み会 1 回 ≒ ¥5,000）/ `🍜 $7`（ラーメン ≒ ¥1,000）/ `🧃 $1`（ジュース ≒ ¥150）。1 ドル = 約 150 円で丸めた値
       - 大きい単位から順に使い、端数（$1 未満）は捨てる。隣り合う単位の比は 3〜5 倍で、`$32.43` は `🍜🍜🍜🍜🧃🧃🧃🧃`、`$33` で `🍻` に繰り上がる。個数は幅に収まる範囲（幅 32 で 13 個）までで、超える分は小さい単位から切り捨てる
       - ドル以外の通貨、$1 未満、credits が無効のときは出さない。値段は変わる（2026 年は Switch 2 が 5 月、iPhone が 7 月に値上げ）ので「≒」の目安。品目や値段を替えるときは `CREDITS_LADDER` を直す（絵文字は異体字セレクタなしで 2 桁幅のものにする。`✈️` のような VS16 付きは端末によって幅が崩れる）
-  - **Codex の使用量の行**: データがあれば `🤖 2,542 / 20,000  13%` を、USAGE 区画の最後（💳 と絵文字の行の下）に 1 行足す。単位は **Codex のクレジット**（ChatGPT の「使用状況 > 月間上限」の `2,542/20,000 クレジット使用済み` と同じ値。1 クレジット ≒ $0.04 で、20,000 が $800）。色は 💳 と同じ **今月の着地予想**（`landing_pct` / `landing_color` を共有）。取得が 15 分以上止まっていれば経過時間を添え、着地予想は使わない
+  - **Codex の使用量の行**: データがあれば `🤖 2,542 / 20,000  13%`（`🤖` は画像モードなら Codex のアイコン画像。下記）を、USAGE 区画の最後（💳 と絵文字の行の下）に 1 行足す。単位は **Codex のクレジット**（ChatGPT の「使用状況 > 月間上限」の `2,542/20,000 クレジット使用済み` と同じ値。1 クレジット ≒ $0.04 で、20,000 が $800）。色は 💳 と同じ **今月の着地予想**（`landing_pct` / `landing_color` を共有）。取得が 15 分以上止まっていれば経過時間を添え、着地予想は使わない
     - 元データは `tmux-agent-codex-usage` が書く `/tmp/codex-usage.json`（`AGENT_SIDEBAR_CODEX_USAGE` で変更）。`codex app-server`（stdio）へ JSON-RPC `account/rateLimits/read` を 1 回送り、`individualLimit`（`limit` / `used` / `resetsAt`）を読む。モデルは呼ばれず、約 0.7 秒。Codex 自身のログインを使うのでトークンは扱わない
     - ⚠️ **app-server は experimental**。形が変わったら取得失敗として扱い、前回の値を消さず、表示もしない。`individualLimit` が無いアカウントは `enabled=false` を書いて出さない
     - ⚠️ **Business プランでは `credits.balance` / `primary` / `secondary` が null**（残高も 5h / 1w の枠も無い）。出せるのは個人の月間上限だけ。Plus / Pro など別プランの形は未確認（`individualLimit` が無ければ出さないだけ）
     - 取得は sidebar が `CODEX_REFRESH_SEC`（60 秒）ごとに裏で起動する（`statusline.sh` は Claude 専用で、Codex だけ使う人には走らないため）。スクリプト側にも TTL（300 秒）・ロック（`.lock`）・直近の試行（`.attempt`）があり、ほとんどの起動は何もせず終わる。裏で動く `codex app-server` は sidebar の子なので、Agent としては検出されない（sidebar の pane は検出の対象外）
     - 環境変数: `AGENT_SIDEBAR_CODEX_USAGE_BIN`（取得コマンド。テストでは `true` にして本物の codex を起動しない）/ `AGENT_CODEX_USAGE_CACHE` / `AGENT_CODEX_BIN` / `AGENT_CODEX_USAGE_TTL`。手動で試すなら `tmux-agent-codex-usage --force`
     - テスト: `test_agent_codex_usage.py`（偽の codex で取得・TTL・失敗・ロック）、`test_agent_sidebar_usage.py`（行の描画・色・並び）
+    - **USAGE 欄の行頭**（`usage_label`）: 画像モードのときは、`💳`（Claude の credits）の行が **Claude のアイコン**、Codex の行が **Codex のアイコン**になる（Agent 一覧のカードと同じ画像・同じ 2 桁幅）。画像で示せないとき（text モード・passthrough なし・アイコンが読めない）は絵文字（`💳` / `🤖`）のまま。5h / 1w の行は文字ラベルのまま
   - **種別アイコン（画像）** `@agent_sidebar_type_icon`: `text`（既定。project 名の右に `Claude` / `Codex` の文字）| `image`（project 名の左に 2 桁 × 1 行の画像。project 名の幅が増える）
     - 画像は `tmux/assets/agent-icons/{claude,codex}.png`（出所は同ディレクトリの `NOTICE.md`。Simple Icons の SVG を色付け・PNG 化したもの）
     - Kitty graphics protocol の **Unicode placeholders** を使う: 画像データを tmux のパススルー（`ESC P tmux ; … ESC \`）で端末へ一度登録し、
