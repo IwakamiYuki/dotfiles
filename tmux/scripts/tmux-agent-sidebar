@@ -984,6 +984,17 @@ FOOTER_MIN_TERM_H=14
 # 下部欄の 2 つ目の区画(Daily 欄・WEB 欄)の見出し。操作して使う道具をまとめる
 FOOTER_TOOLS_TITLE="TOOLS"
 
+# Tasks 欄: Obsidian のタスク(vault の 12-task/12-01-tasks。1 ファイル 1 タスク)の未完了の件数と、30 日を超えて残っている件数。TOOLS 区画の Daily 欄の下に出す。
+# 数えるのに全ファイルを読むので fork する。TASKS_REFRESH_SEC ごとにしか読まない。ディレクトリが決まらなければ欄ごと出さない。
+# 一覧・完了は t のポップアップ(tmux-agent-tasks)。ディレクトリの決め方は tmux-agent-tasks の冒頭を参照
+TASKS_BIN="${AGENT_SIDEBAR_TASKS_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-tasks}"
+TASKS_REFRESH_SEC=30
+TASKS_STATE=off    # off(ディレクトリ未解決) | ok
+TASKS_OPEN=0       # 未完了の件数
+TASKS_OLD=0        # うち、30 日を超えて残っているもの
+TASKS_DIR_RESOLVED=""
+TASKS_CHECKED_AT=-999
+
 # スマホ用 Web サーバー(tmux-agent-web)の状態。tmux-agent-web が書く状態ファイル(JSON)の pid が生きているかを読む。
 # Daily 欄: 今日の Daily Note(Obsidian)の最終更新からの経過時間と、o で開く操作。TOOLS 区画の 1 行目(WEB 欄の上)に出す。
 # ディレクトリは AGENT_SIDEBAR_DAILY_DIR → tmux の @agent_sidebar_daily_dir → Obsidian の設定(tmux-agent-daily --print-dir)の順。
@@ -1436,6 +1447,19 @@ daily_row() {
   FOOTER_FRAME+="${ESC}[${at};1H${bg} ${FG_DEFAULT}${icon} ${fg}Daily${body}${fg}${hint}${ESC}[K${C_RESET}"
 }
 
+# tasks_row <行番号>: "📋 Tasks 123 (80 old)  t list" を FOOTER_FRAME に積む。old は 30 日を超えて残っている件数(黄)。
+# 幅に収まらないものは、古い件数 → ヒントの順に省く(行の折り返しで下部欄が崩れないようにする)
+tasks_row() {
+  local at=$1 count="$TASKS_OPEN" old="" hint="" used
+  used=$((1 + 2 + 1 + 5 + 1 + ${#count}))   # 空白1 + 📋(2) + 空白 + Tasks(5) + 空白 + 件数
+  if ((TASKS_OLD > 0)) && ((used + 3 + ${#TASKS_OLD} + 5 <= width - 1)); then   # " (" + 件数 + " old)"
+    old=" ${C_DIM}(${ESC}[38;5;220m${TASKS_OLD}${C_DIM} old)"
+    used=$((used + 3 + ${#TASKS_OLD} + 5))
+  fi
+  ((used + 8 <= width - 1)) && hint="  ${C_ACTIVE}t${C_DIM} list"
+  FOOTER_FRAME+="${ESC}[${at};1H ${FG_DEFAULT}📋 ${C_DIM}Tasks ${ESC}[38;5;108m${count}${old}${C_DIM}${hint}${ESC}[K${C_RESET}"
+}
+
 # 下部欄の区画の見出し: "── USAGE ───────"。title は両側の空白を含める
 footer_heading() {
   local at=$1 title=$2 fill
@@ -1444,6 +1468,24 @@ footer_heading() {
 }
 
 # 下部欄を組み立てる。FOOTER_FRAME に描画文字列、footer_rows に使う行数を入れる
+
+# タスクの件数を読み、TASKS_STATE / TASKS_OPEN / TASKS_OLD / TASKS_DIR_RESOLVED に入れる(TASKS_REFRESH_SEC ごと)。
+# tmux-agent-tasks --status の出力は "未完了 30日超 完了待ち ディレクトリ"(ディレクトリは空白を含みうるので、最後の変数に残りを入れる)
+read_tasks() {
+  local open old pending dir
+  ((SECONDS - TASKS_CHECKED_AT < TASKS_REFRESH_SEC)) && return 0
+  TASKS_CHECKED_AT=$SECONDS
+  read -r open old pending dir < <("$TASKS_BIN" --status 2>/dev/null)
+  if [ -z "$dir" ] || [[ ! $open =~ ^[0-9]+$ ]] || [[ ! $old =~ ^[0-9]+$ ]]; then
+    TASKS_STATE=off
+    TASKS_DIR_RESOLVED=""
+    return 0
+  fi
+  TASKS_STATE=ok
+  TASKS_OPEN=$open
+  TASKS_OLD=$old
+  TASKS_DIR_RESOLVED=$dir
+}
 
 # 今日の Daily Note の最終更新を読み、DAILY_STATE / DAILY_AGE に入れる。opt_daily_dir は収集の周期で tmux の option から読んだもの
 read_daily() {
@@ -1529,7 +1571,10 @@ build_footer() {
   [ -n "$CX_USED" ] && usage_rows=$((usage_rows + 1))
   ((usage_rows > 0)) && usage_rows=$((usage_rows + 1))
   # 下部欄は 2 つの区画: USAGE(データがあるとき。見出し + 行)と、TOOLS(常に。見出し + Daily 欄 + WEB 欄で 3 行。WEB が最下行)
-  footer_rows=$((usage_rows + 3))
+  # TOOLS 区画は 見出し + Daily 欄 + [Tasks 欄(ディレクトリが決まるときだけ)] + WEB 欄
+  local tools_rows=3
+  [ "$TASKS_STATE" = ok ] && tools_rows=4
+  footer_rows=$((usage_rows + tools_rows))
   top=$((term_h - footer_rows + 1))
 
   if ((usage_rows > 0)); then
@@ -1573,8 +1618,9 @@ build_footer() {
   else
     web="${C_DIM}○ WEB off  ${C_ACTIVE}w${C_DIM} start"
   fi
-  footer_heading $((term_h - 2)) " $FOOTER_TOOLS_TITLE "
-  daily_row $((term_h - 1))
+  footer_heading $((term_h - tools_rows + 1)) " $FOOTER_TOOLS_TITLE "
+  daily_row $((term_h - tools_rows + 2))
+  [ "$TASKS_STATE" = ok ] && tasks_row $((term_h - 1))
   FOOTER_FRAME+="${ESC}[${term_h};1H ${web}${ESC}[K${C_RESET}"
 }
 
@@ -2013,6 +2059,7 @@ help_lines() {
     "r|即時更新" \
     "o|Daily Note を Obsidian で開く" \
     "c|作業の一覧を Markdown でコピー" \
+    "t|タスク(Obsidian)を一覧・完了にする|(ポップアップ。⏎ で Obsidian、x で done)" \
     "-" \
     "C-c|sidebar を閉じる" \
     "?|このヘルプ"
@@ -2078,6 +2125,22 @@ show_daily_popup() {
   local dir=$DAILY_DIR_RESOLVED
   tmux display-popup -E -w 72 -h 26 -b rounded -S 'fg=colour208' -T " Daily " -t "$TMUX_PANE" \
     "bash -c '\"\$0\" \${1:+--dir \"\$1\"} --color always --width 68 --height 22; printf \"\\n  any key: close\"; IFS= read -rsn1 _' '$DAILY_BIN' '$dir'" 2>/dev/null
+  last_collect=-999
+  size_dirty=1
+  need_render=1
+}
+
+# t: タスク(Obsidian)の一覧をポップアップで出す。ポップアップの中の tmux-agent-tasks が、移動・Obsidian で開く・完了(done: true)までを受け持つ。
+# 通常の sidebar・cockpit のどちらでも同じ(右の枠は Agent の pane なので使わない)。閉じたら件数を読み直す
+show_tasks_popup() {
+  local dir=$TASKS_DIR_RESOLVED
+  if [ -z "$dir" ]; then
+    tmux display-message "Tasks: タスクのディレクトリが決まりません(@agent_sidebar_tasks_dir / Obsidian の設定)" 2>/dev/null
+    return 0
+  fi
+  tmux display-popup -E -w 90% -h 85% -b rounded -S 'fg=colour208' -T " Tasks " -t "$TMUX_PANE" \
+    "bash -c '\"\$0\" --dir \"\$1\"' '$TASKS_BIN' '$dir'" 2>/dev/null
+  TASKS_CHECKED_AT=-999
   last_collect=-999
   size_dirty=1
   need_render=1
@@ -2297,6 +2360,7 @@ read_key() {
     o) KEY=daily_open ;;
     d) KEY=daily_view ;;
     c) KEY=daily_copy ;;
+    t) KEY=tasks ;;
     w) KEY=web_toggle ;;
     W) KEY=web_copy ;;
     q) KEY=quit ;;
@@ -2425,6 +2489,7 @@ while :; do
     read_credits
     read_codex_usage
     read_daily
+    read_tasks
     # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる。
     # cockpit では、枠に入っていた Agent が終了しただけのことがあるので、交換用の枠を戻してから判断する
     if [ "$MAIN_PANES" = "0" ]; then
@@ -2595,6 +2660,10 @@ while :; do
       ;;
     daily_copy)
       copy_daily_work
+      ;;
+    tasks)
+      FOCUSED=1
+      show_tasks_popup
       ;;
     quit)
       # cockpit の sidebar では、q で cockpit を閉じる(Ctrl-C と同じ終了処理: Agent を元へ戻し、交換用の枠も消して window ごと閉じる)。

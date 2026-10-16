@@ -4,12 +4,18 @@
 capture-pane で描画を読む。普段使っている tmux のサーバーには触れない（kill-server も一時ソケットを明示する）。
 ソケットのパスは長いと接続できない（sun_path の上限）ので、短い /tmp 直下の一時ディレクトリに置く。
 """
+import fcntl
 import json
 import os
+import pty
 import re
+import select
 import shutil
+import struct
 import subprocess
 import tempfile
+import termios
+import threading
 import time
 import unicodedata
 import unittest
@@ -72,7 +78,7 @@ class SidebarUsageTest(unittest.TestCase):
     def tmux(self, *args):
         return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True)
 
-    def render(self, limits=None, cred=None, codex=None, codex_threads=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False, windows=None, preset=None):
+    def render(self, limits=None, cred=None, codex=None, codex_threads=None, tasks_dir=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False, windows=None, preset=None, tasks_today="2026-10-17"):
         """sidebar を起動して、描画が出そろった画面を返す。None のファイルは作らない。
         today: 「今日」の日付(YYYY-MM-DD)。着地予想の色が日付で変わるので、固定して確認する。
         colors: True なら色の制御文字つき(capture-pane -e)で返す。
@@ -102,6 +108,9 @@ class SidebarUsageTest(unittest.TestCase):
                 f"AGENT_SIDEBAR_CREDITS={cr_file}",
                 f"AGENT_SIDEBAR_CODEX_USAGE={cx_file}",
                 "AGENT_SIDEBAR_CODEX_USAGE_BIN=true",  # 本物の codex は起動しない
+                f"AGENT_TASKS_DIR={tasks_dir}" if tasks_dir else "AGENT_TASKS_DIR=",  # 未指定なら、本物の vault を読まない(下の AGENT_DAILY_OBSIDIAN_CONFIG が存在しないパスのため)
+                "AGENT_TASKS_NO_TMUX=1",
+                f"AGENT_TASKS_TODAY={tasks_today}",
                 f"AGENT_SIDEBAR_CODEX_THREADS_CACHE={self.threads_file}",
                 "AGENT_SIDEBAR_CODEX_THREADS_BIN=true",  # 本物のデーモンへは問い合わせない
                 "AGENT_SIDEBAR_CLAUDE_BIN=true",
@@ -968,6 +977,114 @@ class SidebarUsageTest(unittest.TestCase):
         self.render(extra_env={"AGENT_SIDEBAR_CODEX_THREADS_BIN": fake})
         self.wait_screen(lambda _: os.path.exists(marker))
         self.assertTrue(os.path.exists(marker))
+
+    # --- Tasks 欄(Obsidian のタスクの件数と、t のポップアップ) ---
+
+    def make_tasks(self, specs=(("2026-10-16-a", "false"), ("2026-10-10-b", "false"), ("2026-08-01-c", "false")), dirname="tasks"):
+        """一時ディレクトリにタスクを作る。2026-10-17 を今日として、c だけが 30 日を超えて古い。"""
+        directory = os.path.join(self.dir, dirname)
+        os.makedirs(directory, exist_ok=True)
+        for name, done in specs:
+            with open(os.path.join(directory, name + ".md"), "w") as f:
+                f.write(f"---\ndone: {done}\ntags:\n  - mimi\n  - bug\n---\n本文\n")
+        return directory
+
+    def tasks_row(self, screen):
+        return next((l for l in screen.splitlines() if "Tasks" in l), "")
+
+    def test_tasks_未完了の件数と古い件数と_t_のヒントを出す(self):
+        screen = self.render(tasks_dir=self.make_tasks())
+        self.assertRegex(self.tasks_row(screen), r"📋 Tasks 3 \(1 old\)\s+t list")
+
+    def test_tasks_古いものが無ければ_件数だけ(self):
+        screen = self.render(tasks_dir=self.make_tasks(specs=(("2026-10-16-a", "false"),)))
+        self.assertRegex(self.tasks_row(screen), r"📋 Tasks 1\s+t list")
+        self.assertNotIn("old", screen)
+
+    def test_tasks_完了待ちは数えない(self):
+        screen = self.render(tasks_dir=self.make_tasks(specs=(("2026-10-16-a", "false"), ("2026-10-15-b", "true"))))
+        self.assertRegex(self.tasks_row(screen), r"Tasks 1\b")
+
+    def test_tasks_ディレクトリが決まらなければ_欄ごと出さない(self):
+        screen = self.render()
+        self.assertNotIn("Tasks", screen)
+        self.assertNotIn("📋", screen)
+
+    def test_tasks_欄は_Daily_欄と_WEB_欄の間(self):
+        screen = self.render(tasks_dir=self.make_tasks())
+        lines = [l for l in screen.splitlines() if l.strip()]
+        tools = next(i for i, l in enumerate(lines) if "TOOLS" in l)
+        self.assertIn("Daily", lines[tools + 1])
+        self.assertIn("Tasks", lines[tools + 2])
+        self.assertIn("WEB", lines[tools + 3])
+        self.assertEqual(len(lines) - 1, tools + 3)  # WEB 欄が最下行
+
+    def test_tasks_欄は幅に収まる(self):
+        screen = self.render(tasks_dir=self.make_tasks(specs=tuple((f"2026-01-{d:02d}-t", "false") for d in range(1, 29))))
+        self.assertRegex(self.tasks_row(screen), r"Tasks 28 \(28 old\)")
+        for line in screen.splitlines():
+            self.assertLessEqual(display_width(line), 32, line)
+
+    def attach_client(self):
+        """専用ソケットのサーバーへ、pty つきの本物のクライアントをつなぐ(display-popup は client が居ないと開けない)。"""
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        client = subprocess.Popen(["tmux", "-S", self.sock, "attach", "-t", "t"], stdin=slave, stdout=slave, stderr=slave,
+                                  env={**os.environ, "TERM": "xterm-256color"}, start_new_session=True)
+        os.close(slave)
+        stop = threading.Event()
+
+        def drain():
+            while not stop.is_set():
+                if select.select([master], [], [], 0.2)[0]:
+                    try:
+                        if not os.read(master, 65536):
+                            return
+                    except OSError:
+                        return
+
+        thread = threading.Thread(target=drain, daemon=True)
+        thread.start()
+
+        def cleanup():
+            stop.set()
+            client.terminate()
+            client.wait(timeout=5)
+            thread.join(timeout=2)
+            os.close(master)
+
+        self.addCleanup(cleanup)
+
+    def fake_tasks_bin(self, status_line):
+        """tmux-agent-tasks の代わり。--status には status_line を返し、それ以外(ポップアップでの起動)は、受け取った引数を [ ] で囲んでログへ書く。"""
+        fake = os.path.join(self.dir, "fake-tasks")
+        log = os.path.join(self.dir, "popup-args.log")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/bash\nif [ "$1" = --status ]; then echo "{status_line}"; exit 0; fi\n'
+                    f'for a in "$@"; do printf "[%s]" "$a"; done > {log}\n')
+        os.chmod(fake, 0o755)
+        return fake, log
+
+    def test_tasks_t_で_ポップアップを_タスクのディレクトリつきで開く(self):
+        directory = os.path.join(self.dir, "my tasks")  # 空白を含むパスでも引数が壊れない
+        fake, log = self.fake_tasks_bin(f"3 1 0 {directory}")
+        self.render(extra_env={"AGENT_SIDEBAR_TASKS_BIN": fake})
+        self.attach_client()
+        self.press("t")
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while not os.path.exists(log) and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertTrue(os.path.exists(log), "t でポップアップが開かれませんでした")
+        with open(log) as f:
+            self.assertEqual(f.read(), f"[--dir][{directory}]")
+
+    def test_tasks_ディレクトリが決まらないときの_t_は_ポップアップを開かない(self):
+        fake, log = self.fake_tasks_bin("")  # --status が何も返さない = 決まらない
+        self.render(extra_env={"AGENT_SIDEBAR_TASKS_BIN": fake})
+        self.attach_client()
+        self.press("t")
+        time.sleep(1.5)
+        self.assertFalse(os.path.exists(log))
 
     def test_取得を裏で起動する(self):
         marker = os.path.join(self.dir, "fetched")

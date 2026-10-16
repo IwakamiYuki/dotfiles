@@ -170,6 +170,16 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     - ノートへは書き込まない（会話ログには機密が含まれうるうえ、vault は git で同期されるため。貼るのは人が確認してから）
     - 画面が縦に収まらないときは、作業の一覧を古いリポジトリから省いて `… 他 N 件` にし、「やったこと」は 8 行で切る（`--height`。`c` のコピーは省かない）
     - 単体でも使える: `tmux-agent-daily`（画面）/ `--markdown`（貼る形）/ `--print-dir`（ディレクトリの解決だけ）
+- sidebar 上で `t` → Obsidian の **タスク**（vault の `12-task/12-01-tasks`。1 ファイル 1 タスク）を **ポップアップで一覧・完了にする**（`tmux-agent-tasks`。通常の sidebar・cockpit のどちらでも効く。Daily Note のテンプレートが埋め込む `active-tasks.base` の表と同じ元データ）
+  - **Tasks 欄**: TOOLS 区画の Daily 欄の下に `📋 Tasks 123 (80 old)  t list` を出す。件数は未完了（`done: true` の完了待ちは数えない）、`old` は **30 日を超えて残っている**もの（黄）。ディレクトリが決まらなければ欄ごと出さない（TOOLS 区画は 3 行に戻る）。幅に収まらないときは `(N old)` → ヒントの順に省く。数えるのに全ファイルを読むので `TASKS_REFRESH_SEC`（30 秒）ごと
+  - **完了 = `done: true` にするだけ**: vault の GitHub Actions（`daily-task-organizer.yml`、毎日 2:00 JST）が、前日の Daily Note から Claude がタスクを作ったあと、`^done: true$` に一致する行を持つファイルを **削除**する（`done` のまま残るタスクは普段ほとんど無い）。そのため `x` は frontmatter の done 行を **ちょうど `done: true`**（大文字・引用符なし。CI の grep と同じ書式）にするだけで、移動も削除もしない。もう一度 `x` で `done: false` に戻せる（CI が消すまで）。`done: true` は一覧の最後へ回り、`✓` と薄い色で出る
+  - 一覧の中: `j` `k`（`↑` `↓`）移動 / `g` `G` 先頭・末尾 / `Ctrl-d` `Ctrl-u` 半ページ / `Enter` **Obsidian で開く**（`obsidian://open?path=<絶対パス>`。vault の名前を決めなくて済む）/ `e` エディタで開く（`$EDITOR`、無ければ vim。戻ったら読み直す）/ `x` 完了にする・戻す / `s` 並び替え（古い順 → 新しい順 → プロジェクト別 → 名前順）/ `f` プロジェクト（タグの 1 つ目）で絞り込み（タスクの多い順）/ `r` 読み直し / `q` `Esc` 閉じる
+  - 列は 経過日数（30 日超で黄、60 日超で赤）・プロジェクト（タグの 1 つ目）・カテゴリ（2 つ目）・タイトル。ファイル名は `mimi-…` のようにプロジェクト名で始まることが多いので、一覧ではプロジェクト列と重複する先頭を省く。下に、選んだタスクの本文（`## 関連情報` は省く）を出す
+  - **書き込みの安全策**: 読み込み後に Obsidian やスマホ側（vault は obsidian-git で同期される）でファイルが変わっていたら **上書きしない**（mtime を見る。`r` で読み直す）。一時ファイル（`.<名前>.<pid>.tmp`）に書いて置き換える（途中で止まってもタスクが壊れない）。frontmatter が無いファイルは書き換えない。書き換えるのは done 行だけで、本文・タグには触れない
+  - **ディレクトリの決め方**（上が優先）: 環境変数 `AGENT_TASKS_DIR` → tmux の option `@agent_sidebar_tasks_dir` → Obsidian の設定（`obsidian.json` で開いている vault。無ければ vault が 1 つのときその vault）の `12-task/12-01-tasks`。決め方は `tmux-agent-tasks` に 1 か所だけ持つ（sidebar は `--status` の出力から受け取る）。単体でも使える: `tmux-agent-tasks`（一覧）/ `--status`（`未完了 30日超 完了待ち ディレクトリ`）/ `--list`（色なし）/ `--print-dir`
+  - タスクの作り方（`daily-task-organizer.yml` と `98-ai/98-01-promptos/01-daily-task-organizer.md`）: ファイル名は `YYYY-MM-DD-タイトル.md`、frontmatter は `done: false` と `tags`（1 つ目 = プロジェクト、2 つ目 = カテゴリ）、本文に「元の Daily Note」へのリンク。**この形を前提にしている**ので、プロンプトの書式を変えたら `tmux-agent-tasks` も見直す
+  - 環境変数（主にテスト用）: `AGENT_SIDEBAR_TASKS_BIN`（取得・一覧のコマンド）/ `AGENT_TASKS_NO_TMUX` / `AGENT_TASKS_TODAY`（`YYYY-MM-DD`）/ `AGENT_TASKS_OPEN_CMD`（既定 `open`）/ `AGENT_DAILY_OBSIDIAN_CONFIG`（Daily と共通）
+  - テスト: `test_agent_tasks.py`（読み書き・CI の書式・`--status`・専用ソケットの tmux で対話画面を動かす）、`test_agent_sidebar_usage.py` の `test_tasks_*`（欄の表示・`t` でポップアップが開く。pty でクライアントをつなぐ）
 - sidebar 上で `w` → スマホ用 Web サーバー（`tmux-agent-web`、後述「Agent Web」）を **ON / OFF**。`W`（大文字）→ 起動中なら URL（トークンつき）をクリップボードへ（通常の sidebar・cockpit のどちらでも効く）
   - TOOLS 区画の最下行の **WEB 欄**に状態を出す（`○ WEB off  w start` / `● WEB ON :8765  w stop W copy`。閲覧のみのときは `ro`）。端末の高さが 14 未満のときは USAGE 欄と同様に出さない。幅に収まらないときはヒント（`W copy`）から省く
   - 実際の入り切りは `tmux-agent-web-toggle`（`R` と同じく、sidebar からは裏で `--notify` つきで呼ぶだけ。起動の待ちで sidebar を止めない）。結果は `display-message` に出る。ON にしたときは URL をクリップボードへコピーする
@@ -371,7 +381,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 - `w`（sidebar）で起動すると、**`.local` の URL（`<scheme>://<Mac の名前>.local:8765/#token=…`）がクリップボードに入る**。`.local` が引けない端末用の IP の URL は、端末に出る（状態ファイルの `ipUrl`）
 - `--no-tls` で HTTP だけにする。HTTP のままだと、トークンと Cookie が LAN で平文になる（信頼できる自宅の Wi-Fi でだけ使う）
 
-**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（`test_agent_daily.py` は Daily ダッシュボード、`test_agent_cockpit_daily.py` は cockpit の `view` と slot。`test_agent_codex_usage.py` は Codex の使用量の取得。`test_agent_codex_threads.py` は Codex のスレッド（状態・名前・モデル）の取得。sidebar のテストは `TMUX` を外さず、専用ソケットの別 tmux だけを見る。外すと sidebar が普段の tmux に問い合わせてしまう）（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
+**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（`test_agent_daily.py` は Daily ダッシュボード、`test_agent_cockpit_daily.py` は cockpit の `view` と slot。`test_agent_codex_usage.py` は Codex の使用量の取得。`test_agent_codex_threads.py` は Codex のスレッド（状態・名前・モデル）の取得。`test_agent_tasks.py` は Obsidian のタスクの一覧・完了。sidebar のテストは `TMUX` を外さず、専用ソケットの別 tmux だけを見る。外すと sidebar が普段の tmux に問い合わせてしまう）（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
 入り切りスクリプトのテストは、`AGENT_WEB_CLIP_CMD`（コピー先のコマンド）を偽物にして、本物のクリップボードを書き換えない。`jq` が必要）、
 `cd tmux/tests && node --test`（`assets/agent-web/ansi.js` の ANSI 変換）。
 環境変数 `TMUX_AGENT_WEB_SOCKET`（tmux のソケットパス）はテスト用。
@@ -556,6 +566,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 │   ├── tmux-agent-restart         # sidebar の R で呼ばれる Claude Code の再起動（終了 → --resume で入り直す）。--fork は f の複製（止めない）
 │   ├── tmux-agent-new             # sidebar の n で呼ばれる、リポジトリでの新規 pane + Claude / Codex の新規起動
 │   ├── tmux-agent-daily           # 前回の Daily Note 更新以降の Claude / Codex の作業を一覧（--markdown でノートに貼る形）
+│   ├── tmux-agent-tasks           # sidebar の t で開く、Obsidian のタスク（12-task/12-01-tasks）の一覧・完了（done: true。CI が毎日削除）
 │   ├── tmux-agent-codex-usage     # Codex の今月の使用量（クレジット）を取得して /tmp/codex-usage.json へ。sidebar の USAGE 欄が読む
 │   ├── tmux-agent-codex-threads   # Codex の常駐デーモンから、起動中のスレッドの状態・名前・モデルを取得して /tmp/tmux-agent-sidebar-codex.txt へ。sidebar の Codex カードが読む
 │   ├── tmux-agent-web             # スマホのブラウザから Agent を確認・操作する Web サーバー（Python。画面は tmux/assets/agent-web/）

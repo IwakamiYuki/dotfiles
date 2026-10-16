@@ -1,0 +1,582 @@
+#!/usr/bin/env python3
+"""tmux-agent-tasks: Obsidian のタスク（1 ファイル 1 タスク）を一覧して、完了にする。
+
+タスクは vault の `12-task/12-01-tasks/` に置かれる（Obsidian の Bases `active-tasks.base` が Daily Note に埋め込む表と同じ元データ）:
+    ---
+    done: false
+    tags:
+      - mimi          # 1 つ目 = プロジェクト
+      - bug           # 2 つ目 = カテゴリ
+    ---
+    本文
+ファイル名は `YYYY-MM-DD-タイトル.md`。毎日 2:00（JST）の CI（vault の `daily-task-organizer.yml`）が、前日の Daily Note から
+タスクを作り、**`^done: true$` の行を持つファイルを削除する**。つまり完了は `done: true` にするだけでよい（x キー）。
+書式は CI の grep に合わせて **ちょうど `done: true` / `done: false`**（大文字・引用符なし）にする。
+
+使い方:
+    tmux-agent-tasks              対話の一覧（ポップアップ用。端末が要る）
+    tmux-agent-tasks --status     "未完了 30日超 完了待ち ディレクトリ" を 1 行で出す（sidebar が使う。決まらなければ終了コード 2）
+    tmux-agent-tasks --list       一覧を色なしで出す（確認用）
+    tmux-agent-tasks --print-dir  タスクのディレクトリだけを出す
+    tmux-agent-tasks --dir DIR    ディレクトリを指定する
+
+ディレクトリの決め方（上が優先）: --dir → 環境変数 AGENT_TASKS_DIR → tmux の option `@agent_sidebar_tasks_dir` →
+Obsidian の設定（`~/Library/Application Support/obsidian/obsidian.json` で開いている vault。無ければ、vault が 1 つだけのときその vault）の
+`12-task/12-01-tasks`。
+
+キー（対話）: j/k ↑/↓ 移動 / g G 先頭・末尾 / Enter Obsidian で開く / e エディタで開く / x 完了にする・戻す /
+s 並び替え / f プロジェクトで絞り込み / r 再読み込み / q Esc 閉じる
+
+環境変数（主にテスト用）:
+  AGENT_TASKS_DIR / AGENT_TASKS_NO_TMUX（設定すると tmux の option を見ない）/ AGENT_TASKS_TODAY（YYYY-MM-DD で「今日」を固定）
+  AGENT_TASKS_OPEN_CMD（Obsidian を開くコマンド。既定 open）/ AGENT_DAILY_OBSIDIAN_CONFIG（obsidian.json のパス）/ EDITOR
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import select
+import shutil
+import subprocess
+import sys
+import termios
+import tty
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import quote
+
+TASKS_SUBDIR = "12-task/12-01-tasks"
+TMUX_OPTION = "@agent_sidebar_tasks_dir"
+OBSIDIAN_CONFIG = "~/Library/Application Support/obsidian/obsidian.json"
+# この日数を超えて残っているタスクは「古い」（sidebar の欄・一覧の色）
+OLD_DAYS = 30
+VERY_OLD_DAYS = 60
+SUBPROCESS_TIMEOUT_SEC = 3
+
+ESC = "\x1b"
+ORANGE = 208
+SELECT_BG = 130
+GREEN, YELLOW, RED = 108, 220, 196
+SORTS = ("古い順", "新しい順", "プロジェクト別", "名前順")
+
+
+# ------------------------------------------------------------ タスクの読み書き
+
+@dataclass
+class Task:
+    path: Path
+    title: str
+    created: dt.date | None
+    tags: list[str]
+    done: bool
+    body: list[str]
+    mtime: float
+
+    @property
+    def project(self) -> str:
+        return self.tags[0] if self.tags else "-"
+
+    @property
+    def category(self) -> str:
+        return self.tags[1] if len(self.tags) > 1 else ""
+
+    @property
+    def short_title(self) -> str:
+        """一覧に出すタイトル。ファイル名は `mimi-…` のようにプロジェクト名で始まることが多く、プロジェクト列と重複するので省く。"""
+        prefix = f"{self.project}-"
+        return self.title[len(prefix):] if self.project != "-" and self.title.startswith(prefix) and len(self.title) > len(prefix) else self.title
+
+
+FRONTMATTER = re.compile(r"\A---\n(.*?)\n---[ \t]*(?:\n|\Z)", re.S)
+DATE_PREFIX = re.compile(r"\A(\d{4}-\d{2}-\d{2})-?")
+
+
+def parse_tags(front: str) -> list[str]:
+    """frontmatter の tags を読む。`- a` の並びと `[a, b]` の両方。"""
+    lines = front.split("\n")
+    for i, line in enumerate(lines):
+        m = re.match(r"tags:\s*(.*)$", line)
+        if not m:
+            continue
+        inline = m.group(1).strip()
+        if inline.startswith("["):
+            return [t.strip().strip("'\"") for t in inline.strip("[]").split(",") if t.strip()]
+        tags = []
+        for follow in lines[i + 1:]:
+            item = re.match(r"\s+-\s+(.*?)\s*$", follow)
+            if not item:
+                break
+            tags.append(item.group(1).strip("'\""))
+        return tags
+    return []
+
+
+def parse_task(path: Path) -> Task | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+        mtime = path.stat().st_mtime
+    except (OSError, UnicodeDecodeError):
+        return None
+    m = FRONTMATTER.match(text)
+    front = m.group(1) if m else ""
+    body = text[m.end():] if m else text
+    done = bool(re.search(r"(?mi)^done:\s*['\"]?true['\"]?\s*$", front))
+    stem = path.stem
+    dm = DATE_PREFIX.match(stem)
+    created = None
+    if dm:
+        try:
+            created = dt.date.fromisoformat(dm.group(1))
+        except ValueError:
+            created = None
+    if created is None:
+        created = dt.date.fromtimestamp(mtime)
+    title = stem[dm.end():] if dm and stem[dm.end():] else stem
+    return Task(path, title, created, parse_tags(front), done, body.strip("\n").split("\n") if body.strip() else [], mtime)
+
+
+def load_tasks(directory: Path) -> list[Task]:
+    tasks = []
+    try:
+        names = sorted(p for p in directory.iterdir() if p.suffix == ".md" and p.is_file() and not p.name.startswith("."))
+    except OSError:
+        return []
+    for p in names:
+        task = parse_task(p)
+        if task is not None:
+            tasks.append(task)
+    return tasks
+
+
+def set_done(task: Task, value: bool) -> tuple[bool, str]:
+    """frontmatter の done 行を `done: true` / `done: false`（CI の grep と同じ書式）にして書く。
+
+    読み込み後に Obsidian やスマホ側で書き換えられていたら、上書きしない（変更を失わないため）。
+    一時ファイルに書いて置き換える（途中で止まっても、タスクが壊れない）。"""
+    try:
+        if task.path.stat().st_mtime != task.mtime:
+            return False, "読み込んだあとにファイルが変わっていました（r で読み直してください）"
+        text = task.path.read_text(encoding="utf-8")
+    except OSError as e:
+        return False, f"読めません: {e}"
+    m = FRONTMATTER.match(text)
+    if not m:
+        return False, "frontmatter が無いので書き換えません"
+    line = f"done: {'true' if value else 'false'}"
+    front = m.group(1)
+    if re.search(r"(?m)^done:.*$", front):
+        new_front = re.sub(r"(?m)^done:.*$", line, front, count=1)
+    else:
+        new_front = line + "\n" + front
+    new_text = text[:m.start(1)] + new_front + text[m.end(1):]
+    tmp = task.path.with_name(f".{task.path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(new_text, encoding="utf-8")
+        shutil.copymode(task.path, tmp)
+        os.replace(tmp, task.path)
+        task.mtime = task.path.stat().st_mtime
+    except OSError as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False, f"書き込めません: {e}"
+    task.done = value
+    return True, ""
+
+
+# ------------------------------------------------------------ ディレクトリの解決
+
+def load_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def detect_vault_tasks_dir(config: Path) -> Path | None:
+    """Obsidian の設定から、開いている vault（無ければ、1 つだけのときその vault）のタスクのディレクトリを求める。"""
+    vaults = [v for v in (load_json(config).get("vaults") or {}).values() if isinstance(v, dict) and v.get("path")]
+    opened = [v for v in vaults if v.get("open")]
+    chosen = opened[0] if opened else (vaults[0] if len(vaults) == 1 else None)
+    if chosen is None:
+        return None
+    directory = Path(str(chosen["path"])) / TASKS_SUBDIR
+    return directory if directory.is_dir() else None
+
+
+def resolve_tasks_dir(option: str | None) -> Path | None:
+    value = option or os.environ.get("AGENT_TASKS_DIR", "")
+    if not value and not os.environ.get("AGENT_TASKS_NO_TMUX"):
+        try:
+            value = subprocess.run(["tmux", "show-options", "-gqv", TMUX_OPTION], capture_output=True, text=True,
+                                   timeout=SUBPROCESS_TIMEOUT_SEC).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            value = ""
+    if value:
+        return Path(value).expanduser()
+    return detect_vault_tasks_dir(Path(os.environ.get("AGENT_DAILY_OBSIDIAN_CONFIG") or OBSIDIAN_CONFIG).expanduser())
+
+
+def today() -> dt.date:
+    fixed = os.environ.get("AGENT_TASKS_TODAY", "")
+    return dt.date.fromisoformat(fixed) if fixed else dt.date.today()
+
+
+def age_days(task: Task, now: dt.date) -> int:
+    return max(0, (now - task.created).days) if task.created else 0
+
+
+def counts(tasks: list[Task], now: dt.date) -> tuple[int, int, int]:
+    """(未完了, うち古い, 完了待ち)。完了待ちは done: true で、CI がまだ消していないもの。"""
+    open_tasks = [t for t in tasks if not t.done]
+    return len(open_tasks), sum(1 for t in open_tasks if age_days(t, now) > OLD_DAYS), len(tasks) - len(open_tasks)
+
+
+# ------------------------------------------------------------ 表示
+
+def char_width(ch: str) -> int:
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def display_width(text: str) -> int:
+    return sum(char_width(c) for c in text)
+
+
+def fit(text: str, width: int, ellipsis: str = "…") -> str:
+    """表示幅 width に収める（収まらなければ末尾を … にする）。"""
+    if width <= 0:
+        return ""
+    if display_width(text) <= width:
+        return text
+    out, used = "", 0
+    for c in text:
+        w = char_width(c)
+        if used + w > width - 1:
+            break
+        out += c
+        used += w
+    return out + ellipsis
+
+
+def pad(text: str, width: int) -> str:
+    return text + " " * max(0, width - display_width(text))
+
+
+def age_color(days: int) -> int:
+    return RED if days > VERY_OLD_DAYS else YELLOW if days > OLD_DAYS else GREEN
+
+
+def sort_tasks(tasks: list[Task], mode: int) -> list[Task]:
+    """完了待ちは常に最後。"""
+    key_date = lambda t: t.created or dt.date.min  # noqa: E731
+    if mode == 0:
+        key = lambda t: (t.done, key_date(t), t.title)  # noqa: E731
+    elif mode == 1:
+        key = lambda t: (t.done, -key_date(t).toordinal(), t.title)  # noqa: E731
+    elif mode == 2:
+        key = lambda t: (t.done, t.project, key_date(t), t.title)  # noqa: E731
+    else:
+        key = lambda t: (t.done, t.title)  # noqa: E731
+    return sorted(tasks, key=key)
+
+
+def list_lines(tasks: list[Task], now: dt.date) -> list[str]:
+    """--list の出力（色なし）。"""
+    return [f"{'x' if t.done else ' '} {age_days(t, now):>4}d  {t.project:<10} {t.category:<14} {t.short_title}" for t in sort_tasks(tasks, 0)]
+
+
+class Screen:
+    """ポップアップの中で動く対話の一覧。"""
+
+    def __init__(self, directory: Path):
+        self.directory = directory
+        self.tasks: list[Task] = []
+        self.now = today()
+        self.sort = 0
+        self.filter: str | None = None
+        self.cursor = 0
+        self.top = 0
+        self.message = ""
+        self.reload()
+
+    # --- データ
+    def reload(self, keep: Task | None = None):
+        current = keep or self.selected()
+        keep_path = current.path if current else None
+        self.tasks = load_tasks(self.directory)
+        self.now = today()
+        visible = self.visible()
+        self.cursor = next((i for i, t in enumerate(visible) if t.path == keep_path), min(self.cursor, max(0, len(visible) - 1)))
+
+    def projects(self) -> list[str]:
+        """プロジェクト（1 つ目のタグ）を、タスクの多い順に。"""
+        tally: dict[str, int] = {}
+        for t in self.tasks:
+            tally[t.project] = tally.get(t.project, 0) + 1
+        return [p for p, _ in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+    def visible(self) -> list[Task]:
+        shown = [t for t in self.tasks if self.filter is None or t.project == self.filter]
+        return sort_tasks(shown, self.sort)
+
+    def selected(self) -> Task | None:
+        visible = self.visible()
+        return visible[self.cursor] if visible and 0 <= self.cursor < len(visible) else None
+
+    # --- 操作
+    def move(self, delta: int):
+        n = len(self.visible())
+        self.cursor = max(0, min(n - 1, self.cursor + delta)) if n else 0
+
+    def cycle_sort(self):
+        keep = self.selected()
+        self.sort = (self.sort + 1) % len(SORTS)
+        self.reload(keep)
+
+    def cycle_filter(self):
+        keep = self.selected()
+        options = [None] + self.projects()
+        self.filter = options[(options.index(self.filter) + 1) % len(options)] if self.filter in options else None
+        self.reload(keep)
+
+    def toggle_done(self):
+        task = self.selected()
+        if task is None:
+            return
+        ok, why = set_done(task, not task.done)
+        if not ok:
+            self.message = why
+            return
+        if task.done:
+            self.message = "完了にしました（毎日 2:00 の CI が削除します。もう一度 x で戻せます）"
+        else:
+            self.message = "未完了に戻しました"
+        self.reload(task)
+
+    def open_in_obsidian(self):
+        task = self.selected()
+        if task is None:
+            return
+        url = "obsidian://open?path=" + quote(str(task.path), safe="")
+        try:
+            subprocess.Popen([*os.environ.get("AGENT_TASKS_OPEN_CMD", "open").split(), url],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.message = "Obsidian で開きました"
+        except OSError as e:
+            self.message = f"開けません: {e}"
+
+    # --- 描画
+    def paint(self, text: str, fg: int | None = None, bg: int | None = None, bold: bool = False, dim: bool = False) -> str:
+        codes = []
+        if bold:
+            codes.append("1")
+        if dim:
+            codes.append("2")
+        if fg is not None:
+            codes.append(f"38;5;{fg}")
+        if bg is not None:
+            codes.append(f"48;5;{bg}")
+        return f"{ESC}[{';'.join(codes)}m{text}{ESC}[0m" if codes else text
+
+    def row(self, task: Task, width: int, selected: bool) -> str:
+        days = age_days(task, self.now)
+        mark = "✓" if task.done else " "
+        proj = pad(fit(task.project, 8), 8)
+        cat = pad(fit(task.category, 13), 13) if width >= 64 else ""
+        head = f" {mark} {days:>3}d  {proj} {cat}{' ' if cat else ''}"
+        title = fit(task.short_title, max(1, width - display_width(head) - 1))
+        plain = pad(head + title, width)
+        if selected:
+            return self.paint(plain, fg=231, bg=SELECT_BG, bold=True)
+        if task.done:
+            return self.paint(plain, dim=True)
+        aged = self.paint(f" {mark} {days:>3}d", fg=age_color(days))
+        rest = pad(f"  {proj} {cat}{' ' if cat else ''}" + title, width - display_width(f" {mark} {days:>3}d"))
+        return aged + rest
+
+    def detail_lines(self, task: Task | None, width: int, rows: int) -> list[str]:
+        if rows <= 0:
+            return []
+        rule = self.paint("─" * width, fg=ORANGE)
+        out = [rule]
+        if task is None:
+            return out + [""] * (rows - 1)
+        tags = " ".join(f"#{t}" for t in task.tags) or "(タグなし)"
+        out.append(self.paint(fit(f" {task.title}", width), bold=True))
+        out.append(self.paint(fit(f" {tags}  作成 {task.created}（{age_days(task, self.now)} 日前）", width), dim=True))
+        body = [l for l in task.body if l.strip() and not l.startswith("## 関連情報")]
+        for line in body:
+            if len(out) >= rows:
+                break
+            out.append(fit(" " + line.rstrip(), width))
+        return out + [""] * (rows - len(out))
+
+    def frame(self, width: int, height: int) -> list[str]:
+        visible = self.visible()
+        opened, old, pending = counts(self.tasks, self.now)
+        state = f"並び: {SORTS[self.sort]}   絞り込み: {self.filter or 'すべて'}"
+        title = self.paint(" TASKS ", fg=ORANGE, bold=True)
+        summary = f"{opened} 件" + (self.paint(f"  {OLD_DAYS}日超 {old}", fg=YELLOW) if old else "") + (f"  完了待ち {pending}" if pending else "")
+        head = title + summary
+        head_w = display_width(f" TASKS {opened} 件" + (f"  {OLD_DAYS}日超 {old}" if old else "") + (f"  完了待ち {pending}" if pending else ""))
+        lines = [head + " " * max(1, width - head_w - display_width(state) - 1) + self.paint(state, dim=True)]
+        detail_rows = min(9, max(0, height - 9))
+        list_rows = max(1, height - 2 - detail_rows)
+        n = len(visible)
+        if self.cursor < self.top:
+            self.top = self.cursor
+        if self.cursor >= self.top + list_rows:
+            self.top = self.cursor - list_rows + 1
+        self.top = max(0, min(self.top, max(0, n - list_rows)))
+        if not visible:
+            lines.append(self.paint("  タスクはありません", dim=True))
+        for i in range(self.top, min(n, self.top + list_rows)):
+            lines.append(self.row(visible[i], width, i == self.cursor))
+        lines += [""] * (1 + list_rows - len(lines))
+        lines += self.detail_lines(self.selected(), width, detail_rows)
+        keys = "j/k 移動  ⏎ 開く  e 編集  x 完了  s 並び  f 絞込  r 更新  q 閉じる"
+        footer = self.message or keys
+        lines.append(self.paint(fit(" " + footer, width), dim=not self.message, fg=GREEN if self.message else None))
+        return lines[:height]
+
+
+# ------------------------------------------------------------ 端末の入力
+
+def read_key(fd: int, timeout: float) -> str | None:
+    """1 キーを返す。矢印は up / down、Esc 単体は esc。タイムアウトは None。"""
+    if not select.select([fd], [], [], timeout)[0]:
+        return None
+    data = os.read(fd, 1)
+    if not data:
+        return "eof"
+    ch = data.decode("utf-8", errors="ignore")
+    if ch == ESC:
+        if not select.select([fd], [], [], 0.05)[0]:
+            return "esc"
+        seq = os.read(fd, 8).decode("utf-8", errors="ignore")
+        return {"[A": "up", "[B": "down", "OA": "up", "OB": "down"}.get(seq[:2], "other")
+    if ch in ("\r", "\n"):
+        return "enter"
+    if ch == "\x03":
+        return "esc"
+    if ch == "\x04":
+        return "pagedown"
+    if ch == "\x15":
+        return "pageup"
+    return ch
+
+
+def run_editor(path: Path):
+    editor = os.environ.get("EDITOR") or "vim"
+    subprocess.run([*editor.split(), str(path)])
+
+
+def interactive(directory: Path) -> int:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("tmux-agent-tasks: 端末が必要です（--list / --status は端末なしで使えます）", file=sys.stderr)
+        return 2
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    screen = Screen(directory)
+
+    def enter():
+        tty.setcbreak(fd)
+        sys.stdout.write(f"{ESC}[?25l")
+
+    def leave():
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        sys.stdout.write(f"{ESC}[?25h{ESC}[0m")
+        sys.stdout.flush()
+
+    enter()
+    try:
+        last_size = None
+        dirty = True
+        while True:
+            size = shutil.get_terminal_size((80, 24))
+            if dirty or size != last_size:
+                out = "".join(f"{ESC}[{i + 1};1H{line}{ESC}[K" for i, line in enumerate(screen.frame(size.columns, size.lines)))
+                sys.stdout.write(f"{ESC}[H{out}{ESC}[J")
+                sys.stdout.flush()
+                last_size, dirty = size, False
+            key = read_key(fd, 0.5)
+            if key is None:
+                continue
+            dirty = True
+            screen.message = ""  # 前のキーの結果は、次のキーで消す（このキーの結果は、下で入れ直す）
+            half = max(1, (size.lines - 4) // 2)
+            if key in ("q", "esc", "eof"):
+                return 0
+            elif key in ("j", "down"):
+                screen.move(1)
+            elif key in ("k", "up"):
+                screen.move(-1)
+            elif key == "pagedown":
+                screen.move(half)
+            elif key == "pageup":
+                screen.move(-half)
+            elif key == "g":
+                screen.cursor = 0
+            elif key == "G":
+                screen.cursor = max(0, len(screen.visible()) - 1)
+            elif key == "enter":
+                screen.open_in_obsidian()
+            elif key == "e":
+                task = screen.selected()
+                if task is not None:
+                    leave()
+                    run_editor(task.path)
+                    enter()
+                    screen.reload(task)
+            elif key == "x":
+                screen.toggle_done()
+            elif key == "s":
+                screen.cycle_sort()
+            elif key == "f":
+                screen.cycle_filter()
+            elif key == "r":
+                screen.reload()
+                screen.message = "読み直しました"
+    finally:
+        leave()
+
+
+# ------------------------------------------------------------ 起動
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="tmux-agent-tasks", description="Obsidian のタスクを一覧して、完了にする")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--status", action="store_true", help='"未完了 30日超 完了待ち ディレクトリ" を 1 行で出す')
+    mode.add_argument("--list", action="store_true", help="一覧を色なしで出す")
+    mode.add_argument("--print-dir", action="store_true", help="タスクのディレクトリだけを出す")
+    parser.add_argument("--dir", help="タスクのディレクトリ")
+    args = parser.parse_args(argv)
+
+    directory = resolve_tasks_dir(args.dir)
+    if directory is None or not directory.is_dir():
+        if not (args.print_dir and directory is not None):
+            print("tmux-agent-tasks: タスクのディレクトリが決まりません（--dir / AGENT_TASKS_DIR / @agent_sidebar_tasks_dir）", file=sys.stderr)
+        return 2
+    if args.print_dir:
+        print(directory)
+        return 0
+    if args.status:
+        opened, old, pending = counts(load_tasks(directory), today())
+        print(f"{opened} {old} {pending} {directory}")
+        return 0
+    if args.list:
+        print("\n".join(list_lines(load_tasks(directory), today())))
+        return 0
+    return interactive(directory)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
