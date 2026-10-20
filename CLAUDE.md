@@ -147,7 +147,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - sidebar 上で `n` → 選択中のカードの **リポジトリで新しい pane を作り**、Claude Code / Codex を新規セッションで起動する（tmux のメニューで `c` = Claude / `x` = Codex を選ぶ。通常の sidebar・cockpit のどちらでも効く）
   - `tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id> | --print)` が処理する（`--print` は、スマホの Web 画面（`tmux-agent-web`）用。Mac のフォーカスを動かさず、作った pane_id だけを標準出力へ返す）
   - **ディレクトリ**: リポジトリの本体（worktree のカードを選んでいても、大本のディレクトリ。見出しのリポジトリと同じ `AG_RKEY`）。git 管理外のグループはそのディレクトリ
-  - **置き場所**: そのリポジトリの **先頭に表示されている Agent の window**（anchor の pane を分割する。幅が 120 以上なら左右、狭ければ上下）。anchor が cockpit の枠に入っているときは、元の window を交換用の枠（slot）の位置から割り出す（slot は枠に入った Agent の元の位置に居るため）。割り出せなければ新しい window にする
+  - **置き場所**: そのリポジトリの **先頭に表示されている Agent の window**（anchor の pane を分割する。幅が 120 以上なら左右、狭ければ上下。anchor が小さくて分割できない（`no space for new pane`）ときは、反対向き → 新しい window の順に切り替える）。anchor が cockpit の枠に入っているときは、元の window を交換用の枠（slot）の位置から割り出す（slot は枠に入った Agent の元の位置に居るため）。割り出せなければ新しい window にする
   - シェルを立ち上げてからコマンドを入力するので、Agent が終了してもシェルが残り、`R`（再起動）がそのまま使える
   - 通常の sidebar（`--focus`）は、作った pane へ移動する。cockpit（`--notify`）は、作った pane を **すぐ右の枠へ入れ、フォーカスもそこへ移す**（sidebar が選ばれたままにならず、すぐ入力できる）。さらに sidebar の pane option `@agent_new_pane` に pane_id を書き、sidebar は **Agent として検出されたら**（Claude は `claude agents --json` に載るまで数秒かかる。40 秒まで探す）そのカードを選択する。検出までは右の枠の中身と選択が合わないので、選択の表示（タブ・罫線）を出さない
   - 起動コマンドは tmux の option で変えられる: `@agent_sidebar_claude_cmd`（既定 `claude`）/ `@agent_sidebar_codex_cmd`（既定 `codex`）。たとえば `set -g @agent_sidebar_claude_cmd 'claude --dangerously-skip-permissions'`
@@ -381,7 +381,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 - `w`（sidebar）で起動すると、**`.local` の URL（`<scheme>://<Mac の名前>.local:8765/#token=…`）がクリップボードに入る**。`.local` が引けない端末用の IP の URL は、端末に出る（状態ファイルの `ipUrl`）
 - `--no-tls` で HTTP だけにする。HTTP のままだと、トークンと Cookie が LAN で平文になる（信頼できる自宅の Wi-Fi でだけ使う）
 
-**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（`test_agent_daily.py` は Daily ダッシュボード、`test_agent_cockpit_daily.py` は cockpit の `view` と slot。`test_agent_codex_usage.py` は Codex の使用量の取得。`test_agent_codex_threads.py` は Codex のスレッド（状態・名前・モデル）の取得。`test_agent_tasks.py` は Obsidian のタスクの一覧・完了。sidebar のテストは `TMUX` を外さず、専用ソケットの別 tmux だけを見る。外すと sidebar が普段の tmux に問い合わせてしまう）（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
+**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（`test_agent_daily.py` は Daily ダッシュボード、`test_agent_cockpit_daily.py` は cockpit の `view` と slot。`test_agent_codex_usage.py` は Codex の使用量の取得。`test_agent_codex_threads.py` は Codex のスレッド（状態・名前・モデル）の取得。`test_agent_tasks.py` は Obsidian のタスクの一覧・完了。`test_agent_new.py` は `n` の新規 pane 作成（分割できない anchor）。sidebar のテストは `TMUX` を外さず、専用ソケットの別 tmux だけを見る。外すと sidebar が普段の tmux に問い合わせてしまう）（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
 入り切りスクリプトのテストは、`AGENT_WEB_CLIP_CMD`（コピー先のコマンド）を偽物にして、本物のクリップボードを書き換えない。`jq` が必要）、
 `cd tmux/tests && node --test`（`assets/agent-web/ansi.js` の ANSI 変換）。
 環境変数 `TMUX_AGENT_WEB_SOCKET`（tmux のソケットパス）はテスト用。

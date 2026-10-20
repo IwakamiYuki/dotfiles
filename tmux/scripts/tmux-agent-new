@@ -5,7 +5,8 @@
 # - pane の置き場所: anchor(そのリポジトリの先頭に表示されている Agent)の pane がある window。
 #   anchor が cockpit の枠に入っているときは、元の window を交換用の枠(slot)の位置から割り出す
 #   (slot は枠に入った Agent の元の位置に居る)。割り出せなければ新しい window にする
-# - 新しい pane は anchor(または slot)を分割して作る。横幅が十分(SPLIT_H_MIN 以上)なら左右、狭ければ上下
+# - 新しい pane は anchor(または slot)を分割して作る。横幅が十分(SPLIT_H_MIN 以上)なら左右、狭ければ上下。
+#   anchor が小さくて分割できないときは、反対向き → 新しい window の順に切り替える
 # - 起動はシェルを立ち上げてからコマンドを入力する。Agent が終了してもシェルが残り、tmux-agent-restart(R)がそのまま使える
 # - AGENT_NEW_CMD があれば、それをそのまま入力する(tmux-agent-restart --fork が「--resume <id> --fork-session」つきで呼ぶ)。
 #   AGENT_NEW_LABEL は完了メッセージに出す名前(既定は type)
@@ -94,6 +95,12 @@ elif [ -n "$split_target" ]; then
   dirflag=-v
   [[ $width =~ ^[0-9]+$ ]] && ((width >= SPLIT_H_MIN)) && dirflag=-h
   new=$(tmux split-window -d "$dirflag" -P -F '#{pane_id}' -c "$dir" -t "$split_target" 2>/dev/null)
+  # anchor が小さくて分割できない(no space for new pane)ときは、反対向き → 新しい window の順に切り替える
+  if [ -z "$new" ]; then
+    [ "$dirflag" = -h ] && otherflag=-v || otherflag=-h
+    new=$(tmux split-window -d "$otherflag" -P -F '#{pane_id}' -c "$dir" -t "$split_target" 2>/dev/null)
+  fi
+  [ -n "$new" ] || new=$(tmux new-window -d -P -F '#{pane_id}' -c "$dir" 2>/dev/null)
 else
   # 置き場所を割り出せなかった: anchor の session に新しい window を作る
   new=$(tmux new-window -d -P -F '#{pane_id}' -c "$dir" 2>/dev/null)
