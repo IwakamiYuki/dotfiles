@@ -2409,6 +2409,65 @@ read_key() {
 # 壊れた位置から読み続けて暴走する(SIGTERM でも止まらないまま CPU を使い切った実例がある)。
 # 関数は定義全体を先に読み込むため、起動後に書き換えられても、動いているプロセスは影響を受けない
 # (インデントは差分を小さくするため、あえて付けていない)
+# ---- Dock のバウンス（Ghostty の bell-features の attention。フォーカスが外れているとき Dock のアイコンが 1 回跳ねる）----
+# 「確認が要る状態」(WAITING / DONE)に **新しく** なった Agent がいたら、tmux のクライアントの端末へ BEL を 1 つ書く。
+# 状態は sidebar ごと(window の数 + cockpit)に見えるので、二重に鳴らさないよう、直近の WAITING / DONE の一覧
+# ("pane_id|status" の行)を共有ファイルに持ち、そこに無い行が現れたときだけ鳴らす。更新はロック(mkdir)の中で行い、先に取った sidebar が鳴らす
+BELL_STATE_FILE="${AGENT_SIDEBAR_BELL_STATE:-/tmp/tmux-agent-sidebar-bell.txt}"
+# 落ちた sidebar が取り残したロックを、この秒数を超えたら捨てる(通常のロックは数 ms)
+BELL_LOCK_STALE_SEC=10
+
+ring_bell() {
+  local tty
+  while IFS= read -r tty; do
+    [ -n "$tty" ] && { printf '\a' > "$tty"; } 2>/dev/null
+  done < <(tmux list-clients -F '#{client_tty}' 2>/dev/null)
+}
+
+# mode: all（既定。WAITING と DONE）| waiting | off。tmux の option @agent_sidebar_bell、環境変数 AGENT_SIDEBAR_BELL が先
+bell_check() {
+  local mode=${AGENT_SIDEBAR_BELL:-${opt_bell:-all}} cur="" old="" line i ring=0 lock="$BELL_STATE_FILE.lock" first=0
+  [ "$mode" = off ] && return 0
+  for ((i = 0; i < AG_N; i++)); do
+    [ "${AG_TYPE[i]}" = Shell ] && continue
+    case ${AG_STATUS[i]} in
+      waiting) ;;
+      done) [ "$mode" = waiting ] && continue ;;
+      *) continue ;;
+    esac
+    cur+="${AG_ID[i]}|${AG_STATUS[i]}"$'\n'
+  done
+  cur=${cur%$'\n'}
+  # 変化が無いとき(ほとんどの収集)は、fork せずに終わる
+  if [ -f "$BELL_STATE_FILE" ]; then
+    old=$(<"$BELL_STATE_FILE")
+    [ "$cur" = "$old" ] && return 0
+  fi
+
+  if ! mkdir "$lock" 2>/dev/null; then
+    [ $(($(date +%s) - $(stat -f %m "$lock" 2>/dev/null || echo 0))) -gt "$BELL_LOCK_STALE_SEC" ] && rmdir "$lock" 2>/dev/null
+    return 0
+  fi
+  # ロックを取る間に別の sidebar が更新したかもしれないので、読み直す
+  if [ -f "$BELL_STATE_FILE" ]; then old=$(<"$BELL_STATE_FILE"); else first=1; fi
+  # 記録が無い(初回)ときは、いま居る分を基準にするだけで鳴らさない(sidebar を開いた直後に鳴らさないため)
+  if ((first == 0)); then
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      case $'\n'"$old"$'\n' in
+        *$'\n'"$line"$'\n'*) ;;
+        *) ring=1 ;;
+      esac
+    done <<< "$cur"
+  fi
+  if [ "$cur" != "$old" ] || ((first)); then
+    printf '%s' "$cur" > "$BELL_STATE_FILE.$$" 2>/dev/null && mv -f "$BELL_STATE_FILE.$$" "$BELL_STATE_FILE" 2>/dev/null
+  fi
+  rmdir "$lock" 2>/dev/null
+  ((ring)) && ring_bell
+  return 0
+}
+
 main() {
 
 SESSION_ID=$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}' 2>/dev/null) || exit 1
@@ -2459,8 +2518,8 @@ CLICK_ROW=0
 while :; do
   if ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_last_sel}|#{@agent_sidebar_last_view}|#{@agent_sidebar_daily_dir}' 2>/dev/null)
-    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_last_sel opt_last_view opt_daily_dir <<< "$opts"
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_last_sel}|#{@agent_sidebar_last_view}|#{@agent_sidebar_daily_dir}|#{@agent_sidebar_bell}' 2>/dev/null)
+    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_last_sel opt_last_view opt_daily_dir opt_bell <<< "$opts"
     [ "$opt_cockpit" = 1 ] && COCKPIT=1 || COCKPIT=0
     [ "$COCKPIT" = 1 ] && [ "$opt_view" = daily ] && DAILY_VIEW=1 || DAILY_VIEW=0
     [ "$opt_scope" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
@@ -2479,6 +2538,7 @@ while :; do
     [ -z "$records" ] && { EXIT_REASON=collect_empty; exit 0; }
     restore_cockpit_selection
     parse_records "$records"
+    bell_check
     if [ -n "$new_pane" ]; then
       tmux set-option -pu -t "$TMUX_PANE" @agent_new_pane 2>/dev/null
       PENDING_ID=$new_pane

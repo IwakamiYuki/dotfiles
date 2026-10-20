@@ -158,6 +158,12 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     - 起動の直前に `tmux-agent-new` が、anchor がまだ空きシェルか確かめる（実行中のコマンドへ入力してしまわないため）。違えば何もしない
     - 見出しの件数と先頭行の `AGENTS` は Agent だけ数える（欄は数えない）。Agent が起動して欄がカードに変わっても、選択は pane_id で引き継ぐ（`@agent_new_pane` は使わない）
     - cockpit では、欄を選ぶと、その空きシェルの本物の pane が右の枠に入る。そこで `n` を押すと、枠の中のシェルで起動する
+- **Dock のバウンス**: Agent が **新しく** WAITING / DONE になったら、tmux のクライアントの端末へ BEL を 1 つ書く。Ghostty は、フォーカスが外れているときの BEL で Dock のアイコンを 1 回跳ねさせる（`bell-features` の `attention`。1.3.1 では既定で有効。**跳ねるのは 1 回だけ**で、フォーカスされるまで跳ね続けることはできない）。Ghostty を見ているときは跳ねない
+  - 「新しく」の判定: WAITING / DONE の一覧（`pane_id|status` の行）を共有ファイル `/tmp/tmux-agent-sidebar-bell.txt`（`AGENT_SIDEBAR_BELL_STATE`）に持ち、そこに無い行が現れたときだけ鳴らす。sidebar は window の数 + cockpit だけ居るので、`mkdir` のロックの中で更新し、先に取った sidebar だけが鳴らす（二重に鳴らさない）。WAITING → 作業 → WAITING のように、一度抜けてからもう一度なれば、また鳴る。待ちが解けた（DONE を読んだ・IDLE に戻った）ときは鳴らさない
+  - 記録が無い（初回）ときは、そのときの状態を基準にするだけで鳴らさない。収集（2 秒ごと）の間に WAITING → 作業 → WAITING が起きても、一覧が変わらないので鳴らない
+  - 切り替え: tmux の option `@agent_sidebar_bell`（`all` 既定 = WAITING と DONE / `waiting` / `off`。収集のたびに読むので 2 秒以内に効く）、環境変数 `AGENT_SIDEBAR_BELL` が先
+  - **Dock のバッジ（件数）は付けられない**: Ghostty に仕組みが無い。`lsappinfo setinfo -app Ghostty StatusLabel=…` は値を保存できたが、文字列として入るだけで、バッジとして表示されるかは確認できていない（非公式なのでおすすめしない）
+  - テスト: `test_agent_sidebar_usage.py` の `test_ベル_*`（pty のクライアントに届いた出力の `\a` を数える。Codex の WAITING で確認。DONE は Claude の状態ファイル由来で偽装が大がかりなため、判定が状態の種類に依らないことで代える）
 - sidebar 上で `o` → Obsidian の Daily Note を開く（`open obsidian://daily`。以前 crontab から通知していた `-open` と同じ URL。通常の sidebar・cockpit のどちらでも効く）
   - **Daily 欄**: TOOLS 区画（下記）の 1 行目に `📝 Daily 4h00m  o open` を出す。経過時間は「今日の Daily Note の最終更新（mtime）」からで、2 時間超で黄、3 時間超で赤（`DAILY_WARN_SEC` / `DAILY_ALERT_SEC`）。今日のノートが無ければ赤の `未作成`。端末の高さが 14 未満のときは USAGE 欄と同様に出さない。幅に収まらなければヒント（`o open`）を省く
   - **点滅**: 最終更新から 3 時間（`DAILY_ALERT_SEC`）を超え、かつ平日（`%u` が 1〜5）の 9 時以上 25 時（翌 1 時）未満（`DAILY_WORK_FROM` / `DAILY_WORK_TO`。25 などの 24 超えも書ける）のときだけ、`📝` を `⏰` と 1 秒ごとに入れ替える（端末の点滅属性は絵文字に効かないため）。夜・休日はノートが古くて当然なので点滅しない。今日のノートがまだ無いとき（赤の `未作成`）も、勤務日の 10 時以降（`DAILY_MISSING_FROM`）は点滅する（朝一番から点滅しないための 1 時間の猶予）。ダッシュボードを見ている間も点滅しない。ノートを更新すると、次の判定（最大 30 秒）で止まる。**24 時を過ぎた深夜（0 時台）は前日の続きとして数え、前日の曜日・前日のノートで判定する（Obsidian の `obsidian://daily` は日付が変わると新しい日のノートを開くが、sidebar は前日のノートの古さを見る）。**止めるには** tmux の option `@agent_sidebar_daily_blink off`（環境変数 `AGENT_SIDEBAR_DAILY_BLINK` が先。option の変更は 2 秒以内に効く）。点滅中は 1 秒ごとに再描画する（working のスピナーと同じ）。「古いか」は 30 秒ごとの判定（`DAILY_STALE`）、「点滅させるか」は描画のたびの判定（`daily_blinking`）

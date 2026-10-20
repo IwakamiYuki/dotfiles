@@ -115,6 +115,7 @@ class SidebarUsageTest(unittest.TestCase):
                 "AGENT_SIDEBAR_CODEX_THREADS_BIN=true",  # 本物のデーモンへは問い合わせない
                 "AGENT_SIDEBAR_CLAUDE_BIN=true",
                 f"AGENT_SIDEBAR_ALERT_STATE={self.dir}/none",
+                f"AGENT_SIDEBAR_BELL_STATE={self.dir}/bell-state",  # 普段の sidebar と記録を共有しない
                 f"AGENT_SIDEBAR_TITLE_CACHE={self.dir}/titles",
                 f"AGENT_SIDEBAR_CLAUDE_CACHE={self.dir}/claude-cache",
                 f"AGENT_SIDEBAR_SESSIONS_DIR={self.dir}/sessions",
@@ -1033,13 +1034,16 @@ class SidebarUsageTest(unittest.TestCase):
                                   env={**os.environ, "TERM": "xterm-256color"}, start_new_session=True)
         os.close(slave)
         stop = threading.Event()
+        self.client_output = bytearray()  # クライアントの端末(= Ghostty の役)に届いた出力。BEL の確認に使う
 
         def drain():
             while not stop.is_set():
                 if select.select([master], [], [], 0.2)[0]:
                     try:
-                        if not os.read(master, 65536):
+                        data = os.read(master, 65536)
+                        if not data:
                             return
+                        self.client_output.extend(data)
                     except OSError:
                         return
 
@@ -1085,6 +1089,72 @@ class SidebarUsageTest(unittest.TestCase):
         self.press("t")
         time.sleep(1.5)
         self.assertFalse(os.path.exists(log))
+
+    # --- Dock のバウンス用ベル(WAITING / DONE になったとき、クライアントの端末へ BEL を 1 回書く) ---
+
+    def set_codex_thread(self, **kw):
+        with open(self.threads_file, "w") as f:
+            f.write(self.thread_line(**kw) + "\n")
+
+    def bells(self):
+        return bytes(self.client_output).count(b"\a")
+
+    def wait_bells(self, expected):
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and self.bells() < expected:
+            time.sleep(0.2)
+        self.assertEqual(self.bells(), expected)
+
+    def start_bell_session(self, extra_env=None):
+        """idle の Codex が 1 つ居て、クライアントがつながり、基準(記録)が書かれた状態にする。いまの BEL の数を返す。"""
+        self.render(codex_threads=[self.thread_line()], extra_env=extra_env)
+        self.start_codex_pane()
+        self.wait_screen(lambda scr: "IDLE" in scr)
+        self.attach_client()
+        time.sleep(1.5)  # 接続直後の描画が落ち着くまで
+        return self.bells()
+
+    def test_ベル_WAITING_になったら_1回だけ鳴らす(self):
+        base = self.start_bell_session()
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_screen(lambda scr: "WAITING" in scr)
+        self.wait_bells(base + 1)
+        time.sleep(5)  # 収集が何度か回っても、同じ WAITING では鳴らさない
+        self.assertEqual(self.bells(), base + 1)
+
+    def test_ベル_待ちから戻って_また待ちになったら_もう一度鳴らす(self):
+        base = self.start_bell_session()
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_bells(base + 1)
+        self.wait_screen(lambda scr: "WAITING" in scr)  # 古い IDLE の表示を、待ちが解けた印と取り違えない
+        self.set_codex_thread(status="idle")
+        self.wait_screen(lambda scr: "IDLE" in scr and "WAITING" not in scr)
+        self.assertEqual(self.bells(), base + 1)  # 待ちが解けたときは鳴らさない
+        self.set_codex_thread(status="active", flags="waitingOnUserInput")
+        self.wait_bells(base + 2)
+
+    def test_ベル_作業中は鳴らさない(self):
+        base = self.start_bell_session()
+        self.set_codex_thread(status="active", flags="")
+        self.wait_screen(lambda scr: "WORKING" in scr)
+        time.sleep(3)
+        self.assertEqual(self.bells(), base)
+
+    def test_ベル_off_なら鳴らさない(self):
+        base = self.start_bell_session(extra_env={"AGENT_SIDEBAR_BELL": "off"})
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_screen(lambda scr: "WAITING" in scr)
+        time.sleep(3)
+        self.assertEqual(self.bells(), base)
+
+    def test_ベル_tmux_の_option_でも_off_にできる(self):
+        base = self.start_bell_session()
+        self.tmux("set-option", "-g", "@agent_sidebar_bell", "off")
+        time.sleep(2.5)  # option は収集のたびに読まれる
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_screen(lambda scr: "WAITING" in scr)
+        time.sleep(3)
+        self.assertEqual(self.bells(), base)
 
     def test_取得を裏で起動する(self):
         marker = os.path.join(self.dir, "fetched")
