@@ -209,11 +209,16 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - 識別は pane option `@agent_sidebar=1`（sidebar プロセス自身も起動時に付与）。Agent 検出対象と `tmux-window-name` の共通パス計算から除外される
 - `-f` 付き split なので、main pane が複数ある window でも window 全体の左端・全高に置かれる
 - main pane が全て閉じて sidebar だけが残った window は、sidebar が自分で終了して window ごと閉じる
-- 入力は `read -t 1` で待つ（データ更新は 2 秒ごと、キー入力・リサイズは 1 秒以内に反応）。クリックは SGR マウス報告（`ESC[?1000h` + `?1006h`）で受け取り、行→Agent の対応表で対象を決める。tmux の `mouse on` が前提
+- 入力は `read -t 1` で待つ（データ更新は 2 秒ごと、キー入力・リサイズは 1 秒以内に反応）。
+- **収集は裏のサブシェルで行う**（`collect` の結果を `/tmp/tmux-agent-sidebar-collect-<pid>` に書き、sidebar は入力待ちから戻ったときに取り込む。最初の 1 回だけ同期）。以前は同期で、`ps`・`tmux`・`claude agents --json`（約 0.26 秒、3 秒ごと）・ai-title の更新（約 0.25 秒、30 秒ごと）・git（約 0.4 秒、全 dir が同時に期限切れ）が、キー入力を読むループを 100〜600 ms 止めていた（j/k・フォーカス移動がもっさりしていた原因）。専用 tmux に 14 個の pane を立てて測ると、j を押してから選択が動くまでが p90 516 ms・最大 1.1 s → p90 約 75 ms・最大 約 130 ms になった
+  - bash 3.2（macOS の `/bin/bash`）では、シグナルが `read -t` を中断しない（トラップは `read` が終わってから動く）。そのため、収集が終わったことで入力待ちを起こせず、**結果の取り込みは最大 1 秒（`TICK`）遅れる**
+  - 収集の最中にフォーカスなどのイベント（`last_collect=-999`）があったときは、古い結果で今の状態（`FOCUSED` など）を上書きしないよう、届いた結果を捨ててすぐ取り直す。20 秒（`COLLECT_MAX_SEC`）固まった収集は捨ててやり直す。親の sidebar が終わっていたら、結果は書かない
+  - 取り込み側（`apply_collected`）で重いのは `parse_records` の git。リポジトリ・worktree の判定は 60 秒（`GIT_TTL`）キャッシュし、期限切れの取り直しも 1 回の取り込みで 3 件まで（`GIT_REFRESH_MAX`。初めて見る dir は数えない）に分ける。**ブランチは git を呼ばず `<git dir>/HEAD` を毎回読む**ので、`checkout` にはすぐ追従する
+  - 速度を測るとき: 専用ソケットの tmux に `exec -a codex sleep` の pane を十数個立て、`send-keys` → `capture-pane` で選択の罫線（`╭`）が動くまでを測る。`claude agents` の遅さは、0.26 秒 sleep する偽物（`AGENT_SIDEBAR_CLAUDE_BIN`）で再現できる。`bash -x` や `gdate` を足した計測は fork で数字が膨らむクリックは SGR マウス報告（`ESC[?1000h` + `?1006h`）で受け取り、行→Agent の対応表で対象を決める。tmux の `mouse on` が前提
 - ジャンプは `select-window -t <pane_id>` + `select-pane -t <pane_id>`（`scope=all` で別 session の Agent なら `switch-client` も行う）
 - 設定: `@agent_sidebar_width`（既定 32）、`@agent_sidebar_scope`（`session` | `all`）、`@agent_sidebar_icons`（`nerd` | `plain`）。`.tmux.conf` に定義
 - 見た目は Orca の worktree 一覧を意識したカード表示。 **リポジトリごと**の見出し（`── dotfiles ─────── 3`、右端は Agent の件数）で区切り、各 Agent は背景色を敷いた 3 行のカードで、左端のバーが状態色
-  - **グルーピング**: cwd の git から判定する（`git rev-parse --path-format=absolute --show-toplevel --git-common-dir`）。worktree の `--git-common-dir` は本体の `.git` を指すので、同じリポジトリの worktree は 1 つのリポジトリにまとまる。サブディレクトリで動く Agent は、その worktree に含まれる。git 管理外はディレクトリ名で 1 グループ（home は `~`）。結果は cwd ごとに 10 秒キャッシュ
+  - **グルーピング**: cwd の git から判定する（`git rev-parse --path-format=absolute --show-toplevel --git-common-dir`）。worktree の `--git-common-dir` は本体の `.git` を指すので、同じリポジトリの worktree は 1 つのリポジトリにまとまる。サブディレクトリで動く Agent は、その worktree に含まれる。git 管理外はディレクトリ名で 1 グループ（home は `~`）。結果は cwd ごとに 60 秒キャッシュ（ブランチは別。下記）
   - **worktree / ブランチ**: 見出しには出さず、**各カードの 2 行目**に出す（同じリポジトリでも worktree ごとにブランチが違うため。以前は worktree ごとの小見出しにしていたが、カードに移した）。同じ worktree の Agent は並び順で隣り合う。git 管理外のディレクトリは、ブランチの代わりに親ディレクトリを出す
   - **並び順**: リポジトリは **window 順**（そのリポジトリの Agent が居る最も若い元の window 番号、同じ window なら pane 番号の若い順。それも同じならリポジトリのパス）→ worktree のパス → 元の window 番号 → 元の pane 番号 → session。cockpit での入れ替え（j/k）では動かない（枠に入った Agent は元の window・pane 番号を使う）。一方、`Ctrl-t S` などで window を並び替えたり、若い番号の window に Agent が増えたりすると、リポジトリのまとまりごと動く（window 番号は見出しに出さない。以前は動かないようにリポジトリ名の ABC 順にしていた）
   - 1 行目は **名前**、2 行目は **ブランチ**、3 行目は状態。常に 3 行（`名前 ……… 種別(右寄せ)` / ` ブランチ` / `[ ⠋ WORKING ] 待機理由 ……… 継続時間`）。リポジトリは見出しに出すのでカードには出さない。pane 番号と状態アイコン（●等）も出さない
@@ -260,7 +265,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     - `allow-passthrough on`（既定は off）・Ghostty（Kitty graphics 対応）・アイコンが読めること、が条件。満たさなければ自動で `text` に戻る
     - 画像 ID は 250 / 251（他のアプリと衝突しにくい値）。tmux のパススルーは表示中の window の pane からしか端末へ届かない
   - アイコンは Nerd Font 前提（`@agent_sidebar_icons nerd`）。`plain` にすると記号なしになる
-  - 継続時間は `~/.claude/sessions/<pid>.json` の `statusUpdatedAt`、ブランチは cwd での `git branch --show-current`（10 秒キャッシュ。detached HEAD なら短縮 SHA）
+  - 継続時間は `~/.claude/sessions/<pid>.json` の `statusUpdatedAt`、ブランチは cwd の git dir（worktree なら `<本体>/.git/worktrees/<名前>`）の `HEAD` ファイルを毎回読む（fork しない。detached HEAD なら短縮 SHA の 7 桁）
   - カードは常に 3 行（見出し・区切り行は別。リポジトリごとに「見出し → [区切り → カード]… → 閉じの区切り」）。収まらない分は `+N more` にし、選択に追従してスクロールする
 - Claude: `claude agents --json`（約 0.2 秒）と各セッションの更新時刻を `/tmp/tmux-agent-sidebar-claude2.txt` に 3 秒キャッシュして全 sidebar で共有。pid の祖先をたどって pane に紐付ける。status は working / waiting / idle。未読の完了は `tmux-claude-agents-status` の状態ファイルを参照して done 表示
 - Codex: ps の引数（`codex` 本体、または `node .../codex`）で検出して pane に紐付ける。**状態・名前・モデルは、Codex の常駐デーモンのスレッドから取る**（下記）。取れないときは unknown（推測しない）

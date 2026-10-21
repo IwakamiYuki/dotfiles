@@ -1156,6 +1156,61 @@ class SidebarUsageTest(unittest.TestCase):
         time.sleep(3)
         self.assertEqual(self.bells(), base)
 
+    # --- カードのブランチ(cwd の git。判定は git を呼んで長めにキャッシュし、ブランチは HEAD ファイルを毎回読む) ---
+
+    def git(self, repo, *args):
+        return subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "-C", repo, *args], capture_output=True, text=True, check=True).stdout
+
+    def make_repo(self, name="myrepo", branch="feat-a"):
+        repo = os.path.realpath(os.path.join(self.dir, name))
+        os.makedirs(repo)
+        self.git(repo, "init", "-q", "-b", branch)
+        self.git(repo, "commit", "-q", "--allow-empty", "-m", "first")
+        return repo
+
+    def test_git_ブランチをカードに出す(self):
+        repo = self.make_repo()
+        self.render()
+        self.start_codex_pane(cwd=repo)
+        screen = self.wait_screen(lambda scr: "feat-a" in scr)
+        self.assertIn("myrepo", screen)  # 見出し
+
+    def test_git_checkout_にすぐ追従する(self):
+        repo = self.make_repo()
+        self.render()
+        self.start_codex_pane(cwd=repo)
+        self.wait_screen(lambda scr: "feat-a" in scr)
+        self.git(repo, "checkout", "-q", "-b", "feat-b")
+        screen = self.wait_screen(lambda scr: "feat-b" in scr)  # 判定のキャッシュ(60 秒)を待たない
+        self.assertNotIn("feat-a", screen)
+
+    def test_git_detached_HEAD_は短縮_SHA(self):
+        repo = self.make_repo()
+        self.render()
+        self.start_codex_pane(cwd=repo)
+        self.wait_screen(lambda scr: "feat-a" in scr)
+        self.git(repo, "checkout", "-q", "--detach")
+        sha = self.git(repo, "rev-parse", "--short=7", "HEAD").strip()
+        self.wait_screen(lambda scr: sha in scr)
+
+    def test_git_worktree_は本体と同じリポジトリにまとまり_ブランチは各自(self):
+        repo = self.make_repo()
+        wt = os.path.join(self.dir, "myrepo_worktree_wt")
+        self.git(repo, "worktree", "add", "-q", wt, "-b", "wt-branch")
+        self.render()
+        self.start_codex_pane(cwd=repo)
+        self.start_codex_pane(cwd=os.path.realpath(wt), first=False)
+        screen = self.wait_screen(lambda scr: "feat-a" in scr and "wt-branch" in scr)
+        self.assertEqual(screen.count("── myrepo"), 1)  # 見出しは 1 つ(worktree の名前では分かれない)
+
+    def test_git_管理外のディレクトリは_ブランチの代わりに親ディレクトリ(self):
+        plain = os.path.realpath(os.path.join(self.dir, "plain"))
+        os.makedirs(plain)
+        self.render()
+        self.start_codex_pane(cwd=plain)
+        screen = self.wait_screen(lambda scr: "── plain" in scr)
+        self.assertNotIn("feat-a", screen)
+
     def test_取得を裏で起動する(self):
         marker = os.path.join(self.dir, "fetched")
         fake = os.path.join(self.dir, "fake-fetch")

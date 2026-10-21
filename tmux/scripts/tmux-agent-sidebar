@@ -43,7 +43,7 @@
 #              → 無ければセッション名(nameSource が derived 以外。derived は「ディレクトリ名+英数字」で情報が無い)
 #              → 無ければ project(cwd 末尾)
 #   継続時間 : ~/.claude/sessions/<pid>.json の statusUpdatedAt
-#   ブランチ : cwd で git を呼ぶ（GIT_TTL 秒キャッシュ）
+#   ブランチ : cwd の git dir の HEAD を読む（fork しない。リポジトリ・worktree の判定は git を呼んで GIT_TTL 秒キャッシュ）
 #
 # 内部モデル（collect が出力する 1 行 1 Agent）:
 #   R|session|window_idx|window_name|pane_idx|type|pane_id|active|project|status|detail|elapsed_sec|name|cwd
@@ -60,6 +60,10 @@ unset LC_ALL
 export LC_CTYPE=en_US.UTF-8 LC_COLLATE=C
 
 INTERVAL="${AGENT_SIDEBAR_INTERVAL:-2}"
+# 裏の収集(collect)の結果を置く一時ファイル(sidebar ごと)と、固まった収集を捨てるまでの秒数
+MAIN_PID=$$
+COLLECT_FILE="/tmp/tmux-agent-sidebar-collect-$$"
+COLLECT_MAX_SEC=20
 CLAUDE_BIN="${AGENT_SIDEBAR_CLAUDE_BIN:-claude}"
 CLAUDE_CACHE_TTL=3
 # 形式を変えたので旧版(-claude.txt)とは別名にしている（旧版の sidebar が書く古い形式と混ざらないように）
@@ -95,7 +99,11 @@ CODEX_THREADS_CACHE="${AGENT_SIDEBAR_CODEX_THREADS_CACHE:-/tmp/tmux-agent-sideba
 CODEX_THREADS_BIN="${AGENT_SIDEBAR_CODEX_THREADS_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-codex-threads}"
 CODEX_THREADS_TTL=3
 CODEX_THREADS_MAX_AGE=30
-GIT_TTL=10
+# リポジトリ・worktree の判定(git の呼び出し)を取り直す間隔。ブランチは HEAD ファイルを毎回読むので、この間隔に依らない
+GIT_TTL=60
+# 1 回の取り込み(parse_records)で、期限切れの git 情報を取り直す最大数。初めて見る dir は数えず、必ず取る
+GIT_REFRESH_MAX=3
+GIT_REFRESH_LEFT=$GIT_REFRESH_MAX
 # トランスクリプトから拾った ai-title のキャッシュ("sessionId|title" の行)。形式は refresh_title_cache を参照
 TITLE_CACHE_FILE="${AGENT_SIDEBAR_TITLE_CACHE:-/tmp/tmux-agent-sidebar-titles.txt}"
 TITLE_CACHE_TTL=30
@@ -221,7 +229,7 @@ cleanup() {
   # Agent も終了する)、不要になった交換用の枠も消す(cockpit window ごと閉じる)
   [ "${COCKPIT:-0}" = 1 ] && "$COCKPIT_BIN" teardown >/dev/null 2>&1
   # ポップアップ中に終了した場合に備えて、プレビュー用の一時ファイルを消す
-  rm -f "/tmp/tmux-agent-sidebar-preview-$$".*
+  rm -f "/tmp/tmux-agent-sidebar-preview-$$".* "$COLLECT_FILE" "$COLLECT_FILE.tmp"
   printf '%s' "${ESC}[?1004l${ESC}[?1006l${ESC}[?1000l${ESC}[?25h${ESC}[?1049l"
   stty echo 2>/dev/null
 }
@@ -676,37 +684,62 @@ fmt_parent_dir() {
   REPLY=$dir
 }
 
-# cwd の git ブランチ（detached HEAD なら短縮 SHA）。GIT_TTL 秒キャッシュして REPLY に入れる
+# cwd の git 情報(リポジトリ・worktree・ブランチ)。リポジトリと worktree の判定(git の呼び出し)は GIT_TTL 秒キャッシュし、
+# ブランチは取り込みのたびに <git dir>/HEAD を読んで求める(fork しないので、checkout にすぐ追従できる)
 GIC_DIR=()
 GIC_AT=()
 GIC_REPO=()
 GIC_RKEY=()
 GIC_WT=()
 GIC_BR=()
+GIC_GD=()
 GI_REPO=""
 GI_RKEY=""
 GI_WT=""
 GI_BRANCH=""
+
+# <git dir>/HEAD から現在のブランチを REPLY に入れる(fork しない)。detached HEAD は短縮 SHA(7 桁)
+git_branch_from_head() {
+  local head=""
+  REPLY=""
+  [ -r "$1/HEAD" ] && read -r head < "$1/HEAD"
+  case $head in
+    "ref: refs/heads/"*) REPLY=${head#ref: refs/heads/} ;;
+    "ref: "*) REPLY=${head#ref: } ;;
+    [0-9a-f]*) REPLY=${head:0:7} ;;
+  esac
+}
+
 git_info_of() {
-  local dir=$1 i n=${#GIC_DIR[@]} out top common repokey br
+  local dir=$1 i n=${#GIC_DIR[@]} out top common gitdir repokey
   GI_REPO=""; GI_RKEY=""; GI_WT=""; GI_BRANCH=""
   [ -z "$dir" ] && return 0
   for ((i = 0; i < n; i++)); do
     if [ "${GIC_DIR[i]}" = "$dir" ]; then
-      if ((SECONDS - GIC_AT[i] < GIT_TTL)); then
+      # 期限切れでも、再取得の枠(GIT_REFRESH_MAX)を使い切っていれば古い値を使う。
+      # 全部の dir が同じ瞬間に期限切れになると git の呼び出しが数百 ms 続いて入力が止まるため、数回の取り込みに分ける
+      if ((SECONDS - GIC_AT[i] < GIT_TTL || GIT_REFRESH_LEFT <= 0)); then
+        if [ -n "${GIC_GD[i]}" ]; then
+          git_branch_from_head "${GIC_GD[i]}"
+          GIC_BR[i]=$REPLY
+        fi
         GI_REPO=${GIC_REPO[i]}; GI_RKEY=${GIC_RKEY[i]}; GI_WT=${GIC_WT[i]}; GI_BRANCH=${GIC_BR[i]}
         return 0
       fi
+      GIT_REFRESH_LEFT=$((GIT_REFRESH_LEFT - 1))
       break
     fi
   done
 
   # --git-common-dir は worktree でも本体の .git を指す(= 同じリポジトリにまとまる)。
   # 存在しない dir(削除済みリポジトリなど)や git 管理外では何も返らない
-  out=$(git -C "$dir" rev-parse --path-format=absolute --show-toplevel --git-common-dir 2>/dev/null)
+  gitdir=""
+  out=$(git -C "$dir" rev-parse --path-format=absolute --show-toplevel --git-common-dir --absolute-git-dir 2>/dev/null)
   if [ -n "$out" ]; then
     top=${out%%$'\n'*}
-    common=${out#*$'\n'}
+    out=${out#*$'\n'}
+    common=${out%%$'\n'*}
+    gitdir=${out#*$'\n'}
     case ${common##*/} in
       .git) repokey=${common%/.git} ;;
       *) repokey=$common ;;
@@ -714,9 +747,8 @@ git_info_of() {
     GI_REPO=${repokey##*/}
     GI_RKEY=$repokey
     GI_WT=$top
-    br=$(git -C "$dir" branch --show-current 2>/dev/null)
-    [ -z "$br" ] && br=$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)
-    GI_BRANCH=$br
+    git_branch_from_head "$gitdir"
+    GI_BRANCH=$REPLY
   else
     # git 管理外: ディレクトリ単位で 1 グループ
     GI_RKEY=$dir
@@ -725,7 +757,7 @@ git_info_of() {
     [ "$dir" = "$HOME" ] && GI_REPO="~"
     [ -z "$GI_REPO" ] && GI_REPO="/"
   fi
-  GIC_DIR[i]=$dir; GIC_AT[i]=$SECONDS
+  GIC_DIR[i]=$dir; GIC_AT[i]=$SECONDS; GIC_GD[i]=$gitdir
   GIC_REPO[i]=$GI_REPO; GIC_RKEY[i]=$GI_RKEY; GIC_WT[i]=$GI_WT; GIC_BR[i]=$GI_BRANCH
 }
 
@@ -1855,6 +1887,7 @@ prune_shells() {
 
 parse_records() {
   local tag sess win wname pane type id act proj st det elapsed title cwd i j s e cnt
+  GIT_REFRESH_LEFT=$GIT_REFRESH_MAX
   AG_N=0
   AG_SESS=(); AG_WIN=(); AG_WNAME=(); AG_PANE=(); AG_TYPE=(); AG_ID=(); AG_ACT=(); AG_PROJ=(); AG_STATUS=(); AG_DETAIL=()
   AG_ELAPSED=(); AG_TITLE=(); AG_DIR=(); AG_BRANCH=(); AG_ROWS=(); AG_REPO=(); AG_RKEY=(); AG_WT=()
@@ -2468,6 +2501,51 @@ bell_check() {
   return 0
 }
 
+# 収集の結果($records)を取り込む。最初の 1 回は同期、以降は裏の収集が終わったときに呼ばれる
+apply_collected() {
+  # tmux が応答しない（server 終了）場合は終了する
+  [ -z "$records" ] && { EXIT_REASON=collect_empty; exit 0; }
+  restore_cockpit_selection
+  parse_records "$records"
+  bell_check
+  if [ -n "$new_pane" ]; then
+    tmux set-option -pu -t "$TMUX_PANE" @agent_new_pane 2>/dev/null
+    PENDING_ID=$new_pane
+    PENDING_UNTIL=$((SECONDS + PENDING_NEW_SEC))
+  fi
+  [ -n "$PENDING_ID" ] && select_pending_agent
+  read_limits
+  read_credits
+  read_codex_usage
+  read_daily
+  read_tasks
+  # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる。
+  # cockpit では、枠に入っていた Agent が終了しただけのことがあるので、交換用の枠を戻してから判断する
+  if [ "$MAIN_PANES" = "0" ]; then
+    if [ "$COCKPIT" = 1 ]; then
+      "$COCKPIT_BIN" heal >/dev/null 2>&1
+      [ "$(tmux list-panes -t "$TMUX_PANE" -F '#{@agent_sidebar}' 2>/dev/null | grep -vc 1)" -gt 0 ] || { EXIT_REASON=cockpit_no_main_panes; exit 0; }
+    else
+      EXIT_REASON=no_main_panes
+      exit 0
+    fi
+  fi
+
+  # cockpit で、まだ何も枠に入っていなければ、選択中の Agent を入れる(開いた直後)
+  if [ "$COCKPIT" = 1 ] && [ -z "$cockpit_shown" ] && [ "$DAILY_VIEW" != 1 ]; then
+    cockpit_show_selected
+  fi
+
+  need_render=1
+
+  # 画像モードなら、アイコンを端末へ登録する(初回と、KITTY_RESEND_SEC 秒ごと)
+  if [ "$TYPE_ICON_MODE" = image ] && ((SECONDS - KITTY_SENT_AT >= KITTY_RESEND_SEC)); then
+    [ -n "$KITTY_B64_CLAUDE" ] && kitty_send_image "$KITTY_ID_CLAUDE" "$KITTY_B64_CLAUDE"
+    [ -n "$KITTY_B64_CODEX" ] && kitty_send_image "$KITTY_ID_CODEX" "$KITTY_B64_CODEX"
+    KITTY_SENT_AT=$SECONDS
+  fi
+}
+
 main() {
 
 SESSION_ID=$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}' 2>/dev/null) || exit 1
@@ -2515,8 +2593,28 @@ need_render=1
 KEY=""
 CLICK_ROW=0
 
+COLLECT_PID=""
+COLLECT_STARTED=0
+COLLECT_FIRST=1
+
 while :; do
-  if ((SECONDS - last_collect >= INTERVAL)); then
+  # 裏の収集が終わっていれば、結果を取り込む。取り込めるのは入力待ち(最大 TICK 秒)から戻ったときだけ
+  if [ -n "$COLLECT_PID" ]; then
+    if [ -f "$COLLECT_FILE" ]; then
+      records=$(<"$COLLECT_FILE")
+      rm -f "$COLLECT_FILE"
+      COLLECT_PID=""
+      # 収集の最中にフォーカスなどのイベントがあった(last_collect が負 = 取り直し待ち)なら、古い結果で今の状態を上書きしないよう捨てて、すぐ取り直す
+      ((last_collect < 0)) || apply_collected
+    elif ! kill -0 "$COLLECT_PID" 2>/dev/null; then
+      COLLECT_PID=""   # 結果を残さずに終わった(強制終了など)。次の周期でやり直す
+    elif ((SECONDS - COLLECT_STARTED > COLLECT_MAX_SEC)); then
+      kill "$COLLECT_PID" 2>/dev/null   # 固まっている(claude が応答しないなど)。捨ててやり直す
+      COLLECT_PID=""
+    fi
+  fi
+
+  if [ -z "$COLLECT_PID" ] && ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
     opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_last_sel}|#{@agent_sidebar_last_view}|#{@agent_sidebar_daily_dir}|#{@agent_sidebar_bell}' 2>/dev/null)
     IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_last_sel opt_last_view opt_daily_dir opt_bell <<< "$opts"
@@ -2533,49 +2631,23 @@ while :; do
       TYPE_ICON_MODE=text
     fi
 
-    records=$(collect)
-    # tmux が応答しない（server 終了）場合は終了する
-    [ -z "$records" ] && { EXIT_REASON=collect_empty; exit 0; }
-    restore_cockpit_selection
-    parse_records "$records"
-    bell_check
-    if [ -n "$new_pane" ]; then
-      tmux set-option -pu -t "$TMUX_PANE" @agent_new_pane 2>/dev/null
-      PENDING_ID=$new_pane
-      PENDING_UNTIL=$((SECONDS + PENDING_NEW_SEC))
-    fi
-    [ -n "$PENDING_ID" ] && select_pending_agent
-    read_limits
-    read_credits
-    read_codex_usage
-    read_daily
-    read_tasks
-    # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる。
-    # cockpit では、枠に入っていた Agent が終了しただけのことがあるので、交換用の枠を戻してから判断する
-    if [ "$MAIN_PANES" = "0" ]; then
-      if [ "$COCKPIT" = 1 ]; then
-        "$COCKPIT_BIN" heal >/dev/null 2>&1
-        [ "$(tmux list-panes -t "$TMUX_PANE" -F '#{@agent_sidebar}' 2>/dev/null | grep -vc 1)" -gt 0 ] || { EXIT_REASON=cockpit_no_main_panes; exit 0; }
-        last_collect=-999
-      else
-        EXIT_REASON=no_main_panes
-        exit 0
-      fi
-    fi
-
-    # cockpit で、まだ何も枠に入っていなければ、選択中の Agent を入れる(開いた直後)
-    if [ "$COCKPIT" = 1 ] && [ -z "$cockpit_shown" ] && [ "$DAILY_VIEW" != 1 ]; then
-      cockpit_show_selected
-    fi
-
+    # 周期の起点は「始めたとき」。収集の最中に起きた「すぐ取り直したい」(last_collect=-999)を、取り込みで潰さないため
     last_collect=$SECONDS
-    need_render=1
-
-    # 画像モードなら、アイコンを端末へ登録する(初回と、KITTY_RESEND_SEC 秒ごと)
-    if [ "$TYPE_ICON_MODE" = image ] && ((SECONDS - KITTY_SENT_AT >= KITTY_RESEND_SEC)); then
-      [ -n "$KITTY_B64_CLAUDE" ] && kitty_send_image "$KITTY_ID_CLAUDE" "$KITTY_B64_CLAUDE"
-      [ -n "$KITTY_B64_CODEX" ] && kitty_send_image "$KITTY_ID_CODEX" "$KITTY_B64_CODEX"
-      KITTY_SENT_AT=$SECONDS
+    if ((COLLECT_FIRST)); then
+      # 最初の 1 回だけは、描画に要るので待つ
+      COLLECT_FIRST=0
+      records=$(collect)
+      apply_collected
+    else
+      # ps・tmux・claude agents などで 100〜600 ms かかり、その間はキー入力を読めない。裏で集めて、結果だけ取り込む
+      (
+        trap - EXIT INT TERM HUP
+        collect > "$COLLECT_FILE.tmp"
+        # 親(sidebar)が終わっていたら、結果は捨てる(一時ファイルを残さない)
+        if kill -0 "$MAIN_PID" 2>/dev/null; then mv -f "$COLLECT_FILE.tmp" "$COLLECT_FILE"; else rm -f "$COLLECT_FILE.tmp"; fi
+      ) &
+      COLLECT_PID=$!
+      COLLECT_STARTED=$SECONDS
     fi
   fi
 
