@@ -2072,7 +2072,7 @@ help_lines() {
     printf '%s\n' \
       "j k ↓ ↑|選択を移動して、右の枠に表示する" \
       "⏎ l h|右の枠へフォーカス(戻るのは C-t h)" \
-      "click|その Agent を右の枠に表示する" \
+      "click|その Agent を右の枠に表示して、フォーカスも移す" \
       "d|Daily を右の枠に出す / 戻す" \
       "q|cockpit を閉じる(Agent は元へ戻す)"
   else
@@ -2740,6 +2740,12 @@ while :; do
           render
           need_render=0
           cockpit_show_selected
+          # クリックは「その Agent を操作する」ことなので、Enter と同じく右の枠へフォーカスを移す(戻るのは prefix + h)
+          tmux select-pane -R -t "$TMUX_PANE" 2>/dev/null
+          FOCUSED=0
+          mark_active_cockpit_pane
+          render
+          last_collect=-999
         else
           jump_to "$idx"
           FOCUSED=0

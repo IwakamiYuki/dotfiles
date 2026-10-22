@@ -214,7 +214,8 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - bash 3.2（macOS の `/bin/bash`）では、シグナルが `read -t` を中断しない（トラップは `read` が終わってから動く）。そのため、収集が終わったことで入力待ちを起こせず、**結果の取り込みは最大 1 秒（`TICK`）遅れる**
   - 収集の最中にフォーカスなどのイベント（`last_collect=-999`）があったときは、古い結果で今の状態（`FOCUSED` など）を上書きしないよう、届いた結果を捨ててすぐ取り直す。20 秒（`COLLECT_MAX_SEC`）固まった収集は捨ててやり直す。親の sidebar が終わっていたら、結果は書かない
   - 取り込み側（`apply_collected`）で重いのは `parse_records` の git。リポジトリ・worktree の判定は 60 秒（`GIT_TTL`）キャッシュし、期限切れの取り直しも 1 回の取り込みで 3 件まで（`GIT_REFRESH_MAX`。初めて見る dir は数えない）に分ける。**ブランチは git を呼ばず `<git dir>/HEAD` を毎回読む**ので、`checkout` にはすぐ追従する
-  - 速度を測るとき: 専用ソケットの tmux に `exec -a codex sleep` の pane を十数個立て、`send-keys` → `capture-pane` で選択の罫線（`╭`）が動くまでを測る。`claude agents` の遅さは、0.26 秒 sleep する偽物（`AGENT_SIDEBAR_CLAUDE_BIN`）で再現できる。`bash -x` や `gdate` を足した計測は fork で数字が膨らむクリックは SGR マウス報告（`ESC[?1000h` + `?1006h`）で受け取り、行→Agent の対応表で対象を決める。tmux の `mouse on` が前提
+  - 速度を測るとき: 専用ソケットの tmux に `exec -a codex sleep` の pane を十数個立て、`send-keys` → `capture-pane` で選択の罫線（`╭`）が動くまでを測る。`claude agents` の遅さは、0.26 秒 sleep する偽物（`AGENT_SIDEBAR_CLAUDE_BIN`）で再現できる。`bash -x` や `gdate` を足した計測は fork で数字が膨らむ
+- クリックは SGR マウス報告（`ESC[?1000h` + `?1006h`）で受け取り、行→Agent の対応表で対象を決める。tmux の `mouse on` が前提
 - ジャンプは `select-window -t <pane_id>` + `select-pane -t <pane_id>`（`scope=all` で別 session の Agent なら `switch-client` も行う）
 - 設定: `@agent_sidebar_width`（既定 32）、`@agent_sidebar_scope`（`session` | `all`）、`@agent_sidebar_icons`（`nerd` | `plain`）。`.tmux.conf` に定義
 - 見た目は Orca の worktree 一覧を意識したカード表示。 **リポジトリごと**の見出し（`── dotfiles ─────── 3`、右端は Agent の件数）で区切り、各 Agent は背景色を敷いた 3 行のカードで、左端のバーが状態色
@@ -298,7 +299,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 
 **キー**:
 - `Ctrl-t B` → cockpit window を開く（あれば移動）。開くと、選択中の Agent が右の枠に入る。**window があっても sidebar が消えていれば、sidebar を付け直す**（放置中に sidebar だけが終了した場合に、window を選ぶだけでは再開できなかった）
-- cockpit の sidebar で `j` / `k`（`↓` / `↑`、ホイール、クリック）→ 右の枠の Agent が切り替わる。`Enter` / `l` / `h` → 右の枠へフォーカス（戻るのは `Ctrl-t h`）
+- cockpit の sidebar で `j` / `k`（`↓` / `↑`、ホイール）→ 右の枠の Agent が切り替わる（フォーカスは sidebar のまま）。`Enter` / `l` / `h`、または Agent の行を **クリック** → 右の枠へフォーカス（クリックは、その Agent に切り替えてからフォーカスも移す。戻るのは `Ctrl-t h`）
 - **Claude Code の通知（terminal-notifier）をクリック** → cockpit があれば、**元の window へ飛ばず、cockpit の右の枠へその Agent を入れて、そこへフォーカスする**（`claude/hooks/focus-tmux-pane.sh` が `tmux-agent-cockpit show <pane_id>` を呼ぶ）。sidebar の選択も、`@agent_new_pane`（`n` と同じ経路）で追従する。cockpit が無い session、枠へ入れられなかったとき、Agent がすでに cockpit の中にいるときは、従来どおり対象の window・pane へ飛ぶ。tmux の外から呼ばれるので、ソケットは `FOCUS_SOCKET_PATH`（`TMUX=<ソケット>,0,0` で cockpit スクリプトへ渡す）。環境変数 `FOCUS_COCKPIT_BIN`（cockpit スクリプトの場所）・`FOCUS_LOG` はテスト用
 - **cockpit を閉じて開き直しても、直前の選択に戻る**: cockpit の sidebar は、選択（Agent）とダッシュボードの表示が変わったときだけ、tmux のグローバル option `@agent_sidebar_last_sel`（`pane_id|種別`）と `@agent_sidebar_last_view`（`daily` か空）に書く（変化のないときは tmux を呼ばない）。起動した最初の 1 回だけ読み戻す。優先順位は、すでに枠に入っている Agent（sidebar だけを付け直したとき）→ 保存した選択 → 既定（いま見ている Agent、無ければ先頭）。保存した Agent が無くなっていれば既定になる。ダッシュボードを出していたなら、ダッシュボードに戻る。option は tmux が生きている間だけ残る（tmux を再起動すると pane_id が変わるため、既定に戻る）。通常の sidebar は対象外（右の枠が無く、選択の意味が薄いため）
 - cockpit の sidebar で `d` → 右の枠に Daily ダッシュボードを出す / 戻す（詳細は「Agent Sidebar」の `o` の項）

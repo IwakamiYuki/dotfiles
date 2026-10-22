@@ -1211,6 +1211,48 @@ class SidebarUsageTest(unittest.TestCase):
         screen = self.wait_screen(lambda scr: "── plain" in scr)
         self.assertNotIn("feat-a", screen)
 
+    # ---- cockpit: Agent の行のクリックは、右の枠へ切り替えてフォーカスも移す(Enter と同じ) ----
+
+    def sidebar_pane(self):
+        for line in self.tmux("list-panes", "-t", "t:0", "-F", "#{pane_id} #{@agent_sidebar}").stdout.splitlines():
+            pane, mark = line.split()[0], line.split()[-1]
+            if mark == "1":
+                return pane
+        self.fail("sidebar の pane が見つかりません")
+
+    def active_pane(self):
+        return self.tmux("display-message", "-p", "-t", "t:0", "#{pane_id}").stdout.strip()
+
+    def click_row(self, row):
+        """sidebar の画面の row 行目(0 始まり)を、SGR マウス報告の押下 + 解放でクリックする。"""
+        y = row + 1
+        self.tmux("send-keys", "-t", self.sidebar_pane(), "-l", f"\033[<0;5;{y}M\033[<0;5;{y}m")
+
+    def test_cockpit_Agent_の行をクリックすると_右の枠へ切り替わってフォーカスも移る(self):
+        self.render(cockpit="early", windows=self.two_windows())
+        first = self.wait_shown(bool, "枠に最初の Agent が入りません")
+        sidebar = self.sidebar_pane()
+        self.tmux("select-pane", "-t", sidebar)
+        self.assertEqual(self.active_pane(), sidebar)
+        screen = self.wait_screen(lambda scr: scr.count("New agent") >= 2)
+        rows = [i for i, l in enumerate(screen.splitlines()) if "New agent" in l]
+        self.click_row(rows[-1])  # 先頭が選ばれているので、もう一方をクリックする
+        self.wait_shown(lambda v: v and v != first, "クリックした Agent が枠に入りません")
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and self.active_pane() == sidebar:
+            time.sleep(0.2)
+        self.assertNotEqual(self.active_pane(), sidebar, "クリックしても右の枠へフォーカスが移りません")
+
+    def test_cockpit_j_k_では_フォーカスは_sidebar_のまま(self):
+        self.render(cockpit="early", windows=self.two_windows())
+        first = self.wait_shown(bool, "枠に最初の Agent が入りません")
+        sidebar = self.sidebar_pane()
+        self.tmux("select-pane", "-t", sidebar)
+        self.press("j")
+        self.wait_shown(lambda v: v and v != first, "j で別の Agent に切り替わりません")
+        time.sleep(1)
+        self.assertEqual(self.active_pane(), sidebar)
+
     def test_取得を裏で起動する(self):
         marker = os.path.join(self.dir, "fetched")
         fake = os.path.join(self.dir, "fake-fetch")
