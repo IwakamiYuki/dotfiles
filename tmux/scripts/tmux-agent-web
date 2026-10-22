@@ -217,6 +217,22 @@ def parse_panes(text: str) -> List[Pane]:
     return panes
 
 
+def parse_pane_titles(text: str) -> Dict[str, str]:
+    """`list-panes -a -F '#{pane_id}|#{pane_title}'` の出力 → {pane_id: タイトル}。タイトルは自由な文字列('|' を含む)なので最後の欄にする。"""
+    titles = {}
+    for line in text.splitlines():
+        pane_id, sep, title = line.partition("|")
+        if sep:
+            titles[pane_id] = title
+    return titles
+
+
+def codex_title_name(title: str) -> str:
+    """Codex の TUI は pane のタイトルを「スレッド名 | ディレクトリ」にする。そのスレッド名を返す。形が違えば空(見分けに使わない)。"""
+    name, sep, _ = title.partition(" | ")
+    return name.replace("\t", " ") if sep else ""
+
+
 def parse_ps(text: str) -> Dict[int, Tuple[int, str]]:
     """`ps -axo pid=,ppid=,args=` の出力 → {pid: (ppid, args)}"""
     procs = {}
@@ -315,6 +331,7 @@ def build_agents(
     meta_of: Callable[[int], Tuple[Optional[int], str]],
     git_of: Callable[[str], GitInfo],
     codex_threads: Optional[List[dict]] = None,
+    pane_titles: Optional[Dict[str, str]] = None,
 ) -> List[dict]:
     """sidebar の collect と同じ方式で Agent を pane に紐付け、リポジトリ → worktree → window → pane の順に並べる。"""
     by_pid = {p.pid: p for p in panes if not p.sidebar}
@@ -335,8 +352,8 @@ def build_agents(
         found.append((p, "Claude", status, str(c.get("waitingFor") or ""), elapsed, name, str(c.get("cwd") or p.path)))
 
     # Codex: 状態・名前・モデルは、Codex の常駐デーモンのスレッドから取る(sidebar の collect と同じ規則)。スレッドと pane は cwd で対応付け、
-    # 一意なとき(その cwd の Codex の pane もスレッドも 1 つだけ)に限る。同じ cwd に複数あると、どのスレッドか確かめる手段が無いので
-    # 推測せず unknown にする
+    # 一意なとき(その cwd の Codex の pane もスレッドも 1 つだけ)は、それを使う。同じ cwd に複数あるときは、pane のタイトルの先頭
+    # (Codex の TUI がスレッド名を入れる)が、スレッドの名前とちょうど 1 つずつ一致するときだけ使う。それでも決まらなければ推測せず unknown にする
     codex_seen = set()
     codex_panes = []
     for pid, (_, args) in procs.items():
@@ -352,11 +369,22 @@ def build_agents(
         codex_seen.add(p.pane_id)
         codex_panes.append(p)
     threads = codex_threads or []
+    titles = pane_titles or {}
     for p in codex_panes:
         key = _same_path(p.path)
         mine = [t for t in threads if t["cwd"] == key]
-        unique = len(mine) == 1 and sum(1 for q in codex_panes if _same_path(q.path) == key) == 1
-        status, detail, elapsed, name = codex_view(mine[0] if unique else None, now)
+        same_panes = [q for q in codex_panes if _same_path(q.path) == key]
+        chosen = None
+        if len(mine) == 1 and len(same_panes) == 1:
+            chosen = mine[0]
+        else:
+            wanted = codex_title_name(titles.get(p.pane_id, ""))
+            if wanted:
+                by_name = [t for t in mine if t["name"] == wanted]
+                same_title = [q for q in same_panes if codex_title_name(titles.get(q.pane_id, "")) == wanted]
+                if len(by_name) == 1 and len(same_title) == 1:
+                    chosen = by_name[0]
+        status, detail, elapsed, name = codex_view(chosen, now)
         found.append((p, "Codex", status, detail, elapsed, name, p.path))
 
     agents = []
@@ -481,11 +509,12 @@ class Collector:
 
     def _collect(self) -> List[dict]:
         panes = parse_panes(_out(self.tmux("list-panes", "-a", "-F", PANE_FORMAT)))
+        pane_titles = parse_pane_titles(_out(self.tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_title}")))
         procs = parse_ps(_out(_run(["ps", "-axo", "pid=,ppid=,args="])))
         return build_agents(
             panes, procs, self._claude_agents(), self._alerting(), now=time.time(),
             title_of=self.titles.title_of, meta_of=self._meta_of, git_of=self._git_of,
-            codex_threads=self._codex_threads(),
+            codex_threads=self._codex_threads(), pane_titles=pane_titles,
         )
 
     def _claude_agents(self) -> List[dict]:

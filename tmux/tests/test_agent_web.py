@@ -121,12 +121,18 @@ class DetectTest(unittest.TestCase):
         return {"id": "t", "cwd": cwd, "status": status, "flags": flags, "name": name, "model": "gpt-6-astra",
                 "effort": "low", "since": since}
 
-    def codex_agent(self, threads, panes=None, procs=None):
+    def codex_agent(self, threads, panes=None, procs=None, pane_titles=None):
         out = aw.build_agents(
             panes or self.panes, procs or self.procs, [], {}, now=1000, title_of=lambda sid: "",
-            meta_of=lambda pid: (None, ""), git_of=GIT, codex_threads=threads,
+            meta_of=lambda pid: (None, ""), git_of=GIT, codex_threads=threads, pane_titles=pane_titles,
         )
         return [a for a in out if a["type"] == "Codex"]
+
+    def two_codex_panes(self):
+        """同じ cwd の Codex が 2 つ(%2 と %5)。"""
+        panes = self.panes + [pane(pane_id="%5", pid=500, window=3, index=0)]
+        procs = {**self.procs, 500: (1, "-zsh"), 510: (500, "codex")}
+        return panes, procs
 
     def test_codex_は_スレッドが一意なら_状態と名前とモデルが付く(self):
         (a,) = self.codex_agent([self.thread()])
@@ -160,6 +166,40 @@ class DetectTest(unittest.TestCase):
         out = self.codex_agent([self.thread()], panes, procs)
         self.assertEqual(len(out), 2)
         self.assertEqual({a["status"] for a in out}, {"unknown"})
+
+    # 同じ cwd に複数あっても、pane のタイトル(Codex の TUI は「スレッド名 | ディレクトリ」にする)で見分けられる
+
+    def test_codex_同じ_cwd_でも_pane_のタイトルで見分ける(self):
+        panes, procs = self.two_codex_panes()
+        threads = [self.thread(name="一つ目", status="active", flags="waitingOnApproval"), self.thread(name="二つ目")]
+        # 表示の順(%2, %5)とスレッドの順が逆のタイトル
+        titles = {"%2": "二つ目 | repo...", "%5": "一つ目 | repo..."}
+        by_pane = {a["pane"]: a for a in self.codex_agent(threads, panes, procs, titles)}
+        self.assertEqual((by_pane["%5"]["name"], by_pane["%5"]["status"]), ("一つ目", "waiting"))
+        self.assertEqual((by_pane["%2"]["name"], by_pane["%2"]["status"]), ("二つ目", "idle"))
+
+    def test_codex_pane_が_1_つでスレッドが複数でも_タイトルが一致すれば使う(self):
+        threads = [self.thread(name="一つ目"), self.thread(name="別のスレッド", status="active")]
+        (a,) = self.codex_agent(threads, pane_titles={"%2": "別のスレッド | repo..."})
+        self.assertEqual((a["name"], a["status"]), ("別のスレッド", "working"))
+
+    def test_codex_タイトルで決まらなければ_unknown(self):
+        panes, procs = self.two_codex_panes()
+        threads = [self.thread(name="同名"), self.thread(name="別名")]
+        for titles in (
+            {"%2": "同名 | repo...", "%5": "同名 | repo..."},  # 同じタイトルの pane が複数
+            {"%2": "codex", "%5": "zsh"},  # 「名前 | ディレクトリ」の形ではない
+            {"%2": "存在しない名前 | repo...", "%5": "別の名前 | repo..."},  # 一致するスレッドが無い
+            None,
+        ):
+            out = self.codex_agent(threads, panes, procs, titles)
+            self.assertEqual({a["status"] for a in out}, {"unknown"}, titles)
+
+    def test_pane_のタイトルの出力を読む(self):
+        titles = aw.parse_pane_titles("%1|設計書 | repo...\n%2|zsh\nbad\n")
+        self.assertEqual(titles, {"%1": "設計書 | repo...", "%2": "zsh"})
+        self.assertEqual(aw.codex_title_name("設計書 | repo..."), "設計書")
+        self.assertEqual(aw.codex_title_name("zsh"), "")
 
     def test_codex_スレッドの出力を読む(self):
         text = "X|t1|/work/repo/|active|waitingOnApproval|a b|gpt|high|1790000000|1790000001\nbad\nX|short\n"

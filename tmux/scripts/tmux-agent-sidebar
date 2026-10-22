@@ -22,7 +22,7 @@
 #   Claude : `claude agents --json`（pid / status / cwd）。pid の祖先をたどって pane に紐付ける。
 #            未読の完了(done)は tmux-claude-agents-status が書く状態ファイルを参照する。
 #   Codex  : ps の引数（codex 本体、または node 経由の codex スクリプト）で検出し、祖先の pane に紐付ける。
-#            状態・名前・モデルは Codex の常駐デーモンのスレッド(tmux-agent-codex-threads)から取り、pane とは cwd で一意に対応するときだけ使う。
+#            状態・名前・モデルは Codex の常駐デーモンのスレッド(tmux-agent-codex-threads)から取り、pane とは cwd で一意に対応するとき(同じ cwd に複数なら、pane のタイトルのスレッド名で一意に決まるとき)だけ使う。
 #            取れないとき・対応が曖昧なときは status が unknown（推測しない）。
 #   Shell  : Agent が 1 つも居ないリポジトリにある、空いているシェル(zsh 等)の pane。「+ New agent」の欄として出し、
 #            n で、その pane のシェルへ Claude / Codex を入力して起動する(tmux-agent-new --here)。
@@ -325,6 +325,16 @@ function title_of(sid,   f, t) {
   return (t == "新しい会話") ? "" : t
 }
 
+# Codex の pane のタイトル("スレッド名 | ディレクトリ…")から、スレッド名を返す。形が違えば空(見分けに使わない)
+function title_name(pi,   t, k) {
+  t = q_title[p_id[pi]]
+  k = index(t, " | ")
+  if (k == 0) return ""
+  t = substr(t, 1, k - 1)
+  gsub(/\t/, " ", t)
+  return t
+}
+
 # pid から祖先をたどり、最初に見つかった pane_pid の pane 番号を返す
 function pane_of(pid,   i) {
   for (i = 0; i < 64 && pid != "" && pid != 0 && pid != 1; i++) {
@@ -362,6 +372,12 @@ tag == "P" {
   if (f[5] == self) { cur_sess = f[1]; self_wid = f[2]; self_focus = (f[8] == 1 && f[9] == 1) ? 1 : 0 }
   # sidebar pane 自身（と他の sidebar）は Agent 検出の対象から外す
   if (f[7] != 1) pane_by_pid[f[6]] = np
+}
+
+# Q|pane_id|pane_title  （Codex の TUI は、pane のタイトルを「スレッド名 | ディレクトリ」にする。同じ cwd に複数ある Codex の見分けに使う）
+tag == "Q" {
+  k = index(rest, "|")
+  if (k > 0) q_title[substr(rest, 1, k - 1)] = substr(rest, k + 1)
 }
 
 # S|pid ppid args...
@@ -441,8 +457,9 @@ END {
 
   # --- Codex ---
   # 状態・名前・モデルは、Codex の常駐デーモンのスレッド(X)から取る。スレッドと pane は cwd で対応付ける。
-  # 対応が一意なとき(その cwd の Codex の pane もスレッドも 1 つだけ)に限る。同じ cwd に複数あると、どのスレッドか確かめる手段が無いので
-  # 推測せず、従来どおり unknown にする。デーモンに届かないとき(スレッドが無い)も unknown
+  # 対応が一意なとき(その cwd の Codex の pane もスレッドも 1 つだけ)は、それを使う。同じ cwd に複数あるときは、
+  # pane のタイトルの先頭(Codex の TUI がスレッド名を入れる)が、スレッドの名前とちょうど 1 つずつ一致するときだけ使う。
+  # それでも決まらなければ推測せず、従来どおり unknown にする。デーモンに届かないとき(スレッドが無い)も unknown
   nk = 0
   for (pid in ppid) {
     a1 = base(arg1[pid]); a2 = base(arg2[pid])
@@ -462,6 +479,14 @@ END {
     key = trim_slash(cwd)
     if (codex_panes_in[key] == 1 && threads_in[key] == 1) {
       for (j = 1; j <= nx; j++) if (x_cwd[j] == key) xj = j
+    } else {
+      nm = title_name(pi)
+      if (nm != "") {
+        nt = 0; np_same = 0
+        for (j = 1; j <= nx; j++) if (x_cwd[j] == key && x_name[j] == nm) { nt++; xj = j }
+        for (m = 1; m <= nk; m++) if (trim_slash(p_path[codex_pane[m]]) == key && title_name(codex_pane[m]) == nm) np_same++
+        if (nt != 1 || np_same != 1) xj = 0
+      }
     }
     status = "unknown"; detail = ""; elapsed = ""; display = ""
     if (xj > 0) {
@@ -516,6 +541,8 @@ collect() {
     tmux list-panes "${list_args[@]}" -F \
       '#{session_name}|#{window_id}|#{window_index}|#{pane_index}|#{pane_id}|#{pane_pid}|#{@agent_sidebar}|#{window_active}|#{pane_active}|#{window_name}|#{@agent_origin_widx}|#{@agent_origin_wname}|#{@agent_origin_pidx}|#{@agent_cockpit_slot_pane}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null |
       awk '{ print "P|" $0 }'
+    # Q|pane_id|pane_title: タイトルは自由な文字列('|' を含む)なので、P の欄には混ぜず、最後の欄にして別に渡す
+    tmux list-panes "${list_args[@]}" -F '#{pane_id}|#{pane_title}' 2>/dev/null | awk '{ print "Q|" $0 }'
     ps -axo pid=,ppid=,args= | awk '{ print "S|" $0 }'
     cat "$CLAUDE_CACHE_FILE" 2>/dev/null
     codex_threads_lines

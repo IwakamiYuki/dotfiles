@@ -274,11 +274,14 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - `tmux-agent-codex-threads` が、スレッドごとに `X|threadId|cwd|status|flags|name|model|effort|since|updatedAt` の 1 行を `/tmp/tmux-agent-sidebar-codex.txt`（`AGENT_SIDEBAR_CODEX_THREADS_CACHE`）へ書く。sidebar が `CODEX_THREADS_TTL`（3 秒）ごとに裏で起動する（複数の sidebar で共有。`.attempt` で重複起動を防ぐ）。`CODEX_THREADS_MAX_AGE`（30 秒）より古い内容は読まない。デーモンに届かないときは **空のキャッシュを書く**（古い状態を残さない）。サブエージェント（`parentThreadId`）と一時スレッド（`ephemeral`）は含めない。`--stdout` で書かずに確認できる
   - 状態: `idle` → IDLE / `active` → WORKING / `active` + `waitingOnApproval` → WAITING（補足 `approval`）/ `active` + `waitingOnUserInput` → WAITING（補足 `input`）/ それ以外（`notLoaded` / `systemError`）→ unknown。名前はスレッドの `name`（無ければ project）、3 行目の補足は `model effort`（待ちのときは待ちの種類）。**DONE（完了して未読）は出さない**（Claude の DONE は statusline の状態ファイル由来で、Codex には無い）
   - 経過時間: API に状態の開始時刻が無いので、キャッシュを書くときに前回と比べ、状態（status + flags）が変わった時刻を `since` に持つ。初めて見た idle は `updatedAt`、初めて見た active は今
-  - ⚠️ **スレッドと pane は cwd で対応付ける**（API に pane の情報が無いため）。cwd は実体のパス（`realpath`）にそろえて、tmux の `pane_current_path` と比べる。**一意なときだけ**使う（その cwd の Codex の pane もスレッドも 1 つだけ）。同じ cwd に複数あれば、どれがどれか確かめる手段が無いので推測せず unknown にする
+  - ⚠️ **スレッドと pane は cwd で対応付ける**（API に pane の情報が無いため）。cwd は実体のパス（`realpath`）にそろえて、tmux の `pane_current_path` と比べる。**一意なときだけ**使う（その cwd の Codex の pane もスレッドも 1 つだけ）。
+    同じ cwd に複数あるときは、**pane のタイトル**で見分ける: Codex の TUI は pane のタイトルを `スレッド名 | ディレクトリ…` にするので（`tmux list-panes -F '#{pane_title}'`）、先頭の `スレッド名` が、その cwd のスレッドの `name` と **ちょうど 1 つずつ**一致するときだけ対応づける（pane が 1 つでスレッドが複数のときも、一致すれば使う）。
+    タイトルが `名前 | …` の形でない・同名の pane が複数・一致するスレッドが無い、のときは、推測せず unknown にする（スレッドの名前を変えると、タイトルも変わる想定。名前が長くて切り詰められたときの形は未確認で、その場合は一致せず unknown になる）。
+    タイトルは自由な文字列（`|` を含む）なので、collect では `P` の欄に混ぜず、`Q|pane_id|pane_title` の別の呼び出しにしている
   - ⚠️ **app-server は experimental**。形が変わったら取得失敗として扱い（空のキャッシュ）、unknown に戻る。`active` と待ちのフラグは、スキーマ上の定義で、実機では `idle` だけを確認した（作業中の Codex での確認は未）
-  - `tmux-agent-web` も同じ規則（`build_agents` の `codex_threads`。取得は同じスクリプトの `--stdout`、環境変数 `TMUX_AGENT_WEB_CODEX_THREADS_BIN`。空なら使わない）。検出の仕様を変えたら両方を直す
+  - `tmux-agent-web` も同じ規則（`build_agents` の `codex_threads` と `pane_titles`。取得は同じスクリプトの `--stdout`、環境変数 `TMUX_AGENT_WEB_CODEX_THREADS_BIN`。空なら使わない）。検出の仕様を変えたら両方を直す
   - 環境変数: `AGENT_SIDEBAR_CODEX_THREADS_BIN`（テストでは `true` にして本物のデーモンへ問い合わせない）/ `AGENT_CODEX_SOCK`（ソケットの場所）
-  - テスト: `test_agent_codex_threads.py`（偽のデーモンを unix ソケット上の WebSocket で立てて取得）、`test_agent_sidebar_usage.py` の `test_codex_*`（カードの状態・名前・曖昧なときの unknown）、`test_agent_web.py` の `DetectTest`
+  - テスト: `test_agent_codex_threads.py`（偽のデーモンを unix ソケット上の WebSocket で立てて取得）、`test_agent_sidebar_usage.py` の `test_codex_*`（カードの状態・名前・曖昧なときの unknown・同じ cwd をタイトルで見分ける）、`test_agent_web.py` の `DetectTest`
 - 内部は共通レコード `R|session|window|window_name|pane|type|pane_id|active|project|status|detail|elapsed_sec|name|cwd`（`type` は `Claude` / `Codex` / `Shell`）。検出（awk）と表示（render）を分離しているので、状態判定の追加は collect 側だけで済む
 - 環境変数（主にデバッグ用）: `AGENT_SIDEBAR_INTERVAL`、`AGENT_SIDEBAR_CLAUDE_BIN`、`AGENT_SIDEBAR_CLAUDE_CACHE`、`AGENT_SIDEBAR_SESSIONS_DIR`、`AGENT_SIDEBAR_RATE_LIMITS`、`AGENT_SIDEBAR_ICON_DIR`、`AGENT_SIDEBAR_ALERT_STATE`、`AGENT_SIDEBAR_PROJECTS_DIR`、`AGENT_SIDEBAR_TITLE_CACHE`、`AGENT_SIDEBAR_DEBUG=1`（stderr を捨てない）
 

@@ -979,6 +979,71 @@ class SidebarUsageTest(unittest.TestCase):
         self.wait_screen(lambda _: os.path.exists(marker))
         self.assertTrue(os.path.exists(marker))
 
+    # --- 同じ cwd の Codex が複数あるときは、pane のタイトル(Codex の TUI は「スレッド名 | ディレクトリ」にする)で見分ける ---
+
+    def codex_panes(self):
+        """sidebar 以外の pane_id(表示の順)。"""
+        return [l.split()[0] for l in self.tmux("list-panes", "-t", "t:0", "-F", "#{pane_id} #{@agent_sidebar}").stdout.splitlines() if l.split()[-1:] != ["1"]]
+
+    def set_titles(self, *titles):
+        for pane, title in zip(self.codex_panes(), titles):
+            self.tmux("select-pane", "-t", pane, "-T", title)
+
+    def card_status(self, screen, name):
+        """name のカードの状態の行(カードは 名前 / ブランチ / 状態 の 3 行)。"""
+        lines = screen.splitlines()
+        for i, line in enumerate(lines):
+            if name in line and i + 2 < len(lines):
+                return lines[i + 2]
+        self.fail(f"{name} のカードが画面にありません:\n{screen}")
+
+    def test_codex_同じ_cwd_に複数あっても_pane_のタイトルで見分ける(self):
+        self.render(codex_threads=[
+            self.thread_line(name="一つ目", status="active", flags="waitingOnApproval"),
+            self.thread_line(name="二つ目"),
+        ])
+        self.start_codex_pane()
+        self.start_codex_pane(first=False)
+        self.set_titles("一つ目 | proj...", "二つ目 | proj...")
+        screen = self.wait_screen(lambda scr: "一つ目" in scr and "二つ目" in scr and "UNKNOWN" not in scr)
+        self.assertIn("WAITING", self.card_status(screen, "一つ目"))
+        self.assertIn("IDLE", self.card_status(screen, "二つ目"))
+
+    def test_codex_タイトルが逆の順でも_取り違えない(self):
+        self.render(codex_threads=[
+            self.thread_line(name="一つ目", status="active", flags="waitingOnApproval"),
+            self.thread_line(name="二つ目"),
+        ])
+        self.start_codex_pane()
+        self.start_codex_pane(first=False)
+        self.set_titles("二つ目 | proj...", "一つ目 | proj...")  # 表示の順とスレッドの順が逆
+        screen = self.wait_screen(lambda scr: "一つ目" in scr and "二つ目" in scr and "UNKNOWN" not in scr)
+        self.assertIn("WAITING", self.card_status(screen, "一つ目"))
+        self.assertIn("IDLE", self.card_status(screen, "二つ目"))
+
+    def test_codex_pane_が_1_つでスレッドが複数でも_タイトルが一致すれば使う(self):
+        self.render(codex_threads=[self.thread_line(name="一つ目"), self.thread_line(name="別のスレッド", status="active", flags="")])
+        self.start_codex_pane()
+        self.set_titles("別のスレッド | proj...")
+        screen = self.wait_screen(lambda scr: "別のスレッド" in scr)
+        self.assertIn("WORKING", self.card_status(screen, "別のスレッド"))
+
+    def test_codex_タイトルが同じ_pane_が複数なら_決めずに_unknown(self):
+        self.render(codex_threads=[self.thread_line(name="同名"), self.thread_line(name="別名")])
+        self.start_codex_pane()
+        self.start_codex_pane(first=False)
+        self.set_titles("同名 | proj...", "同名 | proj...")
+        screen = self.wait_screen(lambda scr: scr.count("UNKNOWN") >= 2)
+        self.assertNotIn("別名", screen)
+
+    def test_codex_タイトルにスレッド名が無ければ_決めずに_unknown(self):
+        self.render(codex_threads=[self.thread_line(name="一つ目"), self.thread_line(name="二つ目")])
+        self.start_codex_pane()
+        self.start_codex_pane(first=False)
+        self.set_titles("codex", "zsh")  # 「名前 | ディレクトリ」の形ではない
+        screen = self.wait_screen(lambda scr: scr.count("UNKNOWN") >= 2)
+        self.assertNotIn("一つ目", screen)
+
     # --- Tasks 欄(Obsidian のタスクの件数と、t のポップアップ) ---
 
     def make_tasks(self, specs=(("2026-10-16-a", "false"), ("2026-10-10-b", "false"), ("2026-08-01-c", "false")), dirname="tasks"):
