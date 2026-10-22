@@ -1097,6 +1097,14 @@ DAILY_CHECKED_AT=-999
 
 # 入り切りは w(tmux-agent-web-toggle)。USAGE 欄の下の 1 行(WEB 欄)に出す
 WEB_STATE_FILE="${TMUX_AGENT_WEB_STATE:-${XDG_CACHE_HOME:-$HOME/.cache}/tmux-agent-web/state.json}"
+# モード(auto | on | off。tmux-agent-web-toggle が書く。無ければ auto)と、自宅のネットワークの登録(MAC の一覧)。どちらも fork せずに読む
+WEB_MODE_FILE="${AGENT_WEB_MODE_FILE:-${WEB_STATE_FILE%/*}/mode}"
+WEB_HOME_FILE="${AGENT_WEB_HOME_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/tmux-agent-web/home-networks}"
+WEB_MODE=auto
+WEB_HOME_SET=0
+# auto のとき、自宅の判定(起動 / 停止)を裏で呼ぶ間隔(秒)。判定そのものは tmux-agent-web-toggle auto に 1 か所だけ持つ
+WEB_AUTO_SEC=15
+WEB_AUTO_AT=-999
 WEB_ON=0
 WEB_PORT=""
 WEB_RO=""
@@ -1595,7 +1603,10 @@ daily_blinking() {
 # WEB サーバーの状態ファイルを読み、状態(ON/OFF・ポート・閲覧のみか)が変わったら 0、変わらなければ 1 を返す。
 # fork しない(JSON は json_field の正規表現で読み、pid の生存は kill -0)ので毎 tick 呼んでよい
 read_web_state() {
-  local on=0 port="" ro="" json pid
+  local on=0 port="" ro="" json pid mode=auto m="" set=0
+  [ -r "$WEB_MODE_FILE" ] && read -r m < "$WEB_MODE_FILE"
+  case $m in on | off | auto) mode=$m ;; esac
+  [ -s "$WEB_HOME_FILE" ] && set=1
   if [ -r "$WEB_STATE_FILE" ]; then
     json=$(<"$WEB_STATE_FILE")
     json_field "$json" pid
@@ -1607,10 +1618,12 @@ read_web_state() {
     [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && on=1
   fi
   ((on)) || { port=""; ro=""; }
-  [ "$on|$port|$ro" = "$WEB_ON|$WEB_PORT|$WEB_RO" ] && return 1
+  [ "$on|$port|$ro|$mode|$set" = "$WEB_ON|$WEB_PORT|$WEB_RO|$WEB_MODE|$WEB_HOME_SET" ] && return 1
   WEB_ON=$on
   WEB_PORT=$port
   WEB_RO=$ro
+  WEB_MODE=$mode
+  WEB_HOME_SET=$set
   return 0
 }
 
@@ -1661,22 +1674,37 @@ build_footer() {
     [ -n "$CX_USED" ] && codex_row "$row"
   fi
 
+  # WEB 欄: ● / ○ は実際に動いているか。auto は「自宅のネットワークなら ON」(離れていれば off)。
+  # 幅に収まる範囲で、操作ヒント(w = モードの切り替え、W = URL のコピー、H = 自宅の登録)を足す。行の折り返しで下部欄が崩れないようにする
+  local label="" plain hints
   if ((WEB_ON)); then
-    # 幅に収まる範囲で、操作ヒント(w stop = 8 桁、W copy = 7 桁)を足す。行の折り返しで下部欄が崩れないようにする
-    web="${C_DONE}●${C_TITLE_ROW} WEB ${C_DONE}ON${C_DIM} :${WEB_PORT}"
-    plain=" ● WEB ON :${WEB_PORT}"
+    [ "$WEB_MODE" = auto ] && label="auto "
+    web="${C_DONE}●${C_TITLE_ROW} WEB ${label}${C_DONE}ON${C_DIM} :${WEB_PORT}"
+    plain=" ● WEB ${label}ON :${WEB_PORT}"
     if [ "$WEB_RO" = true ]; then
       web+=" ro"
       plain+=" ro"
     fi
-    if ((${#plain} + 8 <= width - 1)); then
-      web+="  ${C_ACTIVE}w${C_DIM} stop"
-      plain+="  w stop"
-    fi
-    ((${#plain} + 7 <= width - 1)) && web+=" ${C_ACTIVE}W${C_DIM} copy"
+    hints="W copy|w mode"
   else
-    web="${C_DIM}○ WEB off  ${C_ACTIVE}w${C_DIM} start"
+    case $WEB_MODE in
+      auto) label="auto off" ;;
+      on) label="on" ;;
+      *) label="off" ;;
+    esac
+    web="${C_DIM}○ WEB ${label}"
+    plain=" ○ WEB ${label}"
+    # auto で自宅が未登録なら、まず登録(H)を案内する
+    if [ "$WEB_MODE" = auto ] && ((WEB_HOME_SET == 0)); then hints="H home|w mode"; else hints="w mode|H home"; fi
   fi
+  local hint key text
+  for hint in "${hints%%|*}" "${hints#*|}"; do
+    key=${hint%% *}
+    text=${hint#* }
+    ((${#plain} + ${#hint} + 2 <= width - 1)) || continue
+    web+="  ${C_ACTIVE}${key}${C_DIM} ${text}"
+    plain+="  ${hint}"
+  done
   footer_heading $((term_h - tools_rows + 1)) " $FOOTER_TOOLS_TITLE "
   daily_row $((term_h - tools_rows + 2))
   [ "$TASKS_STATE" = ok ] && tasks_row $((term_h - 1))
@@ -2016,7 +2044,7 @@ COCKPIT=0
 COCKPIT_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-cockpit"
 RESTART_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-restart"
 NEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-new"
-WEB_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-web-toggle"
+WEB_BIN="${AGENT_SIDEBAR_WEB_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-web-toggle}"
 # tmux-agent-new が通知してきた「作ったばかりの pane」。Agent として検出されるまで探す秒数と合わせて持つ
 PENDING_ID=""
 PENDING_UNTIL=0
@@ -2120,6 +2148,9 @@ help_lines() {
     "o|Daily Note を Obsidian で開く" \
     "c|作業の一覧を Markdown でコピー" \
     "t|タスク(Obsidian)を一覧・完了にする|(ポップアップ。⏎ で Obsidian、x で done)" \
+    "w|スマホ用 WEB のモードを切り替え|(auto = 自宅なら ON → on → off)" \
+    "W|WEB の URL をコピー" \
+    "H|いまのネットワークを自宅に登録 / 解除|(auto が、自宅で ON にする目印)" \
     "-" \
     "C-c|sidebar を閉じる" \
     "?|このヘルプ"
@@ -2423,6 +2454,7 @@ read_key() {
     t) KEY=tasks ;;
     w) KEY=web_toggle ;;
     W) KEY=web_copy ;;
+    H) KEY=web_home ;;
     q) KEY=quit ;;
     p | " ") KEY=preview ;;
     "?") KEY=help ;;
@@ -2716,6 +2748,11 @@ while :; do
 
   # WEB 欄の ON/OFF が変わったときだけ再描画する(w で入り切りした直後も、収集(2 秒ごと)を待たずに反映される)
   read_web_state && need_render=1
+  # モードが auto なら、自宅かどうかの判定(と起動 / 停止)を裏で呼ぶ。複数の sidebar が呼んでも、スクリプト側のロックで 1 つだけが判定する
+  if [ "$WEB_MODE" = auto ] && ((SECONDS - WEB_AUTO_AT >= WEB_AUTO_SEC)); then
+    WEB_AUTO_AT=$SECONDS
+    "$WEB_BIN" auto --notify >/dev/null 2>&1 &
+  fi
   save_cockpit_selection
 
   if ((need_render)); then
@@ -2825,7 +2862,10 @@ while :; do
     # スマホ用 Web サーバーの入り切り / URL のコピー。起動の待ち(最大 5 秒)で sidebar を止めないよう、裏で実行する。
     # 状態は毎 tick の read_web_state が拾うので、ON/OFF の表示は 1 秒ほどで変わる
     web_toggle)
-      "$WEB_BIN" toggle --notify >/dev/null 2>&1 &
+      "$WEB_BIN" mode next --notify >/dev/null 2>&1 &
+      ;;
+    web_home)
+      "$WEB_BIN" home toggle --notify >/dev/null 2>&1 &
       ;;
     web_copy)
       "$WEB_BIN" copy --notify >/dev/null 2>&1 &

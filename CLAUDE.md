@@ -190,9 +190,16 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - タスクの作り方（`daily-task-organizer.yml` と `98-ai/98-01-promptos/01-daily-task-organizer.md`）: ファイル名は `YYYY-MM-DD-タイトル.md`、frontmatter は `done: false` と `tags`（1 つ目 = プロジェクト、2 つ目 = カテゴリ）、本文に「元の Daily Note」へのリンク。**この形を前提にしている**ので、プロンプトの書式を変えたら `tmux-agent-tasks` も見直す
   - 環境変数（主にテスト用）: `AGENT_SIDEBAR_TASKS_BIN`（取得・一覧のコマンド）/ `AGENT_TASKS_NO_TMUX` / `AGENT_TASKS_TODAY`（`YYYY-MM-DD`）/ `AGENT_TASKS_OPEN_CMD`（既定 `open`）/ `AGENT_DAILY_OBSIDIAN_CONFIG`（Daily と共通）
   - テスト: `test_agent_tasks.py`（読み書き・CI の書式・`--status`・専用ソケットの tmux で対話画面を動かす）、`test_agent_sidebar_usage.py` の `test_tasks_*`（欄の表示・`t` でポップアップが開く。pty でクライアントをつなぐ）
-- sidebar 上で `w` → スマホ用 Web サーバー（`tmux-agent-web`、後述「Agent Web」）を **ON / OFF**。`W`（大文字）→ 起動中なら URL（トークンつき）をクリップボードへ（通常の sidebar・cockpit のどちらでも効く）
-  - TOOLS 区画の最下行の **WEB 欄**に状態を出す（`○ WEB off  w start` / `● WEB ON :8765  w stop W copy`。閲覧のみのときは `ro`）。端末の高さが 14 未満のときは USAGE 欄と同様に出さない。幅に収まらないときはヒント（`W copy`）から省く
-  - 実際の入り切りは `tmux-agent-web-toggle`（`R` と同じく、sidebar からは裏で `--notify` つきで呼ぶだけ。起動の待ちで sidebar を止めない）。結果は `display-message` に出る。ON にしたときは URL をクリップボードへコピーする
+- sidebar 上で `w` → スマホ用 Web サーバー（`tmux-agent-web`、後述「Agent Web」）の **モード**を切り替える（**auto → on → off → auto**）。`W`（大文字）→ 起動中なら URL（トークンつき）をクリップボードへ。`H`（大文字）→ **いまのネットワークを「自宅」に登録 / 解除**（通常の sidebar・cockpit のどちらでも効く）
+  - **モード**（既定は `auto`）: `auto` = **自宅のネットワークなら ON、離れたら OFF**（基本はこれ）/ `on` = 常に ON / `off` = 常に OFF。切り替えた直後に反映する（on は起動、off は停止、auto は判定して起動か停止）。モードは `~/.cache/tmux-agent-web/mode`（状態ファイルと同じディレクトリ。`AGENT_WEB_MODE_FILE`）に書くので、tmux を再起動しても残る
+  - **自宅の判定は、SSID ではなく「デフォルト経路のルーターの MAC アドレス」**（`netstat -rn -f inet` の `default` のうち `en*` だけ = VPN は除く → `arp -n`。ARP に無ければ 1 回 ping して取り直す）。理由: macOS 15 では位置情報の許可が無いと SSID を取れない（`networksetup -getairportnetwork` は未接続と返し、`ipconfig getsummary` は `<redacted>`）うえ、**自宅では有線（USB LAN）でつながっていて、SSID が無い**ため。MAC は有線でも無線でも同じ値になり、同じ SSID の別の場所や、同じ `192.168.11.1` のルーターとも混ざらない。取れる値は `tmux-agent-web-toggle home`（いまのネットワークと、自宅かどうか）で確認できる
+  - **登録**: `H`（= `tmux-agent-web-toggle home toggle`。`home add` / `remove` / `list` / `status` もある）。登録は `~/.config/tmux-agent-web/home-networks`（`AGENT_WEB_HOME_FILE`。1 行 1 MAC、`#` 以降はコメント。本人だけが読める 0600。**リポジトリには入れない**。MAC の書き方（先頭の 0 の省略・大文字）はそろえて比べる）。**登録が無ければ auto は絶対に起動しない**（初回は、自宅で `H` を押す）。複数の場所（実家・事務所など）を登録してもよい
+  - **判定**: sidebar が、モードが auto のとき **15 秒ごと**（`WEB_AUTO_SEC`）に裏で `tmux-agent-web-toggle auto --notify` を呼ぶ。複数の sidebar（window ごと + cockpit）が呼んでも、スクリプト側の `mkdir` ロック（`~/.cache/tmux-agent-web/auto.lock`。60 秒を超えた取り残しは捨てる）で 1 つだけが判定する。**自宅なら起動、自宅でなければ「2 回続けたとき」に停止**（ARP の一時的な欠落で落とさないため。続けた回数は `auto-miss`）。ネットワークを取れなければ「自宅でない」扱い。auto はモードが auto のときだけ動き、on / off のときは何もしない（手で起動したものも、on / off のときは止めない）。**モードを auto に切り替えた直後だけは、続けずにすぐ判定どおりにする**
+  - **auto の起動は URL をクリップボードへコピーしない**（別のものをコピーしている最中に上書きしないため。必要なら `W`）。on にしたときは従来どおりコピーする。auto の起動・停止は `display-message`（`web: auto: …`）に出る
+  - TOOLS 区画の最下行の **WEB 欄**に状態を出す（● / ○ は実際に動いているか）: `● WEB auto ON :8765  W copy`（auto で ON。閲覧のみのときは `ro`）/ `○ WEB auto off  H home`（auto で、自宅が**未登録**。登録を案内する）/ `○ WEB auto off  w mode`（auto で、自宅を離れている）/ `● WEB ON :8765  W copy  w mode`（on）/ `○ WEB on` / `○ WEB off  w mode`。端末の高さが 14 未満のときは USAGE 欄と同様に出さない。幅に収まらないときはヒントを後ろから省く
+  - 実際の入り切りは `tmux-agent-web-toggle`（`R` と同じく、sidebar からは裏で `--notify` つきで呼ぶだけ。起動の待ちで sidebar を止めない）。結果は `display-message` に出る
+  - 環境変数（主にテスト用）: `AGENT_SIDEBAR_WEB_BIN`（sidebar が呼ぶトグルのコマンド。テストの既定は `true`）/ `AGENT_WEB_NETWORK_CMD`（ネットワークの指紋を 1 行ずつ出すコマンド。本物の netstat / arp の代わり）/ `AGENT_WEB_HOME_FILE` / `AGENT_WEB_MODE_FILE`。**sidebar のテストは、`AGENT_WEB_HOME_FILE` を一時ディレクトリにして、自宅でテストを回しても本物のサーバーを起動しないようにしている**
+  - テスト: `test_agent_web.py` の `ToggleAutoTest`（モード・auto の起動と停止・2 回続けて止める・ロック・クリップボードに触れない・自宅の登録。ネットワークの指紋は偽物で差し替え）、`test_agent_sidebar_usage.py` の `test_web_*`（WEB 欄の表示・`w` / `H` / `W` の呼び出し・auto の判定を 15 秒おきにだけ呼ぶ）
   - 状態は `~/.cache/tmux-agent-web/state.json`（`tmux-agent-web` が書く。pid・ポート・URL）。sidebar は毎 tick（約 1 秒）これを fork なしで読み、変わったときだけ再描画する。pid が死んでいれば OFF 扱い（古い状態ファイルは無視される）
   - 手動（端末）で起動した `tmux-agent-web` も同じ状態ファイルを書くので、WEB 欄に ON と出て、`w` で止められる。**状態ファイルを書かない古い版で起動したものは、WEB 欄に出ず、`w` でも止められない**（二重起動はポート衝突で失敗する）。止めてから `w` で起動し直す
 - sidebar 上で `p`（または Space）→ 選択中の Agent の pane を **ポップアップでプレビュー**（`tmux-agent-sidebar-preview`）
@@ -349,13 +356,14 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 文字は `load-buffer` の標準入力で渡すので、「;」で終わる・「-」で始まる文字も、tmux の引数として誤解釈されない（`send-keys -l` だと崩れるため、使わない）。
 
 **起動**（必要なときだけ。常駐させない）:
-- **sidebar の `w`**（ON / OFF）と `W`（URL のコピー）。ON にすると URL がクリップボードに入る（ユニバーサルクリップボードでスマホに貼れる）。詳細は上の「Agent Sidebar」
+- **sidebar の `w`**（モード auto → on → off。**auto = 自宅のネットワークなら ON、離れたら OFF**）と `W`（URL のコピー）、`H`（いまのネットワークを自宅に登録 / 解除）。on にしたとき URL がクリップボードに入る（ユニバーサルクリップボードでスマホに貼れる。auto の起動ではコピーしない）。詳細は上の「Agent Sidebar」
 - 起動引数を変えたいときは tmux の option: `set -g @agent_web_args '--read-only --idle-timeout 120'`（空白区切りの単純なフラグだけ。サーバー起動中の変更は、次の起動から効く）
 - 端末から直接:
 ```bash
 ~/.tmux/scripts/tmux-agent-web --copy        # LAN 側 IP で待ち受け。URL をクリップボードへ
 ~/.tmux/scripts/tmux-agent-web --read-only   # 閲覧のみ
 ~/.tmux/scripts/tmux-agent-web-toggle status # ON host:port / OFF（トークンは出さない）。ほかに start / stop / toggle / url
+~/.tmux/scripts/tmux-agent-web-toggle mode next # auto → on → off。home add / remove / status で自宅の登録
 ```
 他のオプション: `--host IP`、`--port N`（既定 8765）、`--idle-timeout 分`、`--allow-host 名前`、`--state-file パス`。端末に出る URL の `#token=…` つきで開く（トークンは起動のたびに変わる。`TMUX_AGENT_WEB_TOKEN`（20 文字以上）で固定できる）。
 スマホは同じ Wi-Fi に繋ぐ。mDNS 名（`<LocalHostName>.local`）でも開ける。
@@ -589,7 +597,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 │   ├── tmux-agent-codex-usage     # Codex の今月の使用量（クレジット）を取得して /tmp/codex-usage.json へ。sidebar の USAGE 欄が読む
 │   ├── tmux-agent-codex-threads   # Codex の常駐デーモンから、起動中のスレッドの状態・名前・モデルを取得して /tmp/tmux-agent-sidebar-codex.txt へ。sidebar の Codex カードが読む
 │   ├── tmux-agent-web             # スマホのブラウザから Agent を確認・操作する Web サーバー（Python。画面は tmux/assets/agent-web/）
-│   ├── tmux-agent-web-toggle      # sidebar の w / W から呼ばれる、tmux-agent-web の入り切り・URL コピー
+│   ├── tmux-agent-web-toggle      # sidebar の w / W / H から呼ばれる、tmux-agent-web のモード（auto / on / off）・入り切り・URL コピー・自宅の登録
 │   ├── tmux-window-reorder        # C-t S の window 並び替えポップアップ
 │   ├── tmux-rate-limits   # レートリミット使用率表示（現在はステータスバーから外し、sidebar の USAGE 欄が代替）
 │   └── ...                # その他スクリプト

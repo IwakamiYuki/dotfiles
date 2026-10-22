@@ -1346,5 +1346,237 @@ class ToggleScriptTest(unittest.TestCase):
         self.assertIn("ON", self.toggle("toggle").stdout)  # 古い状態は無視して起動する
 
 
+
+@unittest.skipUnless(shutil.which("jq"), "jq が必要")
+class ToggleAutoTest(unittest.TestCase):
+    """auto モード(自宅のネットワークなら ON、離れたら OFF)と、自宅の登録。ネットワークの指紋は偽物のコマンドで差し替える。
+    本物の tmux・クリップボードには触れない(TMUX は存在しないソケット、コピーは偽物のコマンド)。"""
+
+    HOME_MAC = "4c:85:8a:4a:25:80"
+    OTHER_MAC = "aa:bb:cc:dd:ee:01"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="taw-auto-")
+        self.state = os.path.join(self.tmp, "state.json")
+        self.home = os.path.join(self.tmp, "config", "home-networks")
+        self.clip = os.path.join(self.tmp, "clip.txt")
+        clip_cmd = os.path.join(self.tmp, "fake-clip")
+        with open(clip_cmd, "w") as f:
+            f.write(f"#!/bin/bash\ncat > {self.clip}\n")
+        os.chmod(clip_cmd, 0o755)
+        self.net_file = os.path.join(self.tmp, "net")
+        self.set_network(self.HOME_MAC)
+        self.env = dict(
+            os.environ, TMUX_AGENT_WEB_STATE=self.state, AGENT_WEB_BIN=str(SCRIPT),
+            AGENT_WEB_ARGS="--host 127.0.0.1 --port 0 --read-only", TMUX_AGENT_WEB_TOKEN="auto-token-0123456789abc",
+            AGENT_WEB_HOME_FILE=self.home, AGENT_WEB_CLIP_CMD=clip_cmd,
+            AGENT_WEB_NETWORK_CMD=f"cat {self.net_file}",
+            TMUX=os.path.join(self.tmp, "no-such-socket") + ",0,0",  # --notify の display-message が、普段の tmux に届かないように
+        )
+
+    def tearDown(self):
+        self.run_toggle("stop")
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def set_network(self, *macs):
+        with open(self.net_file, "w") as f:
+            f.write("".join(m + "\n" for m in macs))
+
+    def run_toggle(self, *args):
+        return subprocess.run([str(TOGGLE), *args], env=self.env, capture_output=True, text=True, timeout=30)
+
+    def running(self):
+        return self.run_toggle("status").returncode == 0
+
+    def register_home(self, *macs):
+        os.makedirs(os.path.dirname(self.home), exist_ok=True)
+        with open(self.home, "w") as f:
+            f.write("# 自宅\n" + "".join(m + "  # test\n" for m in macs))
+
+    # --- モード ---
+
+    def test_モードの既定は_auto_で_next_は_auto_on_off_の順(self):
+        self.assertEqual(self.run_toggle("mode").stdout.strip(), "auto")
+        order = []
+        for _ in range(4):
+            self.run_toggle("mode", "next")
+            order.append(self.run_toggle("mode").stdout.strip())
+        self.assertEqual(order, ["on", "off", "auto", "on"])
+
+    def test_モード_on_で起動して_off_で止まる(self):
+        proc = self.run_toggle("mode", "on")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(self.running())
+        self.run_toggle("mode", "off")
+        self.assertFalse(self.running())
+
+    def test_モード_on_は_自宅でなくても起動する(self):
+        self.set_network(self.OTHER_MAC)
+        self.run_toggle("mode", "on")
+        self.assertTrue(self.running())
+
+    def test_モードの値と引数が不正なら_使い方を出す(self):
+        for args in (("mode", "bogus"), ("home", "bogus"), ("start", "extra"), ("nope",), ("mode", "on", "extra")):
+            self.assertEqual(self.run_toggle(*args).returncode, 2, args)
+
+    # --- auto ---
+
+    def test_auto_自宅なら起動する(self):
+        self.register_home(self.HOME_MAC)
+        self.run_toggle("mode", "auto")
+        self.assertTrue(self.running())  # 切り替えた直後にすぐ判定する
+        self.run_toggle("stop")
+        self.assertTrue(self.run_toggle("auto").returncode == 0 and self.running())  # 周期の判定でも起動する
+
+    def test_auto_自宅を離れたら_2回続けたときに止める(self):
+        self.register_home(self.HOME_MAC)
+        self.run_toggle("mode", "auto")
+        self.assertTrue(self.running())
+        self.set_network(self.OTHER_MAC)
+        self.run_toggle("auto")
+        self.assertTrue(self.running(), "1 回の判定だけでは止めない(ARP の一時的な欠落で落とさない)")
+        self.run_toggle("auto")
+        self.assertFalse(self.running())
+
+    def test_auto_一時的に自宅でなくなっても_戻れば数え直す(self):
+        self.register_home(self.HOME_MAC)
+        self.run_toggle("mode", "auto")
+        self.set_network(self.OTHER_MAC)
+        self.run_toggle("auto")
+        self.set_network(self.HOME_MAC)
+        self.run_toggle("auto")  # 自宅に戻った: 数え直し
+        self.set_network(self.OTHER_MAC)
+        self.run_toggle("auto")
+        self.assertTrue(self.running())
+
+    def test_auto_離れた状態へモードを切り替えたら_すぐ止める(self):
+        self.register_home(self.HOME_MAC)
+        self.run_toggle("mode", "on")
+        self.set_network(self.OTHER_MAC)
+        self.run_toggle("mode", "auto")
+        self.assertFalse(self.running())
+
+    def test_auto_自宅が未登録なら_起動しない(self):
+        proc = self.run_toggle("mode", "auto")
+        self.assertIn("未登録", proc.stdout)
+        self.assertFalse(self.running())
+        self.run_toggle("auto")
+        self.assertFalse(self.running())
+
+    def test_auto_ネットワークを取得できなければ_自宅ではない(self):
+        self.register_home(self.HOME_MAC)
+        self.set_network()  # デフォルト経路が無い
+        self.run_toggle("mode", "auto")
+        self.assertFalse(self.running())
+
+    def test_auto_は_モードが_auto_でなければ何もしない(self):
+        self.register_home(self.HOME_MAC)
+        self.run_toggle("mode", "off")
+        self.run_toggle("auto")
+        self.assertFalse(self.running())
+        self.run_toggle("mode", "on")
+        self.set_network(self.OTHER_MAC)
+        self.run_toggle("auto")
+        self.run_toggle("auto")
+        self.assertTrue(self.running(), "on のときは、自宅でなくても止めない")
+
+    def test_auto_判定が同時に走らないよう_ロックを見る(self):
+        self.register_home(self.HOME_MAC)
+        self.run_toggle("mode", "off")
+        self.run_toggle("mode", "auto")  # 起動する
+        self.run_toggle("stop")
+        os.mkdir(os.path.join(self.tmp, "auto.lock"))  # 別のプロセスが判定中
+        self.run_toggle("auto")
+        self.assertFalse(self.running())
+
+    def test_auto_の起動は_URL_をクリップボードへコピーしない(self):
+        self.register_home(self.HOME_MAC)
+        self.run_toggle("mode", "off")
+        self.run_toggle("mode", "auto", "--notify")
+        self.assertTrue(self.running())
+        self.assertFalse(os.path.exists(self.clip), "auto の起動で、ほかのものをコピーしている最中のクリップボードを上書きしない")
+        self.run_toggle("stop")
+        self.run_toggle("auto", "--notify")
+        self.assertTrue(self.running())
+        self.assertFalse(os.path.exists(self.clip))
+
+    def test_モード_on_の起動は_従来どおり_URL_をコピーする(self):
+        self.run_toggle("mode", "on", "--notify")
+        with open(self.clip) as f:
+            self.assertTrue(f.read().startswith("http"))
+
+    # --- 自宅の登録 ---
+
+    def test_home_add_でいまのネットワークを登録して_status_で自宅と出る(self):
+        self.assertIn("自宅ではありません", self.run_toggle("home").stdout)
+        proc = self.run_toggle("home", "add")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("登録しました", proc.stdout)
+        self.assertEqual(self.run_toggle("home", "list").stdout.split(), [self.HOME_MAC])
+        self.assertIn("自宅です", self.run_toggle("home", "status").stdout)
+
+    def test_home_登録ファイルは_本人だけが読める(self):
+        self.run_toggle("home", "add")
+        self.assertEqual(os.stat(self.home).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(os.path.dirname(self.home)).st_mode & 0o777, 0o700)
+
+    def test_home_add_は何度やっても重複しない(self):
+        self.run_toggle("home", "add")
+        again = self.run_toggle("home", "add")
+        self.assertIn("登録済み", again.stdout)
+        self.assertEqual(self.run_toggle("home", "list").stdout.split(), [self.HOME_MAC])
+
+    def test_home_remove_は_いまのネットワークだけ外す(self):
+        self.register_home(self.HOME_MAC, self.OTHER_MAC)
+        proc = self.run_toggle("home", "remove")
+        self.assertIn("外しました", proc.stdout)
+        self.assertEqual(self.run_toggle("home", "list").stdout.split(), [self.OTHER_MAC])
+        self.assertIn("登録されていません", self.run_toggle("home", "remove").stdout)
+
+    def test_home_toggle_は_登録済みなら外し_未登録なら登録する(self):
+        self.assertIn("登録しました", self.run_toggle("home", "toggle").stdout)
+        self.assertIn("外しました", self.run_toggle("home", "toggle").stdout)
+        self.assertEqual(self.run_toggle("home", "list").stdout.split(), [])
+
+    def test_home_複数の自宅を登録できて_どれかに一致すれば自宅(self):
+        self.register_home(self.OTHER_MAC)
+        self.assertIn("自宅ではありません", self.run_toggle("home", "status").stdout)
+        self.run_toggle("home", "add")
+        self.set_network(self.OTHER_MAC)
+        self.assertIn("自宅です", self.run_toggle("home", "status").stdout)
+        self.set_network(self.HOME_MAC)
+        self.assertIn("自宅です", self.run_toggle("home", "status").stdout)
+
+    def test_home_MAC_の書き方の違いをそろえる(self):
+        # arp は先頭の 0 を省く(0:e0:4c:44:29:79)。大文字小文字も区別しない
+        self.set_network("0:E0:4C:44:29:79")
+        self.register_home("00:e0:4c:44:29:79")
+        self.assertIn("自宅です", self.run_toggle("home", "status").stdout)
+
+    def test_home_登録ファイルのコメントと空行は無視する(self):
+        os.makedirs(os.path.dirname(self.home), exist_ok=True)
+        with open(self.home, "w") as f:
+            f.write(f"# メモ\n\n   {self.HOME_MAC.upper()}   # 自宅\n")
+        self.assertEqual(self.run_toggle("home", "list").stdout.split(), [self.HOME_MAC])
+
+    def test_home_ネットワークを取得できなければ_登録しない(self):
+        self.set_network()
+        proc = self.run_toggle("home", "add")
+        self.assertEqual(proc.returncode, 1)
+        self.assertFalse(os.path.exists(self.home))
+
+    def test_home_末尾に改行の無い登録ファイルにも_行をつなげずに足す(self):
+        os.makedirs(os.path.dirname(self.home), exist_ok=True)
+        with open(self.home, "w") as f:
+            f.write(self.OTHER_MAC)  # 改行なし
+        self.run_toggle("home", "add")
+        self.assertEqual(sorted(self.run_toggle("home", "list").stdout.split()), sorted([self.OTHER_MAC, self.HOME_MAC]))
+
+    def test_本物のネットワークの取得でも_落ちない(self):
+        env = {k: v for k, v in self.env.items() if k != "AGENT_WEB_NETWORK_CMD"}
+        proc = subprocess.run([str(TOGGLE), "home", "status"], env=env, capture_output=True, text=True, timeout=30)
+        self.assertIn(proc.returncode, (0, 1), proc.stderr)
+        self.assertNotIn("command not found", proc.stderr)
+
 if __name__ == "__main__":
     unittest.main()

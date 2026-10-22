@@ -125,6 +125,8 @@ class SidebarUsageTest(unittest.TestCase):
                 f"AGENT_SIDEBAR_OPEN_CMD={open_cmd}" if open_cmd else "AGENT_SIDEBAR_OPEN_CMD=true",
                 f"AGENT_DAILY_OBSIDIAN_CONFIG={obsidian_config or self.dir + '/no-obsidian.json'}",
                 f"TMUX_AGENT_WEB_STATE={self.dir}/no-web-state.json",  # 普段の WEB サーバーの状態を読まない
+                f"AGENT_WEB_HOME_FILE={self.dir}/home-networks",  # 本物の自宅の登録を読まない(自宅でテストを回しても、本物のサーバーを起動しない)
+                "AGENT_SIDEBAR_WEB_BIN=true",  # auto の判定・モードの切り替えは呼ばない(呼ぶテストだけが、偽物のコマンドに替える)
                 "AGENT_SIDEBAR_DAILY_BLINK=off",  # 点滅は、点滅のテストだけが extra_env で有効にする
                 "bash",
                 SIDEBAR,
@@ -1450,6 +1452,116 @@ class SidebarUsageTest(unittest.TestCase):
         self.wait_shown(lambda v: v and v != first, "j で別の Agent に切り替わりません")
         time.sleep(1)
         self.assertEqual(self.active_pane(), sidebar)
+
+    # --- WEB 欄: モード(auto / on / off)と、w(モード切り替え)・H(自宅の登録)・auto の判定の呼び出し ---
+
+    def fake_web_bin(self):
+        """tmux-agent-web-toggle の代わり。受け取った引数を 1 行ずつログへ書く。"""
+        fake = os.path.join(self.dir, "fake-web-toggle")
+        log = os.path.join(self.dir, "web-calls.log")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/bash\necho "$*" >> {log}\n')
+        os.chmod(fake, 0o755)
+        return fake, log
+
+    def web_calls(self, log):
+        if not os.path.exists(log):
+            return []
+        with open(log) as f:
+            return f.read().splitlines()
+
+    def web_env(self, mode=None, registered=False, running=False, extra=None):
+        """WEB 欄の確認用の環境。mode は mode ファイル、registered は自宅の登録の有無、running は動いているサーバーの状態ファイル。"""
+        if mode:
+            with open(os.path.join(self.dir, "mode"), "w") as f:
+                f.write(mode + "\n")
+        if registered:
+            with open(os.path.join(self.dir, "home-networks"), "w") as f:
+                f.write("4c:85:8a:4a:25:80  # test\n")
+        env = dict(extra or {})
+        if running:
+            state = os.path.join(self.dir, "web-state.json")
+            with open(state, "w") as f:
+                json.dump({"pid": os.getpid(), "port": 8765, "readOnly": False}, f)
+            env["TMUX_AGENT_WEB_STATE"] = state
+        return env
+
+    def web_row(self, screen):
+        return screen.splitlines()[-1]
+
+    def test_web_既定は_auto_で_自宅が未登録なら_H_を案内する(self):
+        row = self.web_row(self.render(extra_env=self.web_env()))
+        self.assertIn("WEB auto off", row)
+        self.assertIn("H home", row)
+
+    def test_web_auto_で自宅が登録済みなら_w_を案内する(self):
+        row = self.web_row(self.render(extra_env=self.web_env(registered=True)))
+        self.assertIn("WEB auto off", row)
+        self.assertIn("w mode", row)
+
+    def test_web_auto_で動いていれば_ON_とポートと_URL_のコピーを出す(self):
+        row = self.web_row(self.render(extra_env=self.web_env(registered=True, running=True)))
+        self.assertIn("WEB auto ON :8765", row)
+        self.assertIn("W copy", row)
+
+    def test_web_on_と_off_のモードを出す(self):
+        self.assertIn("WEB on", self.web_row(self.render(extra_env=self.web_env(mode="on", registered=True))))
+        self.assertIn("WEB off", self.web_row(self.render(extra_env=self.web_env(mode="off", registered=True))))
+        row = self.web_row(self.render(extra_env=self.web_env(mode="on", registered=True, running=True)))
+        self.assertIn("WEB ON :8765", row)
+        self.assertNotIn("auto", row)
+        self.assertIn("W copy", row)
+        self.assertIn("w mode", row)  # on のときは、幅に収まるので両方出る
+
+    def test_web_どの状態でも_最下行で幅に収まる(self):
+        for mode in ("auto", "on", "off"):
+            for registered in (False, True):
+                for running in (False, True):
+                    screen = self.render(extra_env=self.web_env(mode=mode, registered=registered, running=running))
+                    row = self.web_row(screen)
+                    self.assertIn("WEB", row)
+                    self.assertLessEqual(display_width(row), 31, (mode, registered, running, row))
+
+    def test_web_w_でモードを切り替える(self):
+        fake, log = self.fake_web_bin()
+        self.render(extra_env=self.web_env(mode="off", extra={"AGENT_SIDEBAR_WEB_BIN": fake}))
+        self.press("w")
+        self.wait_screen(lambda _: "mode next --notify" in self.web_calls(log))
+        self.assertIn("mode next --notify", self.web_calls(log))
+
+    def test_web_H_で自宅を登録_解除する(self):
+        fake, log = self.fake_web_bin()
+        self.render(extra_env=self.web_env(mode="off", extra={"AGENT_SIDEBAR_WEB_BIN": fake}))
+        self.press("H")
+        self.wait_screen(lambda _: "home toggle --notify" in self.web_calls(log))
+        self.assertIn("home toggle --notify", self.web_calls(log))
+
+    def test_web_W_は_URL_をコピーする(self):
+        fake, log = self.fake_web_bin()
+        self.render(extra_env=self.web_env(mode="off", extra={"AGENT_SIDEBAR_WEB_BIN": fake}))
+        self.press("W")
+        self.wait_screen(lambda _: "copy --notify" in self.web_calls(log))
+
+    def test_web_auto_のときだけ_自宅の判定を裏で呼ぶ(self):
+        fake, log = self.fake_web_bin()
+        self.render(extra_env=self.web_env(registered=True, extra={"AGENT_SIDEBAR_WEB_BIN": fake}))
+        self.wait_screen(lambda _: "auto --notify" in self.web_calls(log))
+        self.assertEqual(self.web_calls(log)[0], "auto --notify")
+
+    def test_web_on_と_off_では_判定を呼ばない(self):
+        for mode in ("on", "off"):
+            fake, log = self.fake_web_bin()
+            if os.path.exists(log):
+                os.remove(log)
+            self.render(extra_env=self.web_env(mode=mode, registered=True, extra={"AGENT_SIDEBAR_WEB_BIN": fake}))
+            time.sleep(3)
+            self.assertEqual(self.web_calls(log), [], mode)
+
+    def test_web_判定は_15_秒おきで_毎回は呼ばない(self):
+        fake, log = self.fake_web_bin()
+        self.render(extra_env=self.web_env(registered=True, extra={"AGENT_SIDEBAR_WEB_BIN": fake}))
+        time.sleep(6)
+        self.assertEqual(len([c for c in self.web_calls(log) if c.startswith("auto")]), 1)
 
     def test_取得を裏で起動する(self):
         marker = os.path.join(self.dir, "fetched")

@@ -1,7 +1,14 @@
 #!/bin/bash
-# tmux-agent-web-toggle [toggle|start|stop|status|url|copy] [--notify]
-# スマホ用 Web サーバー(tmux-agent-web)の入り切り。sidebar の w(入り切り)/ W(URL をコピー)から呼ばれる。
+# tmux-agent-web-toggle [toggle|start|stop|status|url|copy|revoke|mode [auto|on|off|next]|auto|home [status|list|add|remove|toggle]] [--notify]
+# スマホ用 Web サーバー(tmux-agent-web)の入り切り。sidebar の w(モードの切り替え)/ W(URL をコピー)/ H(自宅の登録)から呼ばれる。
 #
+#   mode [m]      : モードを出す / 変える。auto(既定。自宅のネットワークなら ON、離れたら OFF)/ on(常に ON)/ off(常に OFF)。
+#                   next は auto → on → off → auto の順。変えたらすぐ反映する(on は起動、off は停止、auto は判定して起動か停止)
+#   auto          : モードが auto のときだけ、いまのネットワークが自宅か判定して、起動か停止をする(sidebar が 15 秒ごとに呼ぶ)。
+#                   自宅でなくなっても、すぐには止めず、2 回続けて自宅でないときに止める(ARP の一時的な欠落で落とさないため)。
+#                   auto の起動では URL をクリップボードへコピーしない(別のものをコピーしている最中に上書きしないため。W でコピーする)
+#   home [sub]    : 自宅のネットワークの登録。status(既定: いまのネットワークと、自宅かどうか)/ list / add(いまのを登録)/
+#                   remove(いまのを解除)/ toggle(登録済みなら解除、そうでなければ登録。sidebar の H)
 #   toggle (既定) : 起動していれば止め、止まっていれば起動する
 #   start / stop  : 明示的に起動 / 停止
 #   status        : 起動中なら "ON host:port" を出して 0、止まっていれば "OFF" を出して 1（トークンは出さない）
@@ -15,7 +22,12 @@
 #   環境変数 AGENT_WEB_ARGS（設定されていればこちらが優先。空文字で「引数なし」）。空白区切りの単純なフラグだけ。
 # 状態: ~/.cache/tmux-agent-web/state.json（環境変数 TMUX_AGENT_WEB_STATE で変更）。tmux-agent-web が書く。
 #   トークンを含むので本人だけが読めるディレクトリに置く。起動しっぱなしで落ちた場合の古い状態は pid で見分ける
-# 環境変数（主にテスト用）: AGENT_WEB_BIN（tmux-agent-web の場所）、AGENT_WEB_CLIP_CMD（URL のコピーに使うコマンド。既定 pbcopy）
+# 自宅の判定: 「ネットワークの指紋」= デフォルト経路(en* だけ。VPN は除く)のゲートウェイの MAC アドレス。SSID は使わない
+#   (macOS 15 では位置情報の許可が無いと SSID を取れず、有線でもつながるため)。有線でも無線でも同じ値になり、同じ SSID の別の場所とも混ざらない。
+#   登録は ~/.config/tmux-agent-web/home-networks(環境変数 AGENT_WEB_HOME_FILE。1 行 1 MAC、# 以降はコメント。リポジトリには入れない)。
+#   登録が無ければ、auto は何もしない(起動しない)。モードは状態ファイルと同じディレクトリの mode(AGENT_WEB_MODE_FILE)
+# 環境変数（主にテスト用）: AGENT_WEB_BIN（tmux-agent-web の場所）、AGENT_WEB_CLIP_CMD（URL のコピーに使うコマンド。既定 pbcopy）、
+#   AGENT_WEB_NETWORK_CMD（いまのネットワークの指紋を 1 行ずつ出すコマンド。本物の netstat / arp の代わり）
 #
 # bash 3.2（macOS 標準）で動く書き方にしている。JSON は jq で読む（sidebar と同じ依存）。
 
@@ -31,20 +43,52 @@ LOG="$STATE_DIR/server.log"
 START_WAIT_TICKS=50   # 0.1 秒 × 50 = 5 秒まで起動を待つ
 STOP_WAIT_TICKS=50    # 0.1 秒 × 50 = 5 秒まで終了を待つ
 
-action=toggle
+MODE_FILE="${AGENT_WEB_MODE_FILE:-$STATE_DIR/mode}"
+HOME_FILE="${AGENT_WEB_HOME_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/tmux-agent-web/home-networks}"
+AUTO_MISS_FILE="$STATE_DIR/auto-miss"
+AUTO_LOCK="$STATE_DIR/auto.lock"
+AUTO_MISS_MAX=2          # 自宅でない判定がこの回数続いたら止める
+AUTO_LOCK_STALE_SEC=60   # 落ちたプロセスが取り残したロックを捨てるまで
+
+usage() {
+  echo "usage: tmux-agent-web-toggle [toggle|start|stop|status|url|copy|revoke|mode [auto|on|off|next]|auto|home [status|list|add|remove|toggle]] [--notify]" >&2
+  exit 2
+}
+
+action=""
+sub=""
 NOTIFY=0
 for arg in "$@"; do
   case $arg in
     --notify) NOTIFY=1 ;;
-    toggle | start | stop | status | url | copy | revoke) action=$arg ;;
-    *) echo "usage: tmux-agent-web-toggle [toggle|start|stop|status|url|copy|revoke] [--notify]" >&2; exit 2 ;;
+    *)
+      if [ -z "$action" ]; then
+        case $arg in
+          toggle | start | stop | status | url | copy | revoke | mode | auto | home) action=$arg ;;
+          *) usage ;;
+        esac
+      elif [ -z "$sub" ]; then
+        sub=$arg
+      else
+        usage
+      fi
+      ;;
   esac
 done
+action=${action:-toggle}
+case "$action:$sub" in
+  mode: | mode:auto | mode:on | mode:off | mode:next) ;;
+  home: | home:status | home:list | home:add | home:remove | home:toggle) ;;
+  mode:* | home:*) usage ;;
+  *:?*) usage ;;
+esac
 
-# 結果を標準出力へ出し、--notify のときは tmux にも出す
+# 結果を標準出力へ出し、--notify のときは tmux にも出す。NOTE_PREFIX は「auto: 」など、何による結果かの前置き
+NOTE_PREFIX=""
+NO_COPY=0
 say() {
-  echo "$*"
-  [ "$NOTIFY" = 1 ] && tmux display-message "web: $*" 2>/dev/null
+  echo "$NOTE_PREFIX$*"
+  [ "$NOTIFY" = 1 ] && tmux display-message "web: $NOTE_PREFIX$*" 2>/dev/null
   return 0
 }
 
@@ -92,7 +136,7 @@ do_start() {
   disown "$child" 2>/dev/null
   for ((i = 0; i < START_WAIT_TICKS; i++)); do
     if [ "$(state_field pid)" = "$child" ] && kill -0 "$child" 2>/dev/null; then
-      if [ "$NOTIFY" = 1 ] && state_field url | "$CLIP" 2>/dev/null; then
+      if [ "$NOTIFY" = 1 ] && [ "$NO_COPY" != 1 ] && state_field url | "$CLIP" 2>/dev/null; then
         say "ON ($(describe)) URL をコピーしました。スマホに貼り付けて開きます"
       else
         say "ON ($(describe))"
@@ -122,7 +166,202 @@ do_stop() {
   return 1
 }
 
+# ---- モード / 自宅の判定 ----
+
+current_mode() {
+  local m=""
+  [ -r "$MODE_FILE" ] && read -r m < "$MODE_FILE"
+  case $m in on | off | auto) echo "$m" ;; *) echo auto ;; esac
+}
+
+set_mode() {
+  (umask 077; mkdir -p "$(dirname "$MODE_FILE")" && printf '%s\n' "$1" > "$MODE_FILE.tmp.$$" && mv -f "$MODE_FILE.tmp.$$" "$MODE_FILE") 2>/dev/null
+}
+
+# MAC アドレスを、小文字・2 桁ずつにそろえる(arp は先頭の 0 を省く: 0:e0:4c → 00:e0:4c)
+norm_mac() {
+  local IFS=: p out=""
+  set -- $(printf '%s' "$1" | tr 'A-F' 'a-f')
+  for p in "$@"; do
+    [ "${#p}" = 1 ] && p="0$p"
+    out="$out${out:+:}$p"
+  done
+  printf '%s' "$out"
+}
+
+# ゲートウェイ($1 = IP)の MAC。ARP に無ければ 1 回 ping して(ARP を作らせて)取り直す
+gateway_mac() {
+  local mac i
+  for i in 1 2; do
+    mac=$(arp -n "$1" 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "at") { print $(i + 1); exit } }')
+    case $mac in *:*) norm_mac "$mac"; return 0 ;; esac
+    [ "$i" = 1 ] && ping -c 1 -t 1 "$1" >/dev/null 2>&1
+  done
+  return 1
+}
+
+# いまのネットワークの指紋(ゲートウェイの MAC)を 1 行ずつ。物理インターフェース(en*)のデフォルト経路だけを見る(VPN の経路は除く)
+network_ids() {
+  local gw mac
+  if [ -n "${AGENT_WEB_NETWORK_CMD:-}" ]; then
+    bash -c "$AGENT_WEB_NETWORK_CMD" 2>/dev/null | while read -r mac; do [ -n "$mac" ] && norm_mac "$mac" && echo; done
+    return 0
+  fi
+  netstat -rn -f inet 2>/dev/null | awk '$1 == "default" && $2 ~ /^[0-9.]+$/ && $4 ~ /^en[0-9]+$/ { print $2 }' | sort -u | while read -r gw; do
+    mac=$(gateway_mac "$gw") && echo "$mac"
+  done | sort -u
+}
+
+# 登録済みの自宅(MAC)を 1 行ずつ(# 以降はコメント)
+home_ids() {
+  local line
+  [ -r "$HOME_FILE" ] || return 0
+  sed -e 's/#.*//' "$HOME_FILE" | tr -d ' \t\r' | while read -r line; do
+    [ -n "$line" ] && norm_mac "$line" && echo
+  done
+}
+
+# いまのネットワークが自宅か(登録のどれかと指紋が一致する)
+at_home() {
+  local ids homes id
+  ids=$(network_ids)
+  [ -n "$ids" ] || return 1
+  homes=$(home_ids)
+  [ -n "$homes" ] || return 1
+  while read -r id; do
+    printf '%s\n' "$homes" | grep -Fxq -- "$id" && return 0
+  done <<< "$ids"
+  return 1
+}
+
+write_home() {  # 標準入力の内容で登録ファイルを置き換える(途中で止まっても壊れない)
+  (umask 077; mkdir -p "$(dirname "$HOME_FILE")" && cat > "$HOME_FILE.tmp.$$" && mv -f "$HOME_FILE.tmp.$$" "$HOME_FILE") 2>/dev/null
+}
+
+in_list() {  # $1 = 1 行ずつの一覧、$2 = 探す行
+  printf '%s\n' "$1" | grep -Fxq -- "$2"
+}
+
+do_home() {
+  local ids homes id fresh="" hit=0 shown line key
+  ids=$(network_ids)
+  shown=$(printf '%s' "$ids" | tr '\n' ' ')
+  case $sub in
+    list) home_ids; return 0 ;;
+    "" | status)
+      if [ -z "$ids" ]; then say "ネットワークを取得できません(デフォルト経路が無い)"; return 1; fi
+      if at_home; then say "自宅です ($shown)"; else say "自宅ではありません ($shown)"; fi
+      return 0
+      ;;
+    toggle)
+      if at_home; then sub=remove; else sub=add; fi
+      ;;
+  esac
+  if [ -z "$ids" ]; then say "ネットワークを取得できません(デフォルト経路が無い)"; return 1; fi
+  homes=$(home_ids)
+  case $sub in
+    add)
+      while read -r id; do
+        in_list "$homes" "$id" || fresh="$fresh$id"$'\n'
+      done <<< "$ids"
+      if [ -z "$fresh" ]; then say "このネットワークは登録済みです ($shown)"; return 0; fi
+      {
+        if [ -s "$HOME_FILE" ]; then
+          cat "$HOME_FILE"
+          [ -n "$(tail -c 1 "$HOME_FILE")" ] && echo  # 末尾に改行が無ければ足す(行がつながらないように)
+        fi
+        while read -r id; do
+          [ -n "$id" ] && printf '%s  # %s 追加\n' "$id" "$(date +%Y-%m-%d)"
+        done <<< "$fresh"
+      } | write_home
+      say "このネットワークを自宅に登録しました ($shown)。auto なら、ここで ON になります"
+      ;;
+    remove)
+      while read -r id; do
+        in_list "$homes" "$id" && hit=1
+      done <<< "$ids"
+      if [ "$hit" != 1 ]; then say "このネットワークは自宅に登録されていません ($shown)"; return 0; fi
+      while IFS= read -r line; do
+        key=$(printf '%s' "$line" | sed -e 's/#.*//' | tr -d ' \t\r')
+        [ -n "$key" ] && key=$(norm_mac "$key")
+        if [ -n "$key" ] && in_list "$ids" "$key"; then continue; fi
+        printf '%s\n' "$line"
+      done < "$HOME_FILE" | write_home
+      say "このネットワークを自宅から外しました ($shown)"
+      ;;
+  esac
+}
+
+# auto: いまのネットワークが自宅なら起動、そうでなければ(2 回続けたら)停止。$1 = now は、モードを切り替えた直後
+# (続けずにすぐ判定どおりにして、変化が無くても状態を言う)
+do_auto() {
+  local now=${1:-} miss=0 age
+  [ "$(current_mode)" = auto ] || return 0
+  # 同時に動かない(複数の sidebar が呼ぶ)。取れなければ、別の誰かが判定しているので何もしない
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  if ! mkdir "$AUTO_LOCK" 2>/dev/null; then
+    age=$(( $(date +%s) - $(stat -f %m "$AUTO_LOCK" 2>/dev/null || echo 0) ))
+    [ "$age" -gt "$AUTO_LOCK_STALE_SEC" ] && rmdir "$AUTO_LOCK" 2>/dev/null
+    return 0
+  fi
+  trap 'rmdir "$AUTO_LOCK" 2>/dev/null' EXIT
+  NOTE_PREFIX="auto: "
+  [ "$now" = now ] && NOTE_PREFIX="モード auto: "
+  NO_COPY=1
+  if at_home; then
+    rm -f "$AUTO_MISS_FILE"
+    if running_pid >/dev/null; then
+      [ "$now" = now ] && say "自宅のネットワークです (ON)"
+    else
+      say "自宅のネットワークです。起動します"
+      do_start
+    fi
+  else
+    if [ "$now" = now ] && [ -z "$(home_ids)" ]; then
+      say "自宅が未登録です(H で、いまのネットワークを登録)。登録するまで起動しません"
+    fi
+    if running_pid >/dev/null; then
+      [ -r "$AUTO_MISS_FILE" ] && read -r miss < "$AUTO_MISS_FILE"
+      [[ $miss =~ ^[0-9]+$ ]] || miss=0
+      miss=$((miss + 1))
+      if [ "$now" = now ] || [ "$miss" -ge "$AUTO_MISS_MAX" ]; then
+        rm -f "$AUTO_MISS_FILE"
+        say "自宅のネットワークではありません。止めます"
+        do_stop
+      else
+        printf '%s\n' "$miss" > "$AUTO_MISS_FILE" 2>/dev/null
+      fi
+    else
+      rm -f "$AUTO_MISS_FILE"
+      [ "$now" = now ] && [ -n "$(home_ids)" ] && say "自宅のネットワークではありません (OFF)"
+    fi
+  fi
+  rmdir "$AUTO_LOCK" 2>/dev/null
+  trap - EXIT
+  return 0
+}
+
+do_mode() {
+  local cur next
+  cur=$(current_mode)
+  if [ -z "$sub" ]; then echo "$cur"; return 0; fi
+  next=$sub
+  if [ "$sub" = next ]; then
+    case $cur in auto) next=on ;; on) next=off ;; *) next=auto ;; esac
+  fi
+  set_mode "$next" || { say "モードを保存できません ($MODE_FILE)"; return 1; }
+  rm -f "$AUTO_MISS_FILE"
+  case $next in
+    on) NOTE_PREFIX="モード on: "; do_start ;;
+    off) NOTE_PREFIX="モード off: "; do_stop ;;
+    auto) do_auto now ;;
+  esac
+}
+
 case $action in
+  mode) do_mode ;;
+  auto) do_auto ;;
+  home) do_home ;;
   toggle)
     if running_pid >/dev/null; then do_stop; else do_start; fi
     ;;
