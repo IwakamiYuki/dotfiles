@@ -116,6 +116,7 @@ class SidebarUsageTest(unittest.TestCase):
                 "AGENT_SIDEBAR_CLAUDE_BIN=true",
                 f"AGENT_SIDEBAR_ALERT_STATE={self.dir}/none",
                 f"AGENT_SIDEBAR_BELL_STATE={self.dir}/bell-state",  # 普段の sidebar と記録を共有しない
+                "AGENT_SIDEBAR_SOUND_CMD=true",  # 本物の音は鳴らさない(音のテストだけが extra_env で偽物に替える)
                 f"AGENT_SIDEBAR_TITLE_CACHE={self.dir}/titles",
                 f"AGENT_SIDEBAR_CLAUDE_CACHE={self.dir}/claude-cache",
                 f"AGENT_SIDEBAR_SESSIONS_DIR={self.dir}/sessions",
@@ -1204,6 +1205,138 @@ class SidebarUsageTest(unittest.TestCase):
         self.wait_screen(lambda scr: "WORKING" in scr)
         time.sleep(3)
         self.assertEqual(self.bells(), base)
+
+    # --- 状態ごとの音(afplay)。BEL と同じ契機で、WAITING = Sosumi、DONE = Glass が既定 ---
+
+    def fake_sound_cmd(self):
+        """afplay の代わり。受け取ったファイルのパスを 1 行ずつログへ書く。"""
+        fake = os.path.join(self.dir, "fake-sound")
+        log = os.path.join(self.dir, "sounds.log")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/bash\necho "$1" >> {log}\n')
+        os.chmod(fake, 0o755)
+        return fake, log
+
+    def sounds(self, log):
+        if not os.path.exists(log):
+            return []
+        with open(log) as f:
+            return f.read().split()
+
+    def wait_sounds(self, log, expected):
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and self.sounds(log) != expected:
+            time.sleep(0.2)
+        self.assertEqual(self.sounds(log), expected)
+
+    def test_音_WAITING_は_Sosumi_を_1回だけ鳴らす(self):
+        fake, log = self.fake_sound_cmd()
+        self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake})
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_sounds(log, ["/System/Library/Sounds/Sosumi.aiff"])
+        time.sleep(5)  # 同じ WAITING のままでは、何度も鳴らさない
+        self.assertEqual(self.sounds(log), ["/System/Library/Sounds/Sosumi.aiff"])
+
+    def test_音_作業中は鳴らさない(self):
+        fake, log = self.fake_sound_cmd()
+        self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake})
+        self.set_codex_thread(status="active", flags="")
+        self.wait_screen(lambda scr: "WORKING" in scr)
+        time.sleep(3)
+        self.assertEqual(self.sounds(log), [])
+
+    def test_音_音だけ_off_にしても_BEL_は鳴る(self):
+        fake, log = self.fake_sound_cmd()
+        base = self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake, "AGENT_SIDEBAR_BELL_SOUND": "off"})
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_bells(base + 1)
+        time.sleep(1)
+        self.assertEqual(self.sounds(log), [])
+
+    def test_音_状態ごとに音を変えられて_off_にもできる(self):
+        fake, log = self.fake_sound_cmd()
+        self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake, "AGENT_SIDEBAR_SOUND_WAITING": "Ping"})
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_sounds(log, ["/System/Library/Sounds/Ping.aiff"])
+
+    def test_音_その状態だけ_off_ならその状態は鳴らさない(self):
+        fake, log = self.fake_sound_cmd()
+        base = self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake, "AGENT_SIDEBAR_SOUND_WAITING": "off"})
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_bells(base + 1)
+        time.sleep(1)
+        self.assertEqual(self.sounds(log), [])
+
+    def test_音_tmux_の_option_で音を選べる(self):
+        fake, log = self.fake_sound_cmd()
+        self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake})
+        self.tmux("set-option", "-g", "@agent_sidebar_sound_waiting", "Funk")
+        time.sleep(2.5)  # option は収集のたびに読まれる
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_sounds(log, ["/System/Library/Sounds/Funk.aiff"])
+
+    def test_音_ファイルのパスも指定できる(self):
+        fake, log = self.fake_sound_cmd()
+        custom = os.path.join(self.dir, "my sound.aiff")  # 空白を含むパスでも壊れない
+        with open(custom, "wb") as f:
+            f.write(b"x")
+        self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake})
+        self.tmux("set-option", "-g", "@agent_sidebar_sound_waiting", custom)  # 環境変数は空白で分かれてしまうので、option で渡す
+        time.sleep(2.5)  # option は収集のたびに読まれる
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and not os.path.exists(log):
+            time.sleep(0.2)
+        with open(log) as f:
+            self.assertEqual(f.read().strip(), custom)
+
+    def test_音_存在しない音の名前なら鳴らさない(self):
+        fake, log = self.fake_sound_cmd()
+        base = self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake, "AGENT_SIDEBAR_SOUND_WAITING": "NoSuchSound"})
+        self.set_codex_thread(status="active", flags="waitingOnApproval")
+        self.wait_bells(base + 1)
+        time.sleep(1)
+        self.assertEqual(self.sounds(log), [])
+
+    def start_claude_pane(self):
+        """Claude 風のプロセスを pane で動かし、claude agents のキャッシュに idle で載せる。tmux の親 pid(DONE の判定のキー)を返す。"""
+        cwd = os.path.realpath(self.dir)
+        main = self.codex_panes()[0]
+        self.tmux("respawn-pane", "-k", "-t", main, "-c", cwd, "exec -a claude sleep 600")
+        pid = self.tmux("display-message", "-p", "-t", main, "#{pane_pid}").stdout.strip()
+        parent = subprocess.run(["ps", "-o", "ppid=", "-p", pid], capture_output=True, text=True).stdout.strip()
+        with open(os.path.join(self.dir, "claude-cache"), "w") as f:
+            f.write(f"C|{pid}|idle||{cwd}|名前|sid-test-0001\n")
+        return parent
+
+    def test_音_DONE_は_Glass_を鳴らす(self):
+        fake, log = self.fake_sound_cmd()
+        self.render(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake})
+        parent = self.start_claude_pane()
+        self.wait_screen(lambda scr: "IDLE" in scr)
+        self.attach_client()
+        time.sleep(1.5)
+        base = self.bells()
+        with open(os.path.join(self.dir, "none"), "w") as f:  # 完了して未読 = DONE
+            f.write(f"{parent}:idle:1\n")
+        self.wait_screen(lambda scr: "DONE" in scr)
+        self.wait_bells(base + 1)
+        self.wait_sounds(log, ["/System/Library/Sounds/Glass.aiff"])
+
+    def test_音_bell_が_waiting_なら_DONE_では鳴らさない(self):
+        fake, log = self.fake_sound_cmd()
+        self.render(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake, "AGENT_SIDEBAR_BELL": "waiting"})
+        parent = self.start_claude_pane()
+        self.wait_screen(lambda scr: "IDLE" in scr)
+        self.attach_client()
+        time.sleep(1.5)
+        base = self.bells()
+        with open(os.path.join(self.dir, "none"), "w") as f:
+            f.write(f"{parent}:idle:1\n")
+        self.wait_screen(lambda scr: "DONE" in scr)
+        time.sleep(3)
+        self.assertEqual(self.bells(), base)
+        self.assertEqual(self.sounds(log), [])
 
     def test_ベル_off_なら鳴らさない(self):
         base = self.start_bell_session(extra_env={"AGENT_SIDEBAR_BELL": "off"})

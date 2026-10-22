@@ -2476,6 +2476,10 @@ read_key() {
 BELL_STATE_FILE="${AGENT_SIDEBAR_BELL_STATE:-/tmp/tmux-agent-sidebar-bell.txt}"
 # 落ちた sidebar が取り残したロックを、この秒数を超えたら捨てる(通常のロックは数 ms)
 BELL_LOCK_STALE_SEC=10
+# BEL と同じ契機で、状態ごとの音も鳴らす(afplay)。WAITING = 確認が要る(急ぎ)、DONE = 完了(軽い音)。名前は /System/Library/Sounds/<名前>.aiff
+SOUND_CMD="${AGENT_SIDEBAR_SOUND_CMD:-afplay}"
+SOUND_WAITING_DEFAULT=Sosumi
+SOUND_DONE_DEFAULT=Glass
 
 ring_bell() {
   local tty
@@ -2484,9 +2488,31 @@ ring_bell() {
   done < <(tmux list-clients -F '#{client_tty}' 2>/dev/null)
 }
 
+# 状態($1 = waiting | done)の音を鳴らす(待たない)。@agent_sidebar_bell_sound が off なら全部、
+# @agent_sidebar_sound_waiting / @agent_sidebar_sound_done が off ならその状態だけ鳴らさない。値は /System/Library/Sounds の名前か、音声ファイルのパス
+play_bell_sound() {
+  local value file
+  [ "${AGENT_SIDEBAR_BELL_SOUND:-${opt_bell_sound:-on}}" = off ] && return 0
+  if [ "$1" = waiting ]; then
+    value=${AGENT_SIDEBAR_SOUND_WAITING:-${opt_sound_waiting:-$SOUND_WAITING_DEFAULT}}
+  else
+    value=${AGENT_SIDEBAR_SOUND_DONE:-${opt_sound_done:-$SOUND_DONE_DEFAULT}}
+  fi
+  [ "$value" = off ] && return 0
+  case $value in
+    "~/"*) file="$HOME/${value#\~/}" ;;
+    /*) file=$value ;;
+    *) file="/System/Library/Sounds/$value.aiff" ;;
+  esac
+  [ -r "$file" ] || return 0
+  "$SOUND_CMD" "$file" >/dev/null 2>&1 &
+  disown 2>/dev/null
+  return 0
+}
+
 # mode: all（既定。WAITING と DONE）| waiting | off。tmux の option @agent_sidebar_bell、環境変数 AGENT_SIDEBAR_BELL が先
 bell_check() {
-  local mode=${AGENT_SIDEBAR_BELL:-${opt_bell:-all}} cur="" old="" line i ring=0 lock="$BELL_STATE_FILE.lock" first=0
+  local mode=${AGENT_SIDEBAR_BELL:-${opt_bell:-all}} cur="" old="" line i ring="" lock="$BELL_STATE_FILE.lock" first=0
   [ "$mode" = off ] && return 0
   for ((i = 0; i < AG_N; i++)); do
     [ "${AG_TYPE[i]}" = Shell ] && continue
@@ -2516,7 +2542,8 @@ bell_check() {
       [ -z "$line" ] && continue
       case $'\n'"$old"$'\n' in
         *$'\n'"$line"$'\n'*) ;;
-        *) ring=1 ;;
+        # 新しく現れた状態。WAITING があれば、DONE より急ぐので WAITING の音にする
+        *) [ "${line##*|}" = waiting ] && ring=waiting || [ -n "$ring" ] || ring=done ;;
       esac
     done <<< "$cur"
   fi
@@ -2524,7 +2551,10 @@ bell_check() {
     printf '%s' "$cur" > "$BELL_STATE_FILE.$$" 2>/dev/null && mv -f "$BELL_STATE_FILE.$$" "$BELL_STATE_FILE" 2>/dev/null
   fi
   rmdir "$lock" 2>/dev/null
-  ((ring)) && ring_bell
+  if [ -n "$ring" ]; then
+    ring_bell
+    play_bell_sound "$ring"
+  fi
   return 0
 }
 
@@ -2643,8 +2673,8 @@ while :; do
 
   if [ -z "$COLLECT_PID" ] && ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_last_sel}|#{@agent_sidebar_last_view}|#{@agent_sidebar_daily_dir}|#{@agent_sidebar_bell}' 2>/dev/null)
-    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_last_sel opt_last_view opt_daily_dir opt_bell <<< "$opts"
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_last_sel}|#{@agent_sidebar_last_view}|#{@agent_sidebar_daily_dir}|#{@agent_sidebar_bell}|#{@agent_sidebar_bell_sound}|#{@agent_sidebar_sound_waiting}|#{@agent_sidebar_sound_done}' 2>/dev/null)
+    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_last_sel opt_last_view opt_daily_dir opt_bell opt_bell_sound opt_sound_waiting opt_sound_done <<< "$opts"
     [ "$opt_cockpit" = 1 ] && COCKPIT=1 || COCKPIT=0
     [ "$COCKPIT" = 1 ] && [ "$opt_view" = daily ] && DAILY_VIEW=1 || DAILY_VIEW=0
     [ "$opt_scope" = "all" ] && SCOPE_ALL=1 || SCOPE_ALL=0
