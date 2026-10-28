@@ -11,6 +11,7 @@ import pty
 import re
 import select
 import shutil
+import signal
 import struct
 import subprocess
 import tempfile
@@ -1598,6 +1599,64 @@ class SidebarSurvivalTest(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 subprocess.run(["bash", "-c", self.READ_LOOP], stdin=idle.stdout, capture_output=True, timeout=4)
             idle.kill()
+
+    # sidebar から関数だけを切り出して動かす(tmux は使わない)。life_log は何もしない偽物にする
+    EXTRACT_WATCHDOG = (
+        f'eval "$(sed -n \'/^WATCHDOG_SEC=/,/^WATCHDOG_STRIKES=/p;/^watchdog_kill()/,/^}}/p;/^cpu_watchdog()/,/^}}/p;/^parent_gone()/,/^}}/p\' {SIDEBAR})"\n'
+        'life_log() { :; }\n'
+    )
+
+    def parent_gone(self, parent_pid):
+        script = self.EXTRACT_WATCHDOG + f'PARENT0={parent_pid}\nparent_gone'
+        return subprocess.run(["bash", "-c", script], capture_output=True, timeout=5).returncode == 0
+
+    def test_親が居なくなったら_parent_gone_が真になる(self):
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        self.assertTrue(self.parent_gone(dead.pid))
+
+    def test_親が生きていれば_parent_gone_は偽(self):
+        with subprocess.Popen(["sleep", "5"]) as alive:
+            self.assertFalse(self.parent_gone(alive.pid))
+            alive.kill()
+
+    def test_すでに孤児として起動したとき_PID_1_は親の消失とみなさない(self):
+        self.assertFalse(self.parent_gone(1))
+        self.assertFalse(self.parent_gone(0))
+
+    def run_watchdog(self, target, seconds, strikes=2):
+        """target を見張るウォッチドッグを seconds 秒だけ動かす(間隔 1 秒、strikes 回続いたら SIGKILL)。"""
+        env = {**os.environ, "AGENT_SIDEBAR_WATCHDOG_SEC": "1", "AGENT_SIDEBAR_WATCHDOG_STRIKES": str(strikes)}
+        script = self.EXTRACT_WATCHDOG + f'cpu_watchdog {target.pid}'
+        try:
+            subprocess.run(["bash", "-c", script], env=env, capture_output=True, timeout=seconds)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def test_CPU_を使い切り続ける暴走は_SIGKILL_で止める(self):
+        # SIGTERM を無視する暴走(ハンドラの中で回り続けた実例と同じく、trap では止まらない)
+        with subprocess.Popen(["bash", "-c", 'trap "" TERM; while :; do :; done']) as busy:
+            self.run_watchdog(busy, seconds=10)
+            self.assertEqual(busy.poll(), -signal.SIGKILL, "10 秒たっても暴走が止まりませんでした")
+
+    def test_CPU_を使っていない_sidebar_は止めない(self):
+        with subprocess.Popen(["sleep", "10"]) as idle:
+            self.run_watchdog(idle, seconds=5)
+            self.assertIsNone(idle.poll())
+            idle.kill()
+
+    def test_見張る相手が居なくなったらウォッチドッグも終了する(self):
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        started = time.time()
+        self.run_watchdog(gone, seconds=5)
+        self.assertLess(time.time() - started, 4)
+
+    def test_cleanup_はウォッチドッグを止めない(self):
+        # 終了処理(cleanup)のあとで回り続ける暴走が実在した。その最中に見張りが居ないと止められない
+        with open(SIDEBAR) as f:
+            body = f.read().split("\ncleanup() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertNotIn("WATCHDOG_PID", body)
 
     def test_本体は関数に包み_main_と_exit_を同じ行に置く(self):
         # 起動中にファイルを書き換えられても暴走しないための形。main と exit が別の行だと、main から戻ったあとに

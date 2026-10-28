@@ -225,6 +225,8 @@ life_log() {
 cleanup() {
   local status=$?
   life_log "EXIT reason=${EXIT_REASON:-unknown} status=$status"
+  # ウォッチドッグはここで止めない: SIGHUP の trap → cleanup のあとで終了できずに回り続けた実例があり(life.log に EXIT が残ったまま
+  # CPU 100%)、そのときこそ見張りが要る。本体が居なくなれば、ウォッチドッグが自分で終了する
   # cockpit の sidebar が終了するとき、枠に入っている Agent を元の位置へ戻し(戻さないと、cockpit を閉じたときに
   # Agent も終了する)、不要になった交換用の枠も消す(cockpit window ごと閉じる)
   [ "${COCKPIT:-0}" = 1 ] && "$COCKPIT_BIN" teardown >/dev/null 2>&1
@@ -2434,6 +2436,44 @@ note_read_failure() {
   return 0
 }
 
+# 起動したときの親(tmux サーバー)が居なくなったら、pane は残っていない。tty が消えた sidebar が取り残されて
+# CPU を使い続けた実例の対策。PARENT0 が 1 以下(すでに孤児として起動)のときは判定しない(kill -0 1 は権限エラーになるため)
+parent_gone() {
+  ((PARENT0 > 1)) && ! kill -0 "$PARENT0" 2>/dev/null
+}
+
+# CPU を使い切る暴走の、最後の保険。シグナルハンドラの中で回り続けると、入力ループにも戻れず、SIGTERM の trap も
+# 効かなかった(実例。5 日間 CPU 100%、ゾンビの親にもなった)。本体の中の確認は届かないので、別プロセスで見張って SIGKILL で止める。
+# 通常の sidebar は数 % なので、WATCHDOG_CPU_PCT 以上が WATCHDOG_STRIKES 回続いたときだけ止める(一時的な再描画の山では止めない)
+WATCHDOG_SEC=${AGENT_SIDEBAR_WATCHDOG_SEC:-20}
+WATCHDOG_CPU_PCT=${AGENT_SIDEBAR_WATCHDOG_CPU_PCT:-60}
+WATCHDOG_STRIKES=${AGENT_SIDEBAR_WATCHDOG_STRIKES:-3}
+watchdog_kill() {
+  life_log "WATCHDOG kill pid=$1 cpu=$2%"
+  # SIGKILL は cleanup を走らせないので、cockpit の枠に入った Agent を元へ戻すのはここで済ませる(戻さないと Agent も終了しうる)
+  [ "$(tmux display-message -p -t "${TMUX_PANE:-}" '#{@agent_cockpit}' 2>/dev/null)" = 1 ] && "$COCKPIT_BIN" teardown >/dev/null 2>&1
+  kill -KILL "$1" 2>/dev/null
+  return 0
+}
+cpu_watchdog() {
+  local pid=$1 strikes=0 cpu
+  trap - EXIT INT TERM HUP
+  while sleep "$WATCHDOG_SEC"; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    cpu=$(ps -o %cpu= -p "$pid" 2>/dev/null) || return 0
+    cpu=${cpu//[[:space:]]/}
+    cpu=${cpu%%.*}
+    if [[ $cpu =~ ^[0-9]+$ ]] && ((cpu >= WATCHDOG_CPU_PCT)); then
+      if ((++strikes >= WATCHDOG_STRIKES)); then
+        watchdog_kill "$pid" "$cpu"
+        return 0
+      fi
+    else
+      strikes=0
+    fi
+  done
+}
+
 # 入力を 1 件読み、KEY に up / down / enter / refresh / click / other を、
 # クリックなら CLICK_ROW に行番号を入れる。タイムアウト時は KEY が空になる
 read_key() {
@@ -2686,7 +2726,12 @@ COLLECT_PID=""
 COLLECT_STARTED=0
 COLLECT_FIRST=1
 
+PARENT0=$PPID
+cpu_watchdog "$MAIN_PID" &
+WATCHDOG_PID=$!
+
 while :; do
+  parent_gone && { EXIT_REASON=parent_gone; exit 0; }
   # 裏の収集が終わっていれば、結果を取り込む。取り込めるのは入力待ち(最大 TICK 秒)から戻ったときだけ
   if [ -n "$COLLECT_PID" ]; then
     if [ -f "$COLLECT_FILE" ]; then
