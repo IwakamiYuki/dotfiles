@@ -77,6 +77,7 @@ brew install coreutils                    # GNU coreutils（gtimeout で使用�
 brew install reattach-to-user-namespace  # tmux クリップボード連携
 brew install lazygit                      # Git UI（Ctrl-t g で起動）
 brew install terminal-notifier            # Claude Code 通知（フック用）
+brew install ical-buddy                   # sidebar の「次の予定」カード（Mac のカレンダー。無くても他は動く）
 go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 ```
 
@@ -186,6 +187,17 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
     - ノートへは書き込まない（会話ログには機密が含まれうるうえ、vault は git で同期されるため。貼るのは人が確認してから）
     - 画面が縦に収まらないときは、作業の一覧を古いリポジトリから省いて `… 他 N 件` にし、「やったこと」は 8 行で切る（`--height`。`c` のコピーは省かない）
     - 単体でも使える: `tmux-agent-daily`（画面）/ `--markdown`（貼る形）/ `--print-dir`（ディレクトリの解決だけ）
+- **予定のカード**（Mac のカレンダー）: Daily カードの下に、同じ `── NOTES ──` の見出しで 3 行のカードを出す（種別は内部で `Cal`）。1 行目 `📅 予定名`、2 行目 `10:30-11:00`（同じ開始の予定が他にもあれば ` +1`）、3 行目 状態ピル + 右寄せの残り時間（`in 25m` / `25m left`。ASCII にしているのは、右寄せの桁数を文字数で数えるため）
+  - **状態は 3 つ**（`read_calendar`。AG_STATUS に `cal_*`）: `NEXT`（IDLE と同じ緑。12 時間先まで。`CALENDAR_HORIZON_SEC`）/ `SOON`（琥珀色。開始の 10 分前から。`CALENDAR_SOON_SEC`）/ `NOW`（**WORKING と同じ黄色 + スピナー**。進行中）。開始前の予定が SOON の範囲に入ったら、進行中の予定よりそちらを優先する（次の予定に気づくため）。終わった予定は出さない
+  - 選べるカードで、`j` / `k` の流れの中にある。cockpit は、選ぶと右の枠に **今日と明日の予定**（`tmux-agent-calendar --agenda`。window option `@agent_cockpit_view=calendar`。slot が 10 秒ごとに描き直す。終わった予定は薄く、進行中は `▶` と黄色、会議の URL は予定の下）を出す。`Enter` / クリックは **会議の URL を開く**（無ければ `open -a Calendar`）。`n` / `R` / `f` は「Agent ではありません」と断る。プレビューの対象外。選択の保存・復元は Daily カードと同じ（`@cal|Cal`）。表示の仕組み（右の枠の画面の名前）は `VIEW_NAME`（`daily` | `calendar`）
+  - **取得は `tmux-agent-calendar`**（Python。icalBuddy を呼んで、`/tmp/tmux-agent-sidebar-calendar.txt` に `F|取得時刻` と `E|開始|終了|タイトル|会議の URL` を書く）。sidebar が `CALENDAR_TTL`（30 秒）ごとに裏で起動する（collect の中。`.attempt` で重複を防ぐ）。取得が 5 分（`CALENDAR_MAX_AGE`）止まっていたら、古い予定は出さない。**icalBuddy が無い Mac では何もしない**（カードが出ないだけ）
+  - 取得元の icalBuddy は `brew install ical-buddy`（EventKit から読むので、Calendar.app に入っている iCloud / Google / Exchange / CalDAV が全部取れる。約 0.05 秒）。**初回は、macOS のカレンダーの許可のダイアログが出る**（許可はターミナルアプリ = Ghostty に付く。許可が無いと、**エラーにならず予定が空で返る**ので、カードが出ないだけに見える。`tmux-agent-calendar --check` でカレンダーの件数を確認できる。0 件なら、システム設定 → プライバシーとセキュリティ → カレンダー）
+  - **終日の予定は除く**（`-ea`。祝日・誕生日もこれで消える）。**辞退した予定は除けない**（icalBuddy が参加ステータスを出さないため。出てしまう）。除きたいカレンダーは環境変数 `AGENT_CALENDAR_EXCLUDE`（カンマ区切り）/ 対象を絞るなら `AGENT_CALENDAR_INCLUDE`
+  - 会議の URL は、予定の本文・場所・URL から Zoom / Google Meet / Teams / Webex のものを 1 つ拾う（社内ツールの URL などは拾わない）。複数のカレンダーに同じ予定があれば（開始・終了・タイトルが同じ）1 つにする
+  - 切り替え: tmux の option `@agent_sidebar_calendar off`（環境変数 `AGENT_SIDEBAR_CALENDAR` が先。2 秒以内に効く）で、取得もカードも止まる
+  - **直接カレンダーのデータベースを読む案はやめた**: 広い権限（フルディスクアクセス）が要り、スキーマが非公開で、繰り返し予定の展開が自前になるため
+  - 環境変数（主にテスト用）: `AGENT_SIDEBAR_CALENDAR_BIN`（取得コマンド。テストでは `true`）/ `AGENT_SIDEBAR_CALENDAR_CACHE` / `AGENT_CALENDAR_ICALBUDDY`（icalBuddy の代わり）/ `AGENT_CALENDAR_CACHE` / `AGENT_CALENDAR_NOW`（`--agenda` の「いま」）
+  - テスト: `test_agent_calendar.py`（偽の icalBuddy で、解析・URL・重複・失敗時・画面）、`test_agent_sidebar_usage.py` の `test_cal_*`（キャッシュを直接書いて、状態・色・Enter・cockpit の表示）
 - sidebar 上で `t` → Obsidian の **タスク**（vault の `12-task/12-01-tasks`。1 ファイル 1 タスク）を **ポップアップで一覧・完了にする**（`tmux-agent-tasks`。通常の sidebar・cockpit のどちらでも効く。Daily Note のテンプレートが埋め込む `active-tasks.base` の表と同じ元データ）
   - **Tasks 欄**: TOOLS 区画の WEB 欄の上に `📋 Tasks 123 (80 old)  t list` を出す。件数は未完了（`done: true` の完了待ちは数えない）、`old` は **30 日を超えて残っている**もの（黄）。ディレクトリが決まらなければ欄ごと出さない（TOOLS 区画は 2 行に戻る）。幅に収まらないときは `(N old)` → ヒントの順に省く。数えるのに全ファイルを読むので `TASKS_REFRESH_SEC`（30 秒）ごと
   - **完了 = `done: true` にするだけ**: vault の GitHub Actions（`daily-task-organizer.yml`、毎日 2:00 JST）が、前日の Daily Note から Claude がタスクを作ったあと、`^done: true$` に一致する行を持つファイルを **削除**する（`done` のまま残るタスクは普段ほとんど無い）。そのため `x` は frontmatter の done 行を **ちょうど `done: true`**（大文字・引用符なし。CI の grep と同じ書式）にするだけで、移動も削除もしない。もう一度 `x` で `done: false` に戻せる（CI が消すまで）。`done: true` は一覧の最後へ回り、`✓` と薄い色で出る
@@ -414,7 +426,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 - `w`（sidebar）で起動すると、**`.local` の URL（`<scheme>://<Mac の名前>.local:8765/#token=…`）がクリップボードに入る**。`.local` が引けない端末用の IP の URL は、端末に出る（状態ファイルの `ipUrl`）
 - `--no-tls` で HTTP だけにする。HTTP のままだと、トークンと Cookie が LAN で平文になる（信頼できる自宅の Wi-Fi でだけ使う）
 
-**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（`test_agent_daily.py` は Daily ダッシュボード、`test_agent_cockpit_daily.py` は cockpit の `view` と slot。`test_agent_codex_usage.py` は Codex の使用量の取得。`test_agent_codex_threads.py` は Codex のスレッド（状態・名前・モデル）の取得。`test_agent_tasks.py` は Obsidian のタスクの一覧・完了。`test_agent_new.py` は `n` の新規 pane 作成（分割できない anchor）。sidebar のテストは `TMUX` を外さず、専用ソケットの別 tmux だけを見る。外すと sidebar が普段の tmux に問い合わせてしまう）（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
+**テスト**: `cd tmux/tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v`（`test_agent_daily.py` は Daily ダッシュボード、`test_agent_cockpit_daily.py` は cockpit の `view` と slot。`test_agent_codex_usage.py` は Codex の使用量の取得。`test_agent_codex_threads.py` は Codex のスレッド（状態・名前・モデル）の取得。`test_agent_tasks.py` は Obsidian のタスクの一覧・完了。`test_agent_calendar.py` は Mac のカレンダーの取得・予定表。`test_agent_new.py` は `n` の新規 pane 作成（分割できない anchor）。sidebar のテストは `TMUX` を外さず、専用ソケットの別 tmux だけを見る。外すと sidebar が普段の tmux に問い合わせてしまう）（sidebar の USAGE 欄は `test_agent_sidebar_usage.py`。専用ソケットの別 tmux で本物の sidebar を描画して読む）（検出・セキュリティ・HTTP / HTTPS の結合・証明書・状態ファイル・入り切りスクリプト。`openssl` と `jq` が必要。結合テストは専用ソケット `tmux -S` の別 tmux サーバーだけを使い、普段の tmux には触れない。
 入り切りスクリプトのテストは、`AGENT_WEB_CLIP_CMD`（コピー先のコマンド）を偽物にして、本物のクリップボードを書き換えない。`jq` が必要）、
 `cd tmux/tests && node --test`（`assets/agent-web/ansi.js` の ANSI 変換）。
 環境変数 `TMUX_AGENT_WEB_SOCKET`（tmux のソケットパス）はテスト用。
@@ -599,6 +611,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 │   ├── tmux-agent-restart         # sidebar の R で呼ばれる Claude Code の再起動（終了 → --resume で入り直す）。--fork は f の複製（止めない）
 │   ├── tmux-agent-new             # sidebar の n で呼ばれる、リポジトリでの新規 pane + Claude / Codex の新規起動
 │   ├── tmux-agent-daily           # 前回の Daily Note 更新以降の Claude / Codex の作業を一覧（--markdown でノートに貼る形）
+│   ├── tmux-agent-calendar        # Mac のカレンダー（icalBuddy）の予定を取得して /tmp/tmux-agent-sidebar-calendar.txt へ。sidebar の「次の予定」カードと、cockpit の予定表（--agenda）
 │   ├── tmux-agent-tasks           # sidebar の t で開く、Obsidian のタスク（12-task/12-01-tasks）の一覧・完了（done: true。CI が毎日削除）
 │   ├── tmux-agent-codex-usage     # Codex の今月の使用量（クレジット）を取得して /tmp/codex-usage.json へ。sidebar の USAGE 欄が読む
 │   ├── tmux-agent-codex-threads   # Codex の常駐デーモンから、起動中のスレッドの状態・名前・モデルを取得して /tmp/tmux-agent-sidebar-codex.txt へ。sidebar の Codex カードが読む

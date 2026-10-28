@@ -24,6 +24,7 @@ class CockpitDailyTest(unittest.TestCase):
         self.sock = os.path.join(self.dir, "s")
         self.addCleanup(self.cleanup)
         self.make_daily_fixture()
+        self.make_fake_icalbuddy()
         env = dict(os.environ)
         env.pop("TMUX", None)
         env.update(
@@ -32,6 +33,8 @@ class CockpitDailyTest(unittest.TestCase):
             AGENT_DAILY_CODEX_SESSIONS=os.path.join(self.dir, "codex"),
             AGENT_DAILY_TITLE_DIR=os.path.join(self.dir, "titles"),
             AGENT_DAILY_NO_TMUX="1",
+            AGENT_CALENDAR_ICALBUDDY=os.path.join(self.dir, "fake-icalbuddy"),
+            AGENT_CALENDAR_CACHE=os.path.join(self.dir, "calendar-cache.txt"),
         )
         os.makedirs(env["AGENT_DAILY_TITLE_DIR"])
         # サーバーは最初のクライアントの環境を引き継ぐ。slot（ダッシュボードを描く）はこの環境で動く
@@ -70,6 +73,14 @@ class CockpitDailyTest(unittest.TestCase):
         recent = time.time() - 600
         os.utime(session, (recent, recent))
 
+    def make_fake_icalbuddy(self):
+        """明日の 10:00 の予定が 1 つだけ返る、偽の icalBuddy(予定表の画面の確認用。本物のカレンダーには触れない)。"""
+        tomorrow = time.strftime("%Y-%m-%d", time.localtime(time.time() + 86400))
+        path = os.path.join(self.dir, "fake-icalbuddy")
+        with open(path, "w") as f:
+            f.write(f"#!/bin/sh\necho '{tomorrow} at 10:00 - 11:00 ¦ カレンダー検証用の予定'\n")
+        os.chmod(path, 0o755)
+
     def tmux(self, *args):
         return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True)
 
@@ -103,6 +114,22 @@ class CockpitDailyTest(unittest.TestCase):
         self.assertIn("ダッシュボード検証用の作業", screen)
         self.assertIn("myrepo", screen)
         self.assertIn("4h", screen)
+
+    def test_view_calendar_で_slot_が_予定表を描く(self):
+        self.cockpit("view", "calendar")
+        self.assertEqual(self.view_option(), "calendar")
+        screen = self.wait_for(self.slot, "カレンダー検証用の予定")
+        self.assertIn("10:00-11:00", screen)
+        self.assertIn("会議を開く", screen)
+
+    def test_view_calendar_も_表示中の_Agent_を元の_window_へ戻し_show_で解除される(self):
+        self.cockpit("show", self.agent)
+        self.cockpit("view", "calendar")
+        self.assertEqual(self.shown_option(), "")
+        self.assertEqual(self.pane_window(self.agent), "work")
+        self.wait_for(self.slot, "カレンダー検証用の予定")
+        self.cockpit("show", self.agent)
+        self.assertEqual(self.view_option(), "")
 
     def test_ダッシュボードには_操作のヒントが出る(self):
         self.cockpit("view", "daily")

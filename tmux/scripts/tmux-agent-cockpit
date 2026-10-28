@@ -14,15 +14,16 @@
 #   restore: Agent を元へ戻すだけ（slot は cockpit に残る）
 #   heal   : 戻し忘れ・Agent の終了で壊れた状態を直す（sidebar 起動時と、Agent が消えたときに呼ぶ）
 #
-# Usage: tmux-agent-cockpit open | show <pane_id> | view <daily|none> | restore | teardown | close | heal
+# Usage: tmux-agent-cockpit open | show <pane_id> | view <daily|calendar|none> | restore | teardown | close | heal
 #
 # view daily: 右の枠に Agent ではなく Daily ダッシュボード（tmux-agent-daily の画面）を出す。Agent を元へ戻してから、
 #   window option @agent_cockpit_view=daily を立てる。描くのは slot（Agent の pane は入れ替えない）。
+# view calendar: 同じ要領で、今日と明日の予定（tmux-agent-calendar --agenda の画面）を出す。
 #   show で Agent を出すと解除される。view none でも解除できる（Agent は出さない）
 #
 # 状態は tmux の option に持つ:
 #   window @agent_cockpit=1 / @agent_cockpit_slot=<slot の pane_id> / @agent_cockpit_shown=<表示中の Agent の pane_id>
-#          / @agent_cockpit_view=<右の枠に出している Agent 以外の画面。daily のみ。Agent を出している間は空>
+#          / @agent_cockpit_view=<右の枠に出している Agent 以外の画面。daily | calendar。Agent を出している間は空>
 #   pane   @agent_cockpit_slot_pane=1（slot）/ @agent_origin_widx, @agent_origin_wname, @agent_origin_pidx
 #          （表示中 Agent の元の window 番号・名前と pane 番号。sidebar が元の window の見出しの下に、元の並び順で出すために使う）
 
@@ -226,13 +227,13 @@ do_view() {
   cock=$(find_cockpit)
   [ -z "$cock" ] && { echo "cockpit window がありません（prefix + B で作成）" >&2; return 1; }
   case ${1:-} in
-    daily)
+    daily | calendar)
       do_restore
       ensure_slot "$cock" || return 1
-      tmux set-option -w -t "$cock" @agent_cockpit_view daily
+      tmux set-option -w -t "$cock" @agent_cockpit_view "$1"
       ;;
     none) tmux set-option -wu -t "$cock" @agent_cockpit_view 2>/dev/null ;;
-    *) echo "Usage: $0 view <daily|none>" >&2; return 2 ;;
+    *) echo "Usage: $0 view <daily|calendar|none>" >&2; return 2 ;;
   esac
 }
 
@@ -289,5 +290,5 @@ case "${1:-open}" in
   teardown) do_teardown ;;
   close) do_close ;;
   heal) do_heal ;;
-  *) echo "Usage: $0 open | show <pane_id> | view <daily|none> | restore | teardown | close | heal" >&2; exit 2 ;;
+  *) echo "Usage: $0 open | show <pane_id> | view <daily|calendar|none> | restore | teardown | close | heal" >&2; exit 2 ;;
 esac

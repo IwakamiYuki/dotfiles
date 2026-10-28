@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Mac のカレンダー(Calendar.app)の予定を取得して、sidebar 用のキャッシュへ書く。右の枠に出す「今日の予定」の画面(--agenda)も持つ。
+
+取得元: icalBuddy（`brew install ical-buddy`。EventKit から読むので、Calendar.app に入っている iCloud / Google / Exchange などの予定が全部取れる。約 0.05 秒）。
+初回は、macOS のカレンダーの許可のダイアログが出る（許可はターミナルアプリに付く）。許可が無いと、予定が空として返る（エラーにならない）。
+icalBuddy が無い Mac では、何もしないで終わる（sidebar はカードを出さない）。
+
+キャッシュ（sidebar の collect / apply が読む）:
+  F|取得した時刻(秒)
+  E|開始(秒)|終了(秒)|タイトル|会議の URL(無ければ空)      ← 1 予定 1 行。開始の早い順
+今日と明日の予定のうち、終日の予定と、終わった予定を除く。同じ開始・終了・タイトルの重複(複数のカレンダーに同じ予定がある)は 1 つにする。
+取得に失敗したとき(icalBuddy が無い・応答しない)は、キャッシュを書き換えない(古くなれば sidebar が使わなくなる)。
+会議の URL は、予定の本文・場所・URL から、Zoom / Google Meet / Teams / Webex のものを 1 つ拾う(社内ツールの URL などは拾わない)。
+
+使い方:
+  tmux-agent-calendar                  取得して、キャッシュへ書く
+  tmux-agent-calendar --stdout         書かずに、標準出力へ出す(確認用)
+  tmux-agent-calendar --agenda [--color always|never] [--width N] [--height N]   今日と明日の予定の画面
+  tmux-agent-calendar --check          icalBuddy と、カレンダーの許可の確認(カレンダーの数を出す)
+
+環境変数（主にテスト用）:
+  AGENT_CALENDAR_ICALBUDDY    icalBuddy のコマンド(既定 icalBuddy)
+  AGENT_CALENDAR_CACHE        キャッシュのパス(既定 /tmp/tmux-agent-sidebar-calendar.txt)
+  AGENT_CALENDAR_EXCLUDE      除くカレンダー名(カンマ区切り。icalBuddy の -ec)
+  AGENT_CALENDAR_INCLUDE      対象にするカレンダー名(カンマ区切り。icalBuddy の -ic。既定は全部)
+  AGENT_CALENDAR_NOW          「いま」(YYYY-MM-DD HH:MM。--agenda の表示確認用)
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import unicodedata
+
+ICALBUDDY = os.environ.get("AGENT_CALENDAR_ICALBUDDY", "icalBuddy")
+CACHE = os.environ.get("AGENT_CALENDAR_CACHE", "/tmp/tmux-agent-sidebar-calendar.txt")
+EXCLUDE = os.environ.get("AGENT_CALENDAR_EXCLUDE", "")
+INCLUDE = os.environ.get("AGENT_CALENDAR_INCLUDE", "")
+TIMEOUT_SEC = 10
+# 1 行目は「日付 at 開始 - 終了」。終了が別の日なら、終了にも日付が付く。本文などの続きの行は字下げされるので、行頭の一致だけで予定の始まりが分かる
+EVENT_LINE = re.compile(r"^(\d{4})-(\d\d)-(\d\d) at (\d\d):(\d\d)(?: - (?:(\d{4})-(\d\d)-(\d\d) at )?(\d\d):(\d\d))?")
+URL = re.compile(r"https?://[^\s<>\")\]」』]+")
+MEETING_HOSTS = ("zoom.us", "zoom.com", "meet.google.com", "teams.microsoft.com", "teams.live.com", "webex.com", "whereby.com")
+PROP_SEP = " ¦ "
+
+ESC = "\033"
+DIM = f"{ESC}[38;5;245m"
+ORANGE = f"{ESC}[38;5;208m"
+YELLOW = f"{ESC}[38;5;226m"
+GREEN = f"{ESC}[38;5;108m"
+RESET = f"{ESC}[0m"
+
+
+def now_epoch():
+    fixed = os.environ.get("AGENT_CALENDAR_NOW")
+    if fixed:
+        return int(time.mktime(time.strptime(fixed, "%Y-%m-%d %H:%M")))
+    return int(time.time())
+
+
+def run_icalbuddy(*args):
+    """icalBuddy の標準出力を返す。無い・失敗・時間切れなら None。"""
+    if shutil.which(ICALBUDDY) is None and not os.path.isabs(ICALBUDDY):
+        return None
+    try:
+        proc = subprocess.run([ICALBUDDY, *args], capture_output=True, text=True, timeout=TIMEOUT_SEC)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def meeting_url(text):
+    for url in URL.findall(text):
+        if any(host in url for host in MEETING_HOSTS):
+            return url.rstrip(".,;")
+    return ""
+
+
+def parse(output):
+    """icalBuddy の出力を [{start, end, title, url}] にする(開始の早い順。重複は 1 つ)。"""
+    blocks = []
+    for line in output.splitlines():
+        if EVENT_LINE.match(line):
+            blocks.append([line])
+        elif blocks:
+            blocks[-1].append(line)
+    events, seen = [], set()
+    for lines in blocks:
+        m = EVENT_LINE.match(lines[0])
+        y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
+        start = int(time.mktime((y, mo, d, h, mi, 0, 0, 0, -1)))
+        end = start
+        if m.group(9):
+            ey, emo, ed = (int(m.group(i)) for i in (6, 7, 8)) if m.group(6) else (y, mo, d)
+            end = int(time.mktime((ey, emo, ed, int(m.group(9)), int(m.group(10)), 0, 0, 0, -1)))
+            if end < start:
+                end += 86400
+        # 最初の行の、日時より後ろ: " ¦ " でプロパティが区切られる。最初がタイトル
+        head = lines[0][m.end():]
+        head = head[len(PROP_SEP):] if head.startswith(PROP_SEP) else head.lstrip()
+        title = head.split(PROP_SEP)[0].strip()
+        key = (start, end, title)
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append({"start": start, "end": end, "title": title, "url": meeting_url("\n".join(lines))})
+    events.sort(key=lambda e: (e["start"], e["end"], e["title"]))
+    return events
+
+
+def fetch():
+    """今日と明日の、終日でない予定。取れなければ None。"""
+    args = ["-n", "-nc", "-nrd", "-ea", "-b", "", "-df", "%Y-%m-%d", "-tf", "%H:%M",
+            "-iep", "datetime,title,location,url,notes", "-po", "datetime,title,location,url,notes", "-ps", f"|{PROP_SEP}|"]
+    if EXCLUDE:
+        args += ["-ec", EXCLUDE]
+    if INCLUDE:
+        args += ["-ic", INCLUDE]
+    args.append("eventsToday+1")
+    out = run_icalbuddy(*args)
+    if out is None:
+        return None
+    return parse(out)
+
+
+def clean(text):
+    return text.replace("|", "｜").replace("\n", " ").replace("\t", " ").strip()
+
+
+def lines_for_cache(events, now):
+    out = [f"F|{now}"]
+    for e in events:
+        if e["end"] > now:
+            out.append(f"E|{e['start']}|{e['end']}|{clean(e['title'])}|{e['url']}")
+    return out
+
+
+def write_cache(lines):
+    tmp = f"{CACHE}.{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, CACHE)
+
+
+# --- 画面(--agenda) ---
+
+def width_of(text):
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+
+
+def clip(text, room):
+    """表示幅 room に収める(収まらなければ末尾を … にする)。"""
+    if width_of(text) <= room:
+        return text
+    out, w = "", 0
+    for c in text:
+        cw = width_of(c)
+        if w + cw > max(room - 1, 0):
+            break
+        out += c
+        w += cw
+    return out + "…"
+
+
+def hhmm(epoch):
+    return time.strftime("%H:%M", time.localtime(epoch))
+
+
+def agenda(events, now, width, height, color):
+    """今日と明日の予定を、行のリストにする。終わった予定は薄く、いま進行中は黄色、これからは通常の色。"""
+    def paint(code, text):
+        return f"{code}{text}{RESET}" if color else text
+
+    today = time.strftime("%Y-%m-%d", time.localtime(now))
+    lines = [paint(ORANGE, "予定") + paint(DIM, "  " + time.strftime("%m/%d", time.localtime(now))), ""]
+    last_day = today
+    for e in events:
+        day = time.strftime("%Y-%m-%d", time.localtime(e["start"]))
+        if day != last_day:
+            lines += ["", paint(ORANGE, "明日") + paint(DIM, "  " + time.strftime("%m/%d", time.localtime(e["start"]))), ""]
+            last_day = day
+        span = f"{hhmm(e['start'])}-{hhmm(e['end'])}"
+        title = clip(e["title"], max(width - len(span) - 3, 4))
+        if e["end"] <= now:
+            lines.append(paint(DIM, f"  {span} {title}"))
+        elif e["start"] <= now:
+            lines.append(paint(YELLOW, f"▶ {span} {title}"))
+        else:
+            lines.append(f"  {paint(GREEN, span)} {title}")
+        if e["url"] and e["end"] > now:
+            lines.append(paint(DIM, "    " + clip(e["url"], width - 4)))
+    if len(lines) == 2:
+        lines.append(paint(DIM, "  予定はありません"))
+    return lines[:height]
+
+
+def option(args, name, default):
+    return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else default
+
+
+def main(args):
+    if "--check" in args:
+        out = run_icalbuddy("calendars")
+        if out is None:
+            print("icalBuddy を実行できません(brew install ical-buddy)")
+            return 1
+        names = [l for l in out.splitlines() if l.startswith("•")]
+        print(f"カレンダー {len(names)} 件" + ("" if names else "(0 件なら、カレンダーの許可が要ります: システム設定 → プライバシーとセキュリティ → カレンダー)"))
+        return 0
+    events = fetch()
+    now = now_epoch()
+    if "--agenda" in args:
+        width = int(option(args, "--width", "60"))
+        height = int(option(args, "--height", "24"))
+        color = option(args, "--color", "always") != "never"
+        print("\n".join(agenda(events or [], now, width, height, color)))
+        return 0
+    if events is None:
+        return 1
+    lines = lines_for_cache(events, now)
+    if "--stdout" in args:
+        print("\n".join(lines))
+        return 0
+    write_cache(lines)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -79,7 +79,7 @@ class SidebarUsageTest(unittest.TestCase):
     def tmux(self, *args):
         return subprocess.run(["tmux", "-S", self.sock, *args], capture_output=True, text=True)
 
-    def render(self, limits=None, cred=None, codex=None, codex_threads=None, tasks_dir=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False, windows=None, preset=None, tasks_today="2026-10-17"):
+    def render(self, limits=None, cred=None, codex=None, codex_threads=None, tasks_dir=None, today=None, colors=False, daily_dir=None, open_cmd=None, obsidian_config=None, extra_env=None, cockpit=False, windows=None, preset=None, tasks_today="2026-10-17", calendar=None, calendar_fetched=None):
         """sidebar を起動して、描画が出そろった画面を返す。None のファイルは作らない。
         today: 「今日」の日付(YYYY-MM-DD)。着地予想の色が日付で変わるので、固定して確認する。
         colors: True なら色の制御文字つき(capture-pane -e)で返す。
@@ -90,6 +90,7 @@ class SidebarUsageTest(unittest.TestCase):
         cockpit: True なら、描画のあとで window を cockpit にして(@agent_cockpit=1)、cockpit の欄(d のヒント)が出るまで待つ。
           "early" なら、sidebar を起動する前から cockpit にする(本物の C-t B と同じ順序。起動時の復元を試すとき)。
         windows: 別 window を作るディレクトリのリスト。それぞれ空きシェルの pane になり、sidebar の選択肢(カード)が増える。pane_id は self.extra_panes に入る。
+        calendar: 予定のキャッシュ(tmux-agent-calendar が書く形)の行のリスト、または (開始までの秒, 長さ秒, タイトル, URL) のタプルのリスト。None なら、キャッシュを作らない(カードは出ない)。
         preset: sidebar を起動する前に、tmux のグローバル option に入れる値({名前: 値。callable なら self.extra_panes を渡して求める})。"""
         rl_file = os.path.join(self.dir, "rate-limits.json")
         cr_file = os.path.join(self.dir, "credits.json")
@@ -98,6 +99,9 @@ class SidebarUsageTest(unittest.TestCase):
         if codex_threads is not None:
             with open(self.threads_file, "w") as f:
                 f.write("".join(line + "\n" for line in codex_threads))
+        self.calendar_file = os.path.join(self.dir, "calendar.txt")
+        if calendar is not None:
+            self.write_calendar(calendar, fetched=calendar_fetched)
         for path, data in ((rl_file, limits), (cr_file, cred), (cx_file, codex)):
             if data is not None:
                 with open(path, "w") as f:
@@ -114,6 +118,8 @@ class SidebarUsageTest(unittest.TestCase):
                 f"AGENT_TASKS_TODAY={tasks_today}",
                 f"AGENT_SIDEBAR_CODEX_THREADS_CACHE={self.threads_file}",
                 "AGENT_SIDEBAR_CODEX_THREADS_BIN=true",  # 本物のデーモンへは問い合わせない
+                f"AGENT_SIDEBAR_CALENDAR_CACHE={self.calendar_file}",  # 本物のカレンダーのキャッシュを読まない
+                "AGENT_SIDEBAR_CALENDAR_BIN=true",  # 本物の icalBuddy は呼ばない(キャッシュはテストが作る)
                 "AGENT_SIDEBAR_CLAUDE_BIN=true",
                 f"AGENT_SIDEBAR_ALERT_STATE={self.dir}/none",
                 f"AGENT_SIDEBAR_BELL_STATE={self.dir}/bell-state",  # 普段の sidebar と記録を共有しない
@@ -173,6 +179,19 @@ class SidebarUsageTest(unittest.TestCase):
                 return screen
             time.sleep(0.2)
         self.fail(f"sidebar が描画されませんでした:\n{screen}")
+
+    def write_calendar(self, events, fetched=None):
+        """予定のキャッシュを作る。events は行(str)、または (いまから開始までの秒, 長さ秒, タイトル, 会議の URL) のタプル。"""
+        now = int(time.time())
+        lines = [f"F|{fetched if fetched is not None else now}"]
+        for e in events:
+            if isinstance(e, str):
+                lines.append(e)
+            else:
+                start, length, title, url = e
+                lines.append(f"E|{now + start}|{now + start + length}|{title}|{url}")
+        with open(self.calendar_file, "w") as f:
+            f.write("\n".join(lines) + "\n")
 
     def become_cockpit(self, flags):
         """window を cockpit にして、sidebar が気づく(収集の周期。最大 2 秒)まで待つ。気づくと、選択中のカードに右の枠を指す矢印が出る。"""
@@ -534,6 +553,107 @@ class SidebarUsageTest(unittest.TestCase):
         with open(cfg, "w") as f:
             json.dump({"vaults": {"a": {"path": "/nonexistent", "open": True}}}, f)
         self.assertIn("更新 35m 前", self.daily_card(self.render(daily_dir=d, obsidian_config=cfg)))
+
+
+    # ---- 予定のカード: Mac のカレンダーの次の予定。NEXT(緑)→ SOON(開始の 10 分前から)→ NOW(進行中。WORKING と同じ色) ----
+
+    def cal_card(self, screen):
+        """予定のカード(3 行)を 1 つの文字列にして返す。無ければ空。"""
+        lines = screen.splitlines()
+        i = next((n for n, l in enumerate(lines) if "📅" in l), None)
+        return "" if i is None else "\n".join(lines[i:i + 3])
+
+    def test_cal_キャッシュが無ければカードを出さない(self):
+        screen = self.render()
+        self.assertNotIn("📅", screen)
+
+    def test_cal_次の予定を_タイトルと時間帯と開始までの時間で出す(self):
+        card = self.cal_card(self.render(calendar=[(25 * 60, 3600, "定例ミーティング", "")]))
+        self.assertIn("📅 定例ミーティング", card)
+        self.assertRegex(card, r"\d\d:\d\d-\d\d:\d\d")
+        self.assertIn("NEXT", card)
+        self.assertRegex(card, r"in 2[45]m")
+
+    def test_cal_開始の_10分前からは_SOON(self):
+        card = self.cal_card(self.render(calendar=[(8 * 60, 3600, "定例", "")]))
+        self.assertIn("SOON", card)
+        self.assertNotIn("NEXT", card)
+
+    def test_cal_進行中は_NOW_で_WORKING_と同じ色(self):
+        screen = self.render(calendar=[(-10 * 60, 3600, "進行中の会議", "")], colors=True)
+        card = self.cal_card(screen)
+        self.assertIn("進行中の会議", card)
+        self.assertRegex(card, r"NOW")
+        self.assertRegex(card, r"left")
+        self.assertIn("48;5;220m", card)  # WORKING のピルと同じ黄
+
+    def test_cal_12時間より先の予定は出さない(self):
+        self.assertNotIn("📅", self.render(calendar=[(13 * 3600, 3600, "明日の予定", "")]))
+
+    def test_cal_終わった予定は出さない(self):
+        self.assertNotIn("📅", self.render(calendar=[(-3600, 1800, "もう終わった", "")]))
+
+    def test_cal_取得が止まって古い予定は出さない(self):
+        # 5 分(CALENDAR_MAX_AGE)より前の取得は、予定が合っているかどうか分からない
+        screen = self.render(calendar=[(25 * 60, 3600, "古い取得", "")], calendar_fetched=int(time.time()) - 3600)
+        self.assertNotIn("📅", screen)
+
+    def test_cal_同じ開始の予定が他にもあれば_件数を添える(self):
+        card = self.cal_card(self.render(calendar=[(25 * 60, 3600, "ひとつめ", ""), (25 * 60, 1800, "ふたつめ", "")]))
+        self.assertIn("ひとつめ", card)
+        self.assertRegex(card, r"\+1")
+
+    def test_cal_開始前の予定が_SOON_の範囲に入ったら_進行中の予定より優先する(self):
+        card = self.cal_card(self.render(calendar=[(-20 * 60, 3600, "進行中", ""), (5 * 60, 1800, "もうすぐ", "")]))
+        self.assertIn("もうすぐ", card)
+        self.assertIn("SOON", card)
+
+    def test_cal_オフにすればカードを出さない(self):
+        self.assertNotIn("📅", self.render(calendar=[(25 * 60, 3600, "定例", "")], extra_env={"AGENT_SIDEBAR_CALENDAR": "off"}))
+
+    def test_cal_Daily_カードの下に出し_Agent_の件数には数えない(self):
+        screen = self.render(daily_dir=self.daily_note(600), calendar=[(25 * 60, 3600, "定例", "")])
+        self.assertLess(screen.index("Daily Note"), screen.index("📅"))
+        self.assertEqual(screen.count("NOTES"), 1)  # 同じ NOTES の見出しの下
+        self.assertIn("AGENTS 0", screen)
+
+    def open_log_cmd(self):
+        log = os.path.join(self.dir, "open.log")
+        fake = os.path.join(self.dir, "fake-open")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/sh\necho "$@" >> {log}\n')
+        os.chmod(fake, 0o755)
+        return fake, log
+
+    def test_cal_通常の_sidebar_で_Enter_は_会議の_URL_を開く(self):
+        fake, log = self.open_log_cmd()
+        screen = self.render(calendar=[(25 * 60, 3600, "定例", "https://example.zoom.us/j/1")], open_cmd=fake)
+        self.click_row(next(i for i, l in enumerate(screen.splitlines()) if "📅" in l))
+        self.assertEqual(self.wait_file(log).strip(), "https://example.zoom.us/j/1")
+
+    def test_cal_会議の_URL_が無ければ_カレンダーを開く(self):
+        fake, log = self.open_log_cmd()
+        screen = self.render(calendar=[(25 * 60, 3600, "定例", "")], open_cmd=fake)
+        self.click_row(next(i for i, l in enumerate(screen.splitlines()) if "📅" in l))
+        self.assertEqual(self.wait_file(log).strip(), "-a Calendar")
+
+    def test_cal_cockpit_で_選ぶと_右の枠に予定表を出し_j_で_Agent_に戻る(self):
+        self.render(cockpit="early", windows=self.two_windows(), calendar=[(25 * 60, 3600, "定例", "")])
+        first = self.wait_shown(bool, "枠に最初の Agent が入りません")
+        self.press("k")
+        self.wait_view("calendar")
+        self.press("j")
+        self.wait_view("")
+        self.assertEqual(self.wait_shown(bool, "Agent が枠に戻りません"), first)
+
+    def test_cal_Agent_ではないので_n_R_f_は断る(self):
+        self.render(cockpit="early", windows=[os.path.expanduser("~")], calendar=[(25 * 60, 3600, "定例", "")])
+        self.wait_view("calendar")
+        before = self.tmux("list-panes", "-a", "-F", "#{pane_id}").stdout
+        for key in ("n", "R", "f"):
+            self.press(key)
+        time.sleep(1)
+        self.assertEqual(self.tmux("list-panes", "-a", "-F", "#{pane_id}").stdout, before)
 
     # ---- Daily ダッシュボード(cockpit: d で右の枠に出す / c で作業の一覧をコピー / 通常: d でポップアップ) ----
 
