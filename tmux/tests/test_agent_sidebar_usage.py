@@ -167,8 +167,7 @@ class SidebarUsageTest(unittest.TestCase):
             screen = self.tmux("capture-pane", *flags, "-t", "t:0.0").stdout
             if "WEB" in screen:
                 if cockpit == "early":
-                    # ダッシュボードに復元された場合は d view ではなく d back になる
-                    return self.wait_screen(lambda scr: any(h in self.daily_row(scr) for h in ("d view", "d back")), flags)
+                    return self.wait_screen(self.in_cockpit, flags)
                 if cockpit:
                     return self.become_cockpit(flags)
                 return screen
@@ -176,9 +175,14 @@ class SidebarUsageTest(unittest.TestCase):
         self.fail(f"sidebar が描画されませんでした:\n{screen}")
 
     def become_cockpit(self, flags):
-        """window を cockpit にして、sidebar が気づく(収集の周期。最大 2 秒)まで待つ。気づくと Daily 欄に d のヒントが出る。"""
+        """window を cockpit にして、sidebar が気づく(収集の周期。最大 2 秒)まで待つ。気づくと、選択中のカードに右の枠を指す矢印が出る。"""
         self.tmux("set-option", "-w", "-t", "t:0", "@agent_cockpit", "1")
-        return self.wait_screen(lambda scr: "d view" in self.daily_row(scr), flags)
+        return self.wait_screen(self.in_cockpit, flags)
+
+    @staticmethod
+    def in_cockpit(screen):
+        """cockpit の sidebar の画面か(選択中のカードの行末に、右の枠を指す矢印 U+E0B0 が出る)。"""
+        return "\ue0b0" in screen
 
     def wait_screen(self, predicate, flags=("-p",)):
         deadline = time.time() + RENDER_TIMEOUT_SEC
@@ -420,7 +424,7 @@ class SidebarUsageTest(unittest.TestCase):
         self.assertEqual(color, self.YELLOW)
 
 
-    # ---- Daily 欄: 今日の Daily Note の最終更新からの経過時間と、o で Obsidian を開く操作 ----
+    # ---- Daily カード: 今日の Daily Note の更新状態。Agent 一覧の先頭(NOTES)に、状態色のカードで出す ----
 
     def daily_note(self, age_sec, days_ago=0):
         """今日(days_ago=1 なら昨日)の Daily Note を、age_sec 秒前に更新されたことにして作る。ディレクトリを返す。"""
@@ -433,34 +437,73 @@ class SidebarUsageTest(unittest.TestCase):
         os.utime(path, (mtime, mtime))
         return d
 
-    def daily_row(self, screen):
-        return next((l for l in screen.splitlines() if "Daily" in l), "")
+    # いつでも勤務時間帯・勤務日として扱う(警告色は勤務時間帯だけ付くため)
+    WORK_ALWAYS = {"AGENT_SIDEBAR_DAILY_WORK_DAYS": "1234567", "AGENT_SIDEBAR_DAILY_WORK_FROM": "0",
+                   "AGENT_SIDEBAR_DAILY_WORK_TO": "24"}
 
-    def test_daily_ディレクトリが未設定でも_開く操作だけの行を出す(self):
-        row = self.daily_row(self.render())
-        self.assertIn("📝 Daily", row)
-        self.assertIn("o open", row)
+    def daily_card(self, screen):
+        """Daily カード(3 行)を 1 つの文字列にして返す。無ければ空。"""
+        lines = screen.splitlines()
+        i = next((n for n, l in enumerate(lines) if "Daily Note" in l), None)
+        return "" if i is None else "\n".join(lines[i:i + 3])
+
+    def test_daily_ディレクトリが未設定ならカードを出さない(self):
+        screen = self.render()
+        self.assertNotIn("Daily Note", screen)
+        self.assertNotIn("NOTES", screen)
 
     def test_daily_最終更新からの経過時間を出す(self):
-        row = self.daily_row(self.render(daily_dir=self.daily_note(4 * 3600 + 30)))
-        self.assertRegex(row, r"📝 Daily 4h00m\s+o open")
+        card = self.daily_card(self.render(daily_dir=self.daily_note(4 * 3600 + 30)))
+        self.assertIn("📝 Daily Note", card)
+        self.assertIn("更新 4h00m 前", card)
+        self.assertIn("o open", card)
 
     def test_daily_1時間未満は分だけ出す(self):
-        row = self.daily_row(self.render(daily_dir=self.daily_note(35 * 60 + 10)))
-        self.assertRegex(row, r"📝 Daily 35m\s+o open")
+        self.assertIn("更新 35m 前", self.daily_card(self.render(daily_dir=self.daily_note(35 * 60 + 10))))
 
     def test_daily_今日のノートが無ければ_未作成と出す(self):
         d = os.path.join(self.dir, "empty-daily")
         os.makedirs(d)
-        self.assertIn("未作成", self.daily_row(self.render(daily_dir=d)))
+        card = self.daily_card(self.render(daily_dir=d))
+        self.assertIn("今日のノートがありません", card)
+        self.assertIn("未作成", card)
 
-    def test_daily_経過時間の色は_2時間と3時間で変わる(self):
-        green, yellow, red = "38;5;108m", "38;5;220m", "38;5;196m"
-        for age, color in ((30 * 60, green), (2 * 3600 + 600, yellow), (3 * 3600 + 600, red)):
-            row = self.daily_row(self.render(daily_dir=self.daily_note(age), colors=True))
-            self.assertIn(color, row, f"{age} 秒前: {row!r}")
+    def test_daily_NOTES_の見出しで_Agent_の前に出し_Agent_の件数には数えない(self):
+        screen = self.render(daily_dir=self.daily_note(600), windows=self.two_windows())
+        self.assertLess(screen.index("NOTES"), screen.index("repo-a"))
+        self.assertIn("AGENTS 0", screen)
 
-    def test_daily_欄を足しても_WEB_欄は最下行で_幅にも収まる(self):
+    def test_daily_Agent_が居なければ_カードの下に_No_agents_running(self):
+        # cockpit では window 0 のシェルは slot になり、home の空きシェルは「新規起動」の欄にならないので、Daily カードだけになる
+        screen = self.render(daily_dir=self.daily_note(600), cockpit="early", windows=[os.path.expanduser("~")])
+        self.assertIn("No agents running", screen)
+        self.assertLess(screen.index("Daily Note"), screen.index("No agents running"))
+
+    def test_daily_状態ピルは_2時間と3時間で変わる(self):
+        # 更新が古いほど、Agent の状態に近い色(OK = IDLE の緑 / CHECK = 黄 / UPDATE = WAITING の赤)にして気づきやすくする
+        for age, label, bg in ((30 * 60, "OK", "65"), (2 * 3600 + 600, "CHECK", "220"), (3 * 3600 + 600, "UPDATE", "196")):
+            screen = self.render(daily_dir=self.daily_note(age), colors=True, extra_env=self.WORK_ALWAYS)
+            self.assertRegex(screen, rf"48;5;{bg}m {label} ", f"{age} 秒前")  # (tmux が SGR を正規化するので、ピルの背景色の直後に文字が来る)
+
+    def test_daily_UPDATE_のカードは_WAITING_と同じ暗い赤の背景にする(self):
+        screen = self.render(daily_dir=self.daily_note(4 * 3600), colors=True, extra_env=self.WORK_ALWAYS)
+        self.assertIn("48;5;52m", self.daily_card(screen))
+
+    def test_daily_夜や休日は_古くても警告色にしない(self):
+        env = dict(self.WORK_ALWAYS, AGENT_SIDEBAR_DAILY_WORK_DAYS="0")  # %u は 1〜7 なので、どの日にも当たらない
+        screen = self.render(daily_dir=self.daily_note(4 * 3600), colors=True, extra_env=env)
+        self.assertRegex(screen, r"48;5;65m OK ")
+        self.assertNotIn("UPDATE", screen)
+
+    def test_daily_ノートが未作成なら_勤務時間帯の猶予後は_UPDATE_それ以外は_NONE(self):
+        d = self.empty_daily_dir()
+        screen = self.render(daily_dir=d, extra_env=dict(self.WORK_ALWAYS, AGENT_SIDEBAR_DAILY_MISSING_FROM="0"))
+        self.assertIn("UPDATE", screen)
+        screen = self.render(daily_dir=d, extra_env=dict(self.WORK_ALWAYS, AGENT_SIDEBAR_DAILY_MISSING_FROM="24"))
+        self.assertIn("NONE", screen)
+        self.assertNotIn("UPDATE", screen)
+
+    def test_daily_カードを足しても_WEB_欄は最下行で_幅にも収まる(self):
         screen = self.render(limits=rate_limits(), cred=credits(), daily_dir=self.daily_note(600))
         lines = [l for l in screen.splitlines() if l.strip()]
         self.assertIn("WEB", lines[-1])
@@ -483,14 +526,14 @@ class SidebarUsageTest(unittest.TestCase):
         cfg = os.path.join(self.dir, "obsidian.json")
         with open(cfg, "w") as f:
             json.dump({"vaults": {"a": {"path": vault, "open": True}}}, f)
-        self.assertRegex(self.daily_row(self.render(obsidian_config=cfg)), r"📝 Daily 4h00m\s+o open")
+        self.assertIn("更新 4h00m 前", self.daily_card(self.render(obsidian_config=cfg)))
 
     def test_daily_ディレクトリを明示すれば_Obsidian_の設定より優先する(self):
         d = self.daily_note(35 * 60 + 10)
         cfg = os.path.join(self.dir, "obsidian.json")
         with open(cfg, "w") as f:
             json.dump({"vaults": {"a": {"path": "/nonexistent", "open": True}}}, f)
-        self.assertRegex(self.daily_row(self.render(daily_dir=d, obsidian_config=cfg)), r"📝 Daily 35m")
+        self.assertIn("更新 35m 前", self.daily_card(self.render(daily_dir=d, obsidian_config=cfg)))
 
     # ---- Daily ダッシュボード(cockpit: d で右の枠に出す / c で作業の一覧をコピー / 通常: d でポップアップ) ----
 
@@ -511,47 +554,75 @@ class SidebarUsageTest(unittest.TestCase):
         with open(path) as f:
             return f.read()
 
-    def test_dashboard_cockpit_では_d_のヒントを出し_通常の_sidebar_では出さない(self):
-        self.assertNotIn("d view", self.daily_row(self.render(daily_dir=self.daily_note(600))))
-        screen = self.render(daily_dir=self.daily_note(600), cockpit=True)
-        self.assertRegex(self.daily_row(screen), r"o open\s+d view")
-
-    def test_dashboard_d_で_右の枠に_Daily_を出し_もう一度押すと戻す(self):
-        self.render(daily_dir=self.daily_note(600), cockpit=True)
+    def test_dashboard_d_で_Daily_カードに移って右の枠に出し_もう一度押すと戻す(self):
+        self.render(daily_dir=self.daily_note(600), cockpit="early", windows=self.two_windows())
+        first = self.wait_shown(bool, "枠に最初の Agent が入りません")
+        self.assertEqual(self.view_option(), "")  # Agent があれば、既定の選択は Daily カードではなく Agent
         self.press("d")
         self.wait_view("daily")
-        screen = self.wait_screen(lambda scr: "d back" in self.daily_row(scr))
-        self.assertNotIn("d view", self.daily_row(screen))
+        # 選択中のカードは橙のタブ(色つきの画面は制御文字で文字列が分断されるので、表示を確かめたあとで、色だけを見る)
+        self.wait_screen(lambda scr: "48;5;130m" in self.daily_card(scr), ("-e", "-p"))
         self.press("d")
         self.wait_view("")
-        self.wait_screen(lambda scr: "d view" in self.daily_row(scr))
+        self.assertEqual(self.wait_shown(bool, "直前の Agent が枠に戻りません"), first)
 
-    def test_dashboard_表示中の_Daily_欄は_橙のタブで示す(self):
-        self.render(daily_dir=self.daily_note(600), cockpit=True)
-        self.press("d")
-        self.wait_screen(lambda scr: "d back" in self.daily_row(scr))
-        # 色つきの画面は制御文字で文字列が分断されるので、表示を確かめたあとで、色だけを見る
-        colored = self.tmux("capture-pane", "-e", "-p", "-t", "t:0.0").stdout
-        self.assertIn("48;5;130m", self.daily_row(colored))
-
-    def test_dashboard_j_で_Agent_の選択に戻ると_Daily_表示は解除される(self):
-        self.render(daily_dir=self.daily_note(600), cockpit=True)
-        self.press("d")
+    def test_dashboard_k_で先頭の_Agent_から_Daily_カードに移り_j_で戻る(self):
+        self.render(daily_dir=self.daily_note(600), cockpit="early", windows=self.two_windows())
+        first = self.wait_shown(bool, "枠に最初の Agent が入りません")
+        self.press("k")
         self.wait_view("daily")
         self.press("j")
         self.wait_view("")
+        self.assertEqual(self.wait_shown(bool, "Agent が枠に戻りません"), first)
 
-    def test_dashboard_表示中の_Enter_は_Obsidian_を開く(self):
+    def test_dashboard_Agent_が居なければ_Daily_カードが選ばれて_ダッシュボードが出る(self):
+        self.render(daily_dir=self.daily_note(600), cockpit="early", windows=[os.path.expanduser("~")])
+        self.wait_view("daily")
+
+    def test_dashboard_Daily_カードを選んでいる間の_Enter_は_Obsidian_を開く(self):
         log = os.path.join(self.dir, "open.log")
         fake = os.path.join(self.dir, "fake-open")
         with open(fake, "w") as f:
             f.write(f'#!/bin/sh\necho "$@" > {log}\n')
         os.chmod(fake, 0o755)
-        self.render(daily_dir=self.daily_note(600), open_cmd=fake, cockpit=True)
-        self.press("d")
+        self.render(daily_dir=self.daily_note(600), open_cmd=fake, cockpit="early", windows=self.two_windows())
+        self.wait_shown(bool, "枠に最初の Agent が入りません")
+        self.press("k")
         self.wait_view("daily")
         self.press("Enter")
         self.assertEqual(self.wait_file(log).strip(), "obsidian://daily")
+
+    def test_dashboard_cockpit_で_Daily_カードをクリックすると_ダッシュボードを出す(self):
+        self.render(daily_dir=self.daily_note(600), cockpit="early", windows=self.two_windows())
+        self.wait_shown(bool, "枠に最初の Agent が入りません")
+        sidebar = self.sidebar_pane()
+        self.tmux("select-pane", "-t", sidebar)
+        screen = self.wait_screen(lambda scr: "Daily Note" in scr)
+        self.click_row(next(i for i, l in enumerate(screen.splitlines()) if "Daily Note" in l))
+        self.wait_view("daily")
+        time.sleep(0.5)
+        self.assertEqual(self.active_pane(), sidebar)  # ダッシュボードは操作する pane ではないので、フォーカスは移さない
+
+    def test_dashboard_通常の_sidebar_で_Daily_カードをクリックすると_Obsidian_を開く(self):
+        log = os.path.join(self.dir, "open.log")
+        fake = os.path.join(self.dir, "fake-open")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/sh\necho "$@" > {log}\n')
+        os.chmod(fake, 0o755)
+        screen = self.render(daily_dir=self.daily_note(600), open_cmd=fake)
+        self.click_row(next(i for i, l in enumerate(screen.splitlines()) if "Daily Note" in l))
+        self.assertEqual(self.wait_file(log).strip(), "obsidian://daily")
+
+    def test_dashboard_Daily_カードで_n_と_R_と_f_は_Agent_ではないと断る(self):
+        # 新しい pane を作ったり、何かを再起動したりしない(メニューも出ない)
+        self.render(daily_dir=self.daily_note(600), cockpit="early", windows=[os.path.expanduser("~")])
+        self.wait_view("daily")
+        before = self.tmux("list-panes", "-a", "-F", "#{pane_id}").stdout
+        for key in ("n", "R", "f"):
+            self.press(key)
+        time.sleep(1)
+        self.assertEqual(self.tmux("list-panes", "-a", "-F", "#{pane_id}").stdout, before)
+        self.assertIn("Daily Note", self.wait_screen(lambda scr: "Daily Note" in scr))
 
     def test_dashboard_通常の_sidebar_の_d_は_落ちずに_描画を続ける(self):
         # ポップアップは client が無いと出ないので、キーを受けても sidebar が生きていることだけ確かめる
@@ -575,19 +646,19 @@ class SidebarUsageTest(unittest.TestCase):
         time.sleep(1.5)
         self.assertFalse(os.path.exists(out))
 
-    # ---- Daily 欄の点滅: 長く更新されていないとき、勤務時間帯だけ 📝 と ⏰ を入れ替える ----
+    # ---- Daily カードの点滅: 長く更新されていないとき、勤務時間帯だけ 📝 と ⏰ を入れ替える ----
 
     BLINK_ON = {"AGENT_SIDEBAR_DAILY_BLINK": "on", "AGENT_SIDEBAR_DAILY_WORK_DAYS": "1234567",
                 "AGENT_SIDEBAR_DAILY_WORK_FROM": "0", "AGENT_SIDEBAR_DAILY_WORK_TO": "24"}
 
     def seen_icons(self, seconds=3.5):
-        """Daily 欄の先頭のアイコンを、seconds 秒のあいだ繰り返し読んで、見えたものの集合を返す。"""
+        """Daily カードの名前の行のアイコンを、seconds 秒のあいだ繰り返し読んで、見えたものの集合を返す。"""
         seen = set()
         deadline = time.time() + seconds
         while time.time() < deadline:
-            row = self.daily_row(self.tmux("capture-pane", "-p", "-t", "t:0.0").stdout).strip()
+            row = next((l for l in self.tmux("capture-pane", "-p", "-t", "t:0.0").stdout.splitlines() if "Daily Note" in l), "")
             for icon in ("📝", "⏰"):
-                if row.startswith(icon):
+                if icon in row:
                     seen.add(icon)
             time.sleep(0.25)
         return seen
@@ -673,17 +744,18 @@ class SidebarUsageTest(unittest.TestCase):
         self.render(daily_dir=self.empty_daily_dir(), extra_env=env)
         self.assertEqual(self.seen_icons(), {"📝"})
 
-    # ---- 下部欄の区画: USAGE(データがあるとき)と TOOLS(Daily 欄・WEB 欄。常に) ----
+    # ---- 下部欄の区画: USAGE(データがあるとき)と TOOLS(Tasks 欄・WEB 欄。常に) ----
 
     def footer_lines(self, screen):
         return [l for l in screen.splitlines() if l.strip()]
 
-    def test_tools_Daily_と_WEB_を_TOOLS_の見出しでまとめる(self):
+    def test_tools_WEB_を_TOOLS_の見出しの下に出す(self):
+        # Daily は Agent 一覧の先頭のカードに移したので、TOOLS には入らない
         lines = self.footer_lines(self.render(limits=rate_limits(), cred=credits(), daily_dir=self.daily_note(600)))
         tools = next(i for i, l in enumerate(lines) if "TOOLS" in l)
-        self.assertIn("Daily", lines[tools + 1])
-        self.assertIn("WEB", lines[tools + 2])
-        self.assertEqual(len(lines), tools + 3)  # WEB 欄が最下行
+        self.assertIn("WEB", lines[tools + 1])
+        self.assertEqual(len(lines), tools + 2)  # WEB 欄が最下行
+        self.assertNotIn("Daily", "\n".join(lines[tools:]))
 
     def test_tools_USAGE_の下に_TOOLS_が来る(self):
         lines = self.footer_lines(self.render(limits=rate_limits()))
@@ -746,6 +818,12 @@ class SidebarUsageTest(unittest.TestCase):
         self.render(cockpit="early", windows=self.two_windows(), preset={"@agent_sidebar_last_sel": lambda panes: f"{panes[1]}|Shell"})
         shown = self.wait_shown(bool, "枠に Agent が入りません")
         self.assertEqual(shown, self.extra_panes[1])
+
+    def test_restore_Daily_カードを選んでいたなら_Daily_カードを選び直してダッシュボードに戻る(self):
+        self.render(cockpit="early", windows=self.two_windows(),
+                    preset={"@agent_sidebar_last_sel": "@daily|Daily"}, daily_dir=self.daily_note(600))
+        self.wait_view("daily")
+        self.assertEqual(self.shown(), "")
 
     def test_restore_ダッシュボードを出していたなら_ダッシュボードに戻る(self):
         self.render(cockpit="early", windows=self.two_windows(),
@@ -1080,14 +1158,13 @@ class SidebarUsageTest(unittest.TestCase):
         self.assertNotIn("Tasks", screen)
         self.assertNotIn("📋", screen)
 
-    def test_tasks_欄は_Daily_欄と_WEB_欄の間(self):
+    def test_tasks_欄は_TOOLS_の見出しと_WEB_欄の間(self):
         screen = self.render(tasks_dir=self.make_tasks())
         lines = [l for l in screen.splitlines() if l.strip()]
         tools = next(i for i, l in enumerate(lines) if "TOOLS" in l)
-        self.assertIn("Daily", lines[tools + 1])
-        self.assertIn("Tasks", lines[tools + 2])
-        self.assertIn("WEB", lines[tools + 3])
-        self.assertEqual(len(lines) - 1, tools + 3)  # WEB 欄が最下行
+        self.assertIn("Tasks", lines[tools + 1])
+        self.assertIn("WEB", lines[tools + 2])
+        self.assertEqual(len(lines) - 1, tools + 2)  # WEB 欄が最下行
 
     def test_tasks_欄は幅に収まる(self):
         screen = self.render(tasks_dir=self.make_tasks(specs=tuple((f"2026-01-{d:02d}-t", "false") for d in range(1, 29))))

@@ -27,6 +27,9 @@
 #   Shell  : Agent が 1 つも居ないリポジトリにある、空いているシェル(zsh 等)の pane。「+ New agent」の欄として出し、
 #            n で、その pane のシェルへ Claude / Codex を入力して起動する(tmux-agent-new --here)。
 #            home のシェル・コマンド実行中の pane は対象外。同じリポジトリには欄を 1 つだけ出す(prune_shells)。
+#   Daily  : Agent ではなく、今日の Daily Note の更新状態。一覧の先頭に「NOTES」の見出しで 1 枚のカードとして出す(prepend_daily)。
+#            状態は OK / CHECK / UPDATE / NONE(daily_status)。更新が古いほど Agent の WAITING に近い色にして、気づきやすくする。
+#            pane が無いので、AG_ID は擬似的な値(DAILY_ID)。jump / プレビュー / cockpit の show へは渡さない。
 #
 # 種別(Claude / Codex)を画像で示す(@agent_sidebar_type_icon image): Kitty graphics protocol の Unicode placeholders を使う。
 #   画像データは tmux のパススルー(allow-passthrough on)で端末へ一度送って登録し、カードには「画像の置き場所を示す
@@ -826,10 +829,10 @@ card_row() {
 # card_row が行末に置く文字列(通常は空)
 ROW_TAIL=""
 
-# 右の枠の中身が、選択中の Agent と合っていないか。cockpit で、作ったばかりの Agent を検出待ちの間と、Daily ダッシュボードを出している間。
-# このあいだは選択の表示(タブ・罫線)を出さない
+# 右の枠の中身が、選択中のカードと合っていないか。cockpit で、作ったばかりの Agent を検出待ちの間。
+# このあいだは選択の表示(タブ・罫線)を出さない。(Daily ダッシュボードは Daily カードの選択と一体なので、対象外)
 selection_detached() {
-  [ -n "$PENDING_ID" ] || [ "$DAILY_VIEW" = 1 ]
+  [ -n "$PENDING_ID" ]
 }
 
 # 選択中のカードを橙の角丸罫線で囲むか。
@@ -931,6 +934,11 @@ put_agent() {
     waiting) color=$C_WAITING; pill_bg=196; pill_fg=255; label="WAITING"; bg_normal=$CARD_BG_WAITING; bg_sel=$CARD_BG_WAITING_SELECTED ;;
     done) color=$C_DONE; pill_bg=41; pill_fg=232; label="DONE"; bg_normal=$CARD_BG_DONE; bg_sel=$CARD_BG_DONE_SELECTED ;;
     idle) color=$C_IDLE; pill_bg=65; pill_fg=232; label="IDLE"; bg_normal=$CARD_BG_IDLE; bg_sel=$CARD_BG_IDLE_SELECTED ;;
+    # Daily カード(daily_status)。更新が古いほど、Agent の状態と同じ色味に寄せて、気づきやすくする
+    daily_ok) color=$C_IDLE; pill_bg=65; pill_fg=232; label="OK"; bg_normal=$CARD_BG_IDLE; bg_sel=$CARD_BG_IDLE_SELECTED ;;
+    daily_warn) color=$C_WORKING; pill_bg=220; pill_fg=232; label="CHECK"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
+    daily_alert) color=$C_WAITING; pill_bg=196; pill_fg=255; label="UPDATE"; bg_normal=$CARD_BG_WAITING; bg_sel=$CARD_BG_WAITING_SELECTED ;;
+    daily_none) color=$C_UNKNOWN; pill_bg=240; pill_fg=252; label="NONE"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
     *) color=$C_UNKNOWN; pill_bg=240; pill_fg=252; label="UNKNOWN"; bg_normal=$CARD_BG; bg_sel=$CARD_BG_SELECTED ;;
   esac
 
@@ -968,7 +976,13 @@ put_agent() {
   right_w=${#type}
   # 種別を画像で示せるときは、左端に 2 桁の画像 + 空白を置き、右寄せの文字は出さない(project 名の幅が増える)
   local lead="" lead_w=0 gap=1
-  type_icon_cells "$type"
+  if [ "$type" = Daily ]; then
+    # Daily カードは、種別の文字の代わりに 📝 を置く。長く更新されていないとき(勤務時間帯だけ)は ⏰ と 1 秒ごとに入れ替える
+    REPLY="📝"
+    daily_blinking && ((SECONDS % 2)) && REPLY=$DAILY_BLINK_ICON
+  else
+    type_icon_cells "$type"
+  fi
   if [ -n "$REPLY" ]; then
     lead="$REPLY "
     lead_w=3
@@ -991,7 +1005,11 @@ put_agent() {
   # 2 行目はブランチ(同じリポジトリでも worktree ごとに違う)。git 管理外は親ディレクトリ。
   # cockpit の選択中のカードは、この行(3 行の中段)の行末に、右の枠を指す矢印を置く(矢印の色 = タブの色。罫線のときは橙)
   local line=""
-  if [ -n "${AG_BRANCH[i]}" ]; then
+  if [ "$type" = Daily ]; then
+    # 最終更新(「更新 4h00m 前」)。名前の位置(📝 の右)にそろえる
+    trunc "${AG_BRANCH[i]}" $((inner - 3))
+    line="   ${c_dim}${REPLY}${FG_DEFAULT}"
+  elif [ -n "${AG_BRANCH[i]}" ]; then
     trunc "${AG_BRANCH[i]}" $((inner - ICON_W))
     line="${c_dim}${ICON_BRANCH}${REPLY}${FG_DEFAULT}"
   else
@@ -1045,7 +1063,7 @@ FOOTER_MIN_TERM_H=14
 # 下部欄の 2 つ目の区画(Daily 欄・WEB 欄)の見出し。操作して使う道具をまとめる
 FOOTER_TOOLS_TITLE="TOOLS"
 
-# Tasks 欄: Obsidian のタスク(vault の 12-task/12-01-tasks。1 ファイル 1 タスク)の未完了の件数と、30 日を超えて残っている件数。TOOLS 区画の Daily 欄の下に出す。
+# Tasks 欄: Obsidian のタスク(vault の 12-task/12-01-tasks。1 ファイル 1 タスク)の未完了の件数と、30 日を超えて残っている件数。TOOLS 区画の WEB 欄の上に出す。
 # 数えるのに全ファイルを読むので fork する。TASKS_REFRESH_SEC ごとにしか読まない。ディレクトリが決まらなければ欄ごと出さない。
 # 一覧・完了は t のポップアップ(tmux-agent-tasks)。ディレクトリの決め方は tmux-agent-tasks の冒頭を参照
 TASKS_BIN="${AGENT_SIDEBAR_TASKS_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-tasks}"
@@ -1057,7 +1075,7 @@ TASKS_DIR_RESOLVED=""
 TASKS_CHECKED_AT=-999
 
 # スマホ用 Web サーバー(tmux-agent-web)の状態。tmux-agent-web が書く状態ファイル(JSON)の pid が生きているかを読む。
-# Daily 欄: 今日の Daily Note(Obsidian)の最終更新からの経過時間と、o で開く操作。TOOLS 区画の 1 行目(WEB 欄の上)に出す。
+# Daily カード: 今日の Daily Note(Obsidian)の最終更新からの経過時間と、o で開く操作。Agent 一覧の先頭に「NOTES」の見出しつきで出す(種別 Daily。daily_status / put_agent)。
 # ディレクトリは AGENT_SIDEBAR_DAILY_DIR → tmux の @agent_sidebar_daily_dir → Obsidian の設定(tmux-agent-daily --print-dir)の順。
 # ファイル名は <dir>/YYYY-MM-DD.md。どれでも決まらなければ「o で開く」だけを出す(経過時間は出さない)。
 # 設定の解決と mtime の取得で fork するので、DAILY_REFRESH_SEC ごとにしか読まない
@@ -1095,6 +1113,7 @@ DAILY_STALE=0
 opt_daily_blink=""
 DAILY_STATE=off   # off(ディレクトリ未設定) | missing(今日のノートが無い) | ok
 DAILY_AGE=0       # ok のときの、最終更新からの経過秒
+DAILY_WORK=0      # いまが勤務日の勤務時間帯か(1 = はい)。カードの警告色(warn)は、この間だけ付ける(夜・休日は古くて当然)
 DAILY_CHECKED_AT=-999
 
 # 入り切りは w(tmux-agent-web-toggle)。USAGE 欄の下の 1 行(WEB 欄)に出す
@@ -1469,53 +1488,6 @@ credits_icons_row() {
   FOOTER_FRAME+="${ESC}[${at};1H    ${out}${ESC}[K${C_RESET}"
 }
 
-# daily_row <行番号>: "📝 Daily 4h00m  o open" を FOOTER_FRAME に積む。経過時間の色は DAILY_WARN_SEC / DAILY_ALERT_SEC で変わる。
-# cockpit では "d view"(右の枠にダッシュボードを出す)も足す。ダッシュボードを出している間は、橙の塗りつぶしのタブにして "d back" にする
-# (Agent の選択タブと同じ見せ方。選択の表示を出していない間、いま右の枠に何が出ているかをここで示す)。
-# 幅に収まらないヒントは省く(行の折り返しで下部欄が崩れないようにする)
-daily_row() {
-  local at=$1 color body body_w bg="" fg="$C_DIM" key=$C_ACTIVE hint="" hint_w=0
-  case $DAILY_STATE in
-    ok)
-      if ((DAILY_AGE >= 3600)); then
-        printf -v body '%dh%02dm' $((DAILY_AGE / 3600)) $((DAILY_AGE % 3600 / 60))
-      else
-        body="$((DAILY_AGE / 60))m"
-      fi
-      body_w=$((${#body} + 1))
-      if ((DAILY_AGE > DAILY_ALERT_SEC)); then color="${ESC}[38;5;196m"
-      elif ((DAILY_AGE > DAILY_WARN_SEC)); then color="${ESC}[38;5;220m"
-      else color="${ESC}[38;5;108m"
-      fi
-      body=" ${color}${body}"
-      ;;
-    missing)
-      body=" ${ESC}[38;5;196m未作成"
-      body_w=7   # 空白 + 日本語 3 文字(6 桁)
-      ;;
-    *)
-      body=""
-      body_w=0
-      ;;
-  esac
-  local icon="📝"
-  daily_blinking && ((SECONDS % 2)) && icon=$DAILY_BLINK_ICON
-  if [ "$DAILY_VIEW" = 1 ]; then
-    bg="${ESC}[48;5;130m"
-    fg="${ESC}[38;5;252m"
-    key="${ESC}[38;5;231m"
-  fi
-  # 先頭の空白 1 + 📝(2) + 空白 + Daily(5) = 9 桁。ヒントは、空白 2 + "o open"(6) = 8 桁、"d view" / "d back" も空白 2 + 6 桁 = 8 桁
-  if ((9 + body_w + 8 <= width - 1)); then
-    hint="  ${key}o${fg} open"
-    hint_w=8
-  fi
-  if [ "$COCKPIT" = 1 ] && ((9 + body_w + hint_w + 8 <= width - 1)); then
-    if [ "$DAILY_VIEW" = 1 ]; then hint+="  ${key}d${fg} back"; else hint+="  ${key}d${fg} view"; fi
-  fi
-  FOOTER_FRAME+="${ESC}[${at};1H${bg} ${FG_DEFAULT}${icon} ${fg}Daily${body}${fg}${hint}${ESC}[K${C_RESET}"
-}
-
 # tasks_row <行番号>: "📋 Tasks 123 (80 old)  t list" を FOOTER_FRAME に積む。old は 30 日を超えて残っている件数(黄)。
 # 幅に収まらないものは、古い件数 → ヒントの順に省く(行の折り返しで下部欄が崩れないようにする)
 tasks_row() {
@@ -1562,6 +1534,7 @@ read_daily() {
   ((SECONDS - DAILY_CHECKED_AT < DAILY_REFRESH_SEC)) && return 0
   DAILY_CHECKED_AT=$SECONDS
   DAILY_STALE=0
+  DAILY_WORK=0
   # 指定が無ければ、Obsidian の設定(Daily Notes の folder)から求める。パスの解決は tmux-agent-daily に 1 か所だけ持つ
   [ -n "$dir" ] || dir=$(AGENT_DAILY_NO_TMUX=1 "$DAILY_BIN" --print-dir 2>/dev/null)
   DAILY_DIR_RESOLVED=$dir
@@ -1577,6 +1550,7 @@ read_daily() {
     hour=$((hour + 24))
   fi
   today=${AGENT_SIDEBAR_TODAY:-$today}
+  [[ $DAILY_WORK_DAYS == *$wd* ]] && ((hour >= DAILY_WORK_FROM && hour < DAILY_WORK_TO)) && DAILY_WORK=1
   mtime=$(stat -f %m "${dir/#\~/$HOME}/$today.md" 2>/dev/null)
   if [ -z "$mtime" ]; then
     DAILY_STATE=missing
@@ -1589,12 +1563,40 @@ read_daily() {
   DAILY_STATE=ok
   DAILY_AGE=$((now - mtime))
   ((DAILY_AGE < 0)) && DAILY_AGE=0
-  # 点滅の対象: 長く更新されていない × 勤務日 × 勤務時間帯
-  if ((DAILY_AGE > DAILY_ALERT_SEC)) && [[ $DAILY_WORK_DAYS == *$wd* ]] \
-    && ((hour >= DAILY_WORK_FROM && hour < DAILY_WORK_TO)); then
-    DAILY_STALE=1
-  fi
+  # 点滅・赤の対象: 長く更新されていない × 勤務日 × 勤務時間帯
+  ((DAILY_AGE > DAILY_ALERT_SEC && DAILY_WORK)) && DAILY_STALE=1
   return 0
+}
+
+# Daily カードの状態(AG_STATUS に入れる値)を REPLY に、2 行目の文と補足を DAILY_LINE / DAILY_NOTE に入れる。
+#   daily_alert = 長く更新されていない / 今日のノートがまだ無い(勤務時間帯だけ。DAILY_STALE)→ 赤(WAITING と同じ色味)
+#   daily_warn  = 2 時間を超えた(勤務時間帯だけ)→ 黄
+#   daily_ok    = 更新されて間もない → くすんだ緑(IDLE と同じ)
+#   daily_none  = 夜・休日で、今日のノートが無い → 灰
+daily_status() {
+  DAILY_NOTE=""
+  case $DAILY_STATE in
+    ok)
+      if ((DAILY_AGE >= 3600)); then
+        printf -v DAILY_LINE '更新 %dh%02dm 前' $((DAILY_AGE / 3600)) $((DAILY_AGE % 3600 / 60))
+      else
+        DAILY_LINE="更新 $((DAILY_AGE / 60))m 前"
+      fi
+      if [ "$DAILY_STALE" = 1 ]; then REPLY=daily_alert
+      elif ((DAILY_WORK && DAILY_AGE > DAILY_WARN_SEC)); then REPLY=daily_warn
+      else REPLY=daily_ok
+      fi
+      ;;
+    missing)
+      DAILY_LINE="今日のノートがありません"
+      DAILY_NOTE="未作成"
+      if [ "$DAILY_STALE" = 1 ]; then REPLY=daily_alert; else REPLY=daily_none; fi
+      ;;
+    *)
+      DAILY_LINE="o で開く"
+      REPLY=daily_none
+      ;;
+  esac
 }
 
 # いま Daily 欄のアイコンを点滅させるか(描画と、1 秒ごとの再描画の要否で使う)。ダッシュボードを見ている間は、すでに注目しているので点滅させない
@@ -1644,10 +1646,10 @@ build_footer() {
   [ -n "$CRED_CENTS" ] && usage_rows=$((usage_rows + 1))
   [ -n "$CX_USED" ] && usage_rows=$((usage_rows + 1))
   ((usage_rows > 0)) && usage_rows=$((usage_rows + 1))
-  # 下部欄は 2 つの区画: USAGE(データがあるとき。見出し + 行)と、TOOLS(常に。見出し + Daily 欄 + WEB 欄で 3 行。WEB が最下行)
-  # TOOLS 区画は 見出し + Daily 欄 + [Tasks 欄(ディレクトリが決まるときだけ)] + WEB 欄
-  local tools_rows=3
-  [ "$TASKS_STATE" = ok ] && tools_rows=4
+  # 下部欄は 2 つの区画: USAGE(データがあるとき。見出し + 行)と、TOOLS(常に。見出し + WEB 欄で 2 行。WEB が最下行)
+  # TOOLS 区画は 見出し + [Tasks 欄(ディレクトリが決まるときだけ)] + WEB 欄。Daily は Agent 一覧の先頭のカード(put_agent の Daily)
+  local tools_rows=2
+  [ "$TASKS_STATE" = ok ] && tools_rows=3
   footer_rows=$((usage_rows + tools_rows))
   top=$((term_h - footer_rows + 1))
 
@@ -1708,7 +1710,6 @@ build_footer() {
     plain+="  ${hint}"
   done
   footer_heading $((term_h - tools_rows + 1)) " $FOOTER_TOOLS_TITLE "
-  daily_row $((term_h - tools_rows + 2))
   [ "$TASKS_STATE" = ok ] && tasks_row $((term_h - 1))
   FOOTER_FRAME+="${ESC}[${term_h};1H ${web}${ESC}[K${C_RESET}"
 }
@@ -1839,6 +1840,8 @@ render() {
     put_sep "$((i - 1))" ""
 
     ((AG_N > shown)) && put "$C_DIM" " +$((AG_N - shown)) more"
+    # Daily カードだけで Agent が 1 つも無いとき
+    ((AG_N == 1 && N_AGENTS == 0)) && put "$C_DIM" "  No agents running"
   fi
 
   # 描画済み範囲より下を消してから 1 回の write で出す（ちらつき防止）
@@ -1851,6 +1854,8 @@ render() {
 
 # --- 入力・操作 ---------------------------------------------------------------
 
+# Daily カードの AG_ID(pane ではない擬似的な ID。cockpit / jump / プレビューへは渡さない)
+DAILY_ID="@daily"
 AG_N=0
 MAIN_PANES=-1
 FOCUSED=0
@@ -1942,6 +1947,25 @@ prune_shells() {
   AG_N=$k
 }
 
+# Daily カード(種別 Daily。Agent ではなく、今日の Daily Note の更新状態)を一覧の先頭に足す。ディレクトリが決まらないとき(DAILY_STATE=off)は足さない。
+# 中身(状態・2 行目)は daily_status。経過時間は read_daily の周期(30 秒)でしか変わらないが、描画のたびに作り直されるので、ここで固定してよい。
+# 先頭に足す = 別のリポジトリ(見出し NOTES)として扱う。Agent の並びや番号(AG_WIN / AG_PANE)には関わらない
+prepend_daily() {
+  [ "$DAILY_STATE" = off ] && return 0
+  local name
+  for name in $AG_ARRAYS; do
+    # set -u の bash 3.2 は、空の配列の "${a[@]}" を未定義として落ちる(Agent が 1 つも居ないとき)ので、+ で守る
+    eval "$name=(\"\" \${$name[@]+\"\${$name[@]}\"})"
+  done
+  daily_status
+  AG_TYPE[0]=Daily; AG_ID[0]=$DAILY_ID; AG_ACT[0]=0
+  AG_PROJ[0]="Daily Note"; AG_TITLE[0]="Daily Note"
+  AG_STATUS[0]=$REPLY; AG_DETAIL[0]=$DAILY_NOTE; AG_ELAPSED[0]="o open"
+  AG_BRANCH[0]=$DAILY_LINE
+  AG_ROWS[0]=3; AG_REPO[0]="NOTES"; AG_RKEY[0]="@notes"
+  AG_N=$((AG_N + 1))
+}
+
 parse_records() {
   local tag sess win wname pane type id act proj st det elapsed title cwd i j s e cnt
   GIT_REFRESH_LEFT=$GIT_REFRESH_MAX
@@ -1969,6 +1993,7 @@ parse_records() {
 
   prune_shells
   reorder_agents
+  prepend_daily
 
   # リポジトリごとのまとまり(連続した範囲)の Agent の数を求める(見出しの右端に出す)
   i=0
@@ -1979,7 +2004,7 @@ parse_records() {
     # 見出しの件数は Agent だけ数える(空きシェルの欄は数えない。空きシェルだけのリポジトリは 0)
     cnt=0
     for ((j = s; j <= e; j++)); do
-      [ "${AG_TYPE[j]}" = Shell ] || cnt=$((cnt + 1))
+      case ${AG_TYPE[j]} in Shell | Daily) ;; *) cnt=$((cnt + 1)) ;; esac
     done
     for ((j = s; j <= e; j++)); do
       AG_RCOUNT[j]=$cnt
@@ -1989,7 +2014,7 @@ parse_records() {
 
   N_WORK=0; N_WAIT=0; N_DONE=0; N_AGENTS=0
   for ((i = 0; i < AG_N; i++)); do
-    [ "${AG_TYPE[i]}" = Shell ] || N_AGENTS=$((N_AGENTS + 1))
+    case ${AG_TYPE[i]} in Shell | Daily) ;; *) N_AGENTS=$((N_AGENTS + 1)) ;; esac
     case ${AG_STATUS[i]} in
       working) N_WORK=$((N_WORK + 1)) ;;
       waiting) N_WAIT=$((N_WAIT + 1)) ;;
@@ -2008,8 +2033,10 @@ parse_records() {
       [ "${AG_ID[i]}" = "${SEL_KEY%%|*}" ] && { found=$i; break; }
     done
   fi
+  # 既定は、いま見ている Agent。無ければ先頭の Agent(Daily カードは、自分で選んだときだけ)
   if [ -z "$found" ]; then
     found=0
+    [ "${AG_TYPE[0]:-}" = Daily ] && ((AG_N > 1)) && found=1
     for ((i = 0; i < AG_N; i++)); do
       [ "${AG_ACT[i]}" = 1 ] && { found=$i; break; }
     done
@@ -2033,6 +2060,7 @@ jump_to() {
   local i=$1 id
   id=${AG_ID[i]:-}
   [ -z "$id" ] && return 0
+  [ "${AG_TYPE[i]}" = Daily ] && return 0
   [ "${AG_SESS[i]}" != "$CUR_SESS" ] && tmux switch-client -t "${AG_SESS[i]}" 2>/dev/null
   tmux select-window -t "$id" \; select-pane -t "$id" 2>/dev/null
 }
@@ -2081,12 +2109,11 @@ restore_cockpit_selection() {
   RESTORE_DONE=1
   if [ -n "$cockpit_shown" ]; then
     SEL_KEY="$cockpit_shown|"   # 種別は不明。pane_id だけで探される
+  elif [ "$DAILY_VIEW" = 1 ] || [ "$opt_last_view" = daily ]; then
+    # ダッシュボードを出していた(出している)なら、Daily カードを選ぶ。右の枠へは、取り込みの最後の cockpit_show_selected が出す
+    SEL_KEY="$DAILY_ID|Daily"
   elif [ -n "$opt_last_sel" ]; then
     SEL_KEY=$opt_last_sel
-  fi
-  if [ -z "$cockpit_shown" ] && [ "$opt_last_view" = daily ] && [ "$DAILY_VIEW" != 1 ]; then
-    DAILY_VIEW=1
-    "$COCKPIT_BIN" view daily >/dev/null 2>&1
   fi
 }
 
@@ -2108,9 +2135,46 @@ leave_daily_view() {
   "$COCKPIT_BIN" view none >/dev/null 2>&1
 }
 
+# 選択が Daily カードなら、右の枠に Daily ダッシュボードを出す(Agent は元へ戻る)
+enter_daily_view() {
+  [ "$DAILY_VIEW" = 1 ] && return 0
+  DAILY_VIEW=1
+  cockpit_shown=""
+  mark_active_agent ""
+  "$COCKPIT_BIN" view daily >/dev/null 2>&1
+}
+
+# cockpit で d: Daily カードへ移る。Daily カードにいるときは、直前に選んでいた Agent へ戻る
+toggle_daily_card() {
+  local i
+  if [ "${AG_TYPE[SEL_IDX]:-}" = Daily ]; then
+    ((AG_N > 1)) || return 0
+    SEL_IDX=1
+    for ((i = 1; i < AG_N; i++)); do
+      [ "${AG_ID[i]}|${AG_TYPE[i]}" = "$DAILY_PREV_KEY" ] && { SEL_IDX=$i; break; }
+    done
+  else
+    if [ "${AG_TYPE[0]:-}" != Daily ]; then
+      tmux display-message "Daily: ノートの場所が分かりません" 2>/dev/null
+      return 0
+    fi
+    DAILY_PREV_KEY=$SEL_KEY
+    SEL_IDX=0
+  fi
+  SEL_KEY="${AG_ID[SEL_IDX]}|${AG_TYPE[SEL_IDX]}"
+  render
+  need_render=0
+  cockpit_show_selected
+}
+DAILY_PREV_KEY=""
+
 cockpit_show_selected() {
-  leave_daily_view
   ((AG_N > 0)) || return 0
+  if [ "${AG_TYPE[SEL_IDX]}" = Daily ]; then
+    enter_daily_view
+    return 0
+  fi
+  leave_daily_view
   "$COCKPIT_BIN" show "${AG_ID[SEL_IDX]}" >/dev/null 2>&1
   cockpit_shown=${AG_ID[SEL_IDX]}
 }
@@ -2130,7 +2194,7 @@ help_lines() {
       "j k ↓ ↑|選択を移動して、右の枠に表示する" \
       "⏎ l h|右の枠へフォーカス(戻るのは C-t h)" \
       "click|その Agent を右の枠に表示して、フォーカスも移す" \
-      "d|Daily を右の枠に出す / 戻す" \
+      "d|Daily カードへ移る / 戻る(右の枠に Daily を出す)" \
       "q|cockpit を閉じる(Agent は元へ戻す)"
   else
     printf '%s\n' \
@@ -2260,15 +2324,17 @@ PREVIEW_MIN_WIDTH=40
 PREVIEW_ACTIVE=0
 PREVIEW_CUR_FILE=""
 PREVIEW_LAST_CUR=-1
+# 一覧の先頭が Daily カードのとき 1(ポップアップは Agent だけを数えるので、添字がずれる)
+PREVIEW_OFF=0
 
 # SIGUSR1 のハンドラ。シグナルは取りこぼされず(ハンドラが走るまで保留される)、`wait` も即座に中断される
 on_preview_poke() {
   local cur=""
   ((PREVIEW_ACTIVE)) || return 0
   [ -r "$PREVIEW_CUR_FILE" ] && read -r cur < "$PREVIEW_CUR_FILE"
-  if [[ $cur =~ ^[0-9]+$ ]] && ((cur != PREVIEW_LAST_CUR && cur < AG_N)); then
+  if [[ $cur =~ ^[0-9]+$ ]] && ((cur != PREVIEW_LAST_CUR && cur + PREVIEW_OFF < AG_N)); then
     PREVIEW_LAST_CUR=$cur
-    SEL_IDX=$cur
+    SEL_IDX=$((cur + PREVIEW_OFF))
     SEL_KEY="${AG_ID[SEL_IDX]}|${AG_TYPE[SEL_IDX]}"
     render
   fi
@@ -2282,9 +2348,14 @@ open_preview() {
 
   ((AG_N == 0)) && return 0
   [ -x "$PREVIEW_BIN" ] || return 0
+  # Daily カードは pane が無いので、プレビューの対象外(開けない。一覧にも入れない)
+  PREVIEW_OFF=0
+  [ "${AG_TYPE[0]}" = Daily ] && PREVIEW_OFF=1
+  [ "${AG_TYPE[SEL_IDX]}" = Daily ] && return 0
+  ((AG_N > PREVIEW_OFF)) || return 0
 
   : > "$list_file"
-  for ((i = 0; i < AG_N; i++)); do
+  for ((i = PREVIEW_OFF; i < AG_N; i++)); do
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${AG_ID[i]}" "${AG_TITLE[i]:-${AG_PROJ[i]}}" "${AG_TYPE[i]}" "${AG_STATUS[i]}" "" "${AG_REPO[i]}${AG_BRANCH[i]:+ · ${AG_BRANCH[i]}}" >> "$list_file"
   done
   rm -f "$result_file" "$cur_file"
@@ -2300,25 +2371,26 @@ open_preview() {
   fi
 
   PREVIEW_CUR_FILE=$cur_file
-  PREVIEW_LAST_CUR=$SEL_IDX
+  PREVIEW_LAST_CUR=$((SEL_IDX - PREVIEW_OFF))
   PREVIEW_ACTIVE=1
 
   # display-popup はポップアップが閉じるまで戻ってこないので、バックグラウンドで起動する。
   # 生きている間、ポップアップ側が j/k のたびに送る SIGUSR1 で on_preview_poke が走り、裏の選択表示が追従する
   tmux display-popup -E "${popup_geometry[@]}" -b rounded -S 'fg=colour208' -t "$TMUX_PANE" \
-    "'$PREVIEW_BIN' '$list_file' '$SEL_IDX' '$result_file' '$$'" &
+    "'$PREVIEW_BIN' '$list_file' '$((SEL_IDX - PREVIEW_OFF))' '$result_file' '$$'" &
   popup_pid=$!
   render
   # シグナルで `wait` が中断されても、ポップアップが生きている限り待ち直す
   while kill -0 "$popup_pid" 2>/dev/null; do
+    ((QUIT)) && exit 0   # 終了のシグナルで wait が中断された。ポップアップの終了は待たない
     wait "$popup_pid" 2>/dev/null
   done
   PREVIEW_ACTIVE=0
 
   if [ -r "$result_file" ]; then
     { read -r idx; read -r jumped; } < "$result_file"
-    if [ -n "$idx" ] && ((idx >= 0 && idx < AG_N)); then
-      SEL_IDX=$idx
+    if [ -n "$idx" ] && ((idx >= 0 && idx + PREVIEW_OFF < AG_N)); then
+      SEL_IDX=$((idx + PREVIEW_OFF))
       SEL_KEY="${AG_ID[SEL_IDX]}|${AG_TYPE[SEL_IDX]}"
     fi
     [ "$jumped" = jumped ] && FOCUSED=0
@@ -2337,6 +2409,10 @@ restart_selected() {
   id=${AG_ID[i]}
   if [ "${AG_TYPE[i]}" = Shell ]; then
     tmux display-message "restart: Agent が起動していません(n で新規起動)" 2>/dev/null
+    return 0
+  fi
+  if [ "${AG_TYPE[i]}" = Daily ]; then
+    tmux display-message "restart: Daily は Agent ではありません" 2>/dev/null
     return 0
   fi
   if [ "${AG_TYPE[i]}" != Claude ]; then
@@ -2365,6 +2441,7 @@ fork_selected() {
   case ${AG_TYPE[i]} in
     Claude) ;;
     Shell) tmux display-message "fork: Agent が起動していません(n で新規起動)" 2>/dev/null; return 0 ;;
+    Daily) tmux display-message "fork: Daily は Agent ではありません" 2>/dev/null; return 0 ;;
     *) tmux display-message "fork: ${AG_TYPE[i]} の複製は未対応です" 2>/dev/null; return 0 ;;
   esac
   if [ "$COCKPIT" = 1 ]; then mode="--notify '$TMUX_PANE'"; else mode="--focus"; fi
@@ -2376,6 +2453,10 @@ fork_selected() {
 # ディレクトリはリポジトリの本体(worktree でも大本のディレクトリ)。実際の処理は tmux-agent-new
 new_agent_menu() {
   ((AG_N > 0)) || return 0
+  if [ "${AG_TYPE[SEL_IDX]}" = Daily ]; then
+    tmux display-message "new: Agent のカードを選んでください(Daily は Agent ではありません)" 2>/dev/null
+    return 0
+  fi
   local s=$SEL_IDX dir anchor repo mode here=""
   while ((s > 0)) && [ "${AG_RKEY[s - 1]}" = "${AG_RKEY[SEL_IDX]}" ]; do s=$((s - 1)); done
   anchor=${AG_ID[s]}
@@ -2635,6 +2716,7 @@ apply_collected() {
   # tmux が応答しない（server 終了）場合は終了する
   [ -z "$records" ] && { EXIT_REASON=collect_empty; exit 0; }
   restore_cockpit_selection
+  read_daily   # Daily カードの状態は parse_records が使う
   parse_records "$records"
   bell_check
   if [ -n "$new_pane" ]; then
@@ -2646,7 +2728,6 @@ apply_collected() {
   read_limits
   read_credits
   read_codex_usage
-  read_daily
   read_tasks
   # main pane が全て閉じて sidebar だけが残った window は、window ごと閉じる。
   # cockpit では、枠に入っていた Agent が終了しただけのことがあるので、交換用の枠を戻してから判断する
@@ -2662,6 +2743,10 @@ apply_collected() {
 
   # cockpit で、まだ何も枠に入っていなければ、選択中の Agent を入れる(開いた直後)
   if [ "$COCKPIT" = 1 ] && [ -z "$cockpit_shown" ] && [ "$DAILY_VIEW" != 1 ]; then
+    cockpit_show_selected
+  fi
+  # Daily カードが無くなった(ノートの場所が分からなくなった)のに、ダッシュボードが出たままなら、選択中の Agent を出す
+  if [ "$COCKPIT" = 1 ] && [ "$DAILY_VIEW" = 1 ] && [ "${AG_TYPE[SEL_IDX]:-}" != Daily ]; then
     cockpit_show_selected
   fi
 
@@ -2688,9 +2773,13 @@ tmux set-option -p -t "$TMUX_PANE" pane-border-format ' agent sidebar ' 2>/dev/n
 # TUI では stderr が画面を壊すだけなので捨てる（調査時は環境変数で戻せる）
 [ -z "${AGENT_SIDEBAR_DEBUG:-}" ] && exec 2>/dev/null
 
-trap 'EXIT_REASON=SIGINT; exit 0' INT
-trap 'EXIT_REASON=SIGTERM; exit 0' TERM
-trap 'EXIT_REASON=SIGHUP; exit 0' HUP
+# 終了のシグナルは、trap の中では exit せずに印だけ立て、メインループの先頭で exit する。
+# trap の中で exit すると、cleanup が起動する外部コマンド(rm など)の子を bash が回収できず、
+# シグナルハンドラの中で CPU 100% のまま居座ることがあった(SIGHUP が read の最中に届いたとき。実機のテストで再現)
+QUIT=0
+trap 'EXIT_REASON=SIGINT; QUIT=1' INT
+trap 'EXIT_REASON=SIGTERM; QUIT=1' TERM
+trap 'EXIT_REASON=SIGHUP; QUIT=1' HUP
 trap cleanup EXIT
 life_log "START"
 resized=0
@@ -2731,6 +2820,7 @@ cpu_watchdog "$MAIN_PID" &
 WATCHDOG_PID=$!
 
 while :; do
+  ((QUIT)) && exit 0
   parent_gone && { EXIT_REASON=parent_gone; exit 0; }
   # 裏の収集が終わっていれば、結果を取り込む。取り込めるのは入力待ち(最大 TICK 秒)から戻ったときだけ
   if [ -n "$COLLECT_PID" ]; then
@@ -2824,7 +2914,7 @@ while :; do
         need_render=0
         cockpit_show_selected
       # j/k(矢印)ではそのままプレビューを開く。ホイールは誤操作しやすいので選択を動かすだけ
-      elif [ "$AUTO_PREVIEW" != off ] && [[ $KEY == down || $KEY == up ]]; then
+      elif [ "$AUTO_PREVIEW" != off ] && [[ $KEY == down || $KEY == up ]] && [ "${AG_TYPE[SEL_IDX]:-}" != Daily ]; then
         render
         open_preview
         need_render=1
@@ -2851,8 +2941,8 @@ while :; do
       last_collect=-999
       ;;
     enter)
-      if [ "$COCKPIT" = 1 ] && [ "$DAILY_VIEW" = 1 ]; then
-        # ダッシュボード(Daily)を出している間の Enter は、Daily Note を開く(右の枠は操作する pane ではないため)
+      if [ "${AG_TYPE[SEL_IDX]:-}" = Daily ]; then
+        # Daily カードの Enter は、Daily Note を開く(cockpit の右の枠はダッシュボードで、操作する pane ではない)
         "$DAILY_OPEN_CMD" "$DAILY_URL" >/dev/null 2>&1 &
       elif [ "$COCKPIT" = 1 ]; then
         # cockpit: 右の枠(Agent の pane)へフォーカスを移す。戻るのは prefix + h
@@ -2874,7 +2964,17 @@ while :; do
       if [ -n "$idx" ]; then
         SEL_IDX=$idx
         SEL_KEY="${AG_ID[idx]}|${AG_TYPE[idx]}"
-        if [ "$COCKPIT" = 1 ]; then
+        if [ "${AG_TYPE[idx]}" = Daily ]; then
+          # Daily カード: cockpit は右の枠にダッシュボードを出す(フォーカスは移さない)。通常の sidebar は Daily Note を開く
+          if [ "$COCKPIT" = 1 ]; then
+            render
+            need_render=0
+            cockpit_show_selected
+          else
+            "$DAILY_OPEN_CMD" "$DAILY_URL" >/dev/null 2>&1 &
+          fi
+          need_render=1
+        elif [ "$COCKPIT" = 1 ]; then
           # 先に罫線を動かしてから入れ替える
           render
           need_render=0
@@ -2924,17 +3024,8 @@ while :; do
       FOCUSED=1
       if [ "$COCKPIT" != 1 ]; then
         show_daily_popup
-      elif [ "$DAILY_VIEW" = 1 ]; then
-        render
-        need_render=0
-        cockpit_show_selected
       else
-        DAILY_VIEW=1
-        cockpit_shown=""
-        mark_active_agent ""
-        render
-        need_render=0
-        "$COCKPIT_BIN" view daily >/dev/null 2>&1
+        toggle_daily_card
       fi
       need_render=1
       ;;
