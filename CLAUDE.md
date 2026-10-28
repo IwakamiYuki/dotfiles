@@ -319,11 +319,15 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - tmux-resurrect で復元すると、sidebar pane は空のシェル pane になる（`C-t b` を押す前に邪魔なら閉じる）
 - 既存 window へは自動追加しない（必要な window で `C-t b`）
 - 起動中のスクリプトを書き換えると bash が壊れた読み方をするため、スクリプトを更新したら sidebar は閉じて開き直す
-- **sidebar の生死の記録**: stderr を捨てているため、放置中に sidebar が消えても理由が残らなかった。そこで `/tmp/tmux-agent-sidebar-life.log`（`AGENT_SIDEBAR_LIFE_LOG`）に、起動時 `START`、終了時 `EXIT reason=<経路> status=<終了ステータス>` を 1 行ずつ追記する（200KB を超えたら末尾 300 行だけ残す）。reason は `SIGINT` / `SIGTERM` / `SIGHUP` / `read_failures` / `collect_empty` / `cockpit_no_main_panes` / `no_main_panes` / `quit_key`。**`EXIT` の行が無いまま止まっている sidebar は、SIGKILL など trap できない強制終了**（外から殺された）。cockpit の sidebar は終了時に `teardown` で Agent を元へ戻すので、`EXIT` が残っているのに Agent が枠に残っているなら teardown の失敗を疑う
+- **sidebar の生死の記録**: stderr を捨てているため、放置中に sidebar が消えても理由が残らなかった。そこで `/tmp/tmux-agent-sidebar-life.log`（`AGENT_SIDEBAR_LIFE_LOG`）に、起動時 `START`、終了時 `EXIT reason=<経路> status=<終了ステータス>` を 1 行ずつ追記する（200KB を超えたら末尾 300 行だけ残す）。reason は `SIGINT` / `SIGTERM` / `parent_gone` / `read_failures` / `collect_empty` / `cockpit_no_main_panes` / `no_main_panes` / `quit_key`（SIGHUP は無視するので、`SIGHUP` は出ない。下記）。暴走をウォッチドッグが止めたときは `WATCHDOG kill pid=… cpu=…%` の行が残る。**`EXIT` の行が無いまま止まっている sidebar は、SIGKILL など trap できない強制終了**（外から殺された）。cockpit の sidebar は終了時に `teardown` で Agent を元へ戻すので、`EXIT` が残っているのに Agent が枠に残っているなら teardown の失敗を疑う
   - 本体を `main()` に包み、末尾を `main "$@"; exit $?`（**必ず 1 行**。別の行だと main から戻ったあとに書き換え後の内容を読んで暴走する）にしたので、**この版で起動した sidebar** は書き換えの影響を受けない。それ以前に起動したものは従来どおり開き直す
   - 端末が消えて `read` が即失敗し続けると、ビジーループで CPU を使い切る（pane が閉じたのに残った sidebar が約 8 日間 99% で居座った実例がある。SIGTERM が効かず `kill -9` が要った）。bash 3.2 は `read -t` のタイムアウトも EOF も終了ステータス 1 で区別できないため、`note_read_failure` が「同じ秒に 20 回を超えて失敗したら終了」で検知する（通常のタイムアウトは 1 秒に高々 2 回）
+  - **`read -t` の最中に届いたシグナルの trap で暴走する（bash 3.2）**: SIGHUP の trap（`exit 0`）が `read` の最中に動くと、`cleanup` の `rm` の子を回収できないまま、またはその前に、シグナルハンドラの中（`sample` では `_sigtramp` だけ）で CPU 100% になり、SIGTERM も効かなかった（5 日間居座った実例。`rm` のゾンビを子に持つ）。bash 3.2 は `read` の最中のシグナルの trap を、ハンドラの中で即座に実行するため。記録つきのコピーでテストを繰り返して再現・特定した（ベル・音のテストで 1〜3 周に 1 回）
+    - **HUP は trap しない（`trap '' HUP`）**: 端末が消えれば `read` が即失敗するので `note_read_failure` が、tmux サーバーごと消えたら `parent_gone` が、通常の文脈で終了させる。INT / TERM は trap では印（`QUIT`）だけ立て、メインループの先頭（とプレビューの待ちループ）で `exit` する
+    - **`parent_gone`**: 起動時の親（tmux サーバー）が居なければ終了（`kill -0`。親が PID 1 以下のときは見ない）。**`cpu_watchdog`**: 別プロセスで本体の CPU を見て、60% 以上が 3 回（20 秒間隔）続いたら、cockpit なら `teardown` してから SIGKILL。本体が居なくなれば自分で終了する（cleanup では止めない: 終了処理のあとで回った実例があるため）。`AGENT_SIDEBAR_WATCHDOG_SEC` / `_CPU_PCT` / `_STRIKES`
+    - 再現のしかた: ベル・音・`tasks_t_` のテストを `AGENT_SIDEBAR_WATCHDOG_SEC=60` で繰り返し、親が 1 で CPU が高い sidebar を探す。sidebar の先頭に `trap … DEBUG` で実行コマンドを書き出す記録を埋め込んだコピーを作り、テストの `SIDEBAR` を差し替えると、止まる直前のコマンドが分かる（`BASH_ENV` は、読み込み中の `$0` が `bash` になるので使えない）
   - 取り残しの疑いがあるときは `ps -Ao pid,ppid,%cpu,etime,command -r | grep tmux-agent-sidebar` で、親が 1 で CPU が高いものを探す
-  - テスト: `test_agent_sidebar_usage.py` の `SidebarSurvivalTest`（tmux を使わない）
+  - テスト: `test_agent_sidebar_usage.py` の `SidebarSurvivalTest`（tmux を使わない。`read` の失敗・`parent_gone`・ウォッチドッグ）と、`test_pane_だけが閉じても_sidebar_は終了する` / `test_window_が閉じても_sidebar_は終了する`（サーバーが生きたまま閉じても、HUP を無視した sidebar が `read_failures` で終了する）
 
 ### Agent cockpit (tmux/scripts/tmux-agent-cockpit*)
 左に sidebar、右に「sidebar で選択した Agent の **本物の pane**」を出す専用 window。この window だけで、あらゆる window の Claude Code / Codex を確認・指示出しできる。

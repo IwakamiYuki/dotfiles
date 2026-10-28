@@ -1292,6 +1292,35 @@ class SidebarUsageTest(unittest.TestCase):
         for line in screen.splitlines():
             self.assertLessEqual(display_width(line), 32, line)
 
+    def sidebar_pid(self):
+        out = self.tmux("list-panes", "-a", "-F", "#{pane_id} #{pane_pid} #{@agent_sidebar}").stdout
+        return next(int(pid) for _pane, pid, flag in (l.split() for l in out.splitlines() if len(l.split()) == 3) if flag == "1")
+
+    def wait_exit(self, pid, timeout=8):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            time.sleep(0.2)
+        return False
+
+    def test_pane_だけが閉じても_sidebar_は終了する(self):
+        # SIGHUP は trap せず無視している(bash 3.2 は read の最中の trap で暴走することがあった)。
+        # tmux サーバーも親も生きたまま pane が閉じたとき、read の失敗の検知で終了することを確かめる
+        self.render()
+        pid = self.sidebar_pid()
+        pane = self.tmux("list-panes", "-a", "-F", "#{pane_id} #{@agent_sidebar}").stdout.split()
+        self.tmux("kill-pane", "-t", pane[pane.index("1") - 1])
+        self.assertTrue(self.wait_exit(pid), "pane が閉じても sidebar が終了しませんでした")
+
+    def test_window_が閉じても_sidebar_は終了する(self):
+        self.render(windows=["/tmp"])
+        pid = self.sidebar_pid()
+        self.tmux("kill-window", "-t", "t:0")  # sidebar の居る window。サーバーと他の window は残る
+        self.assertTrue(self.wait_exit(pid), "window が閉じても sidebar が終了しませんでした")
+
     def attach_client(self):
         """専用ソケットのサーバーへ、pty つきの本物のクライアントをつなぐ(display-popup は client が居ないと開けない)。"""
         master, slave = pty.openpty()
