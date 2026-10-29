@@ -116,8 +116,9 @@ def parse(output):
 
 
 def fetch():
-    """今日と明日の、終日でない予定。取れなければ None。"""
-    args = ["-n", "-nc", "-nrd", "-ea", "-b", "", "-df", "%Y-%m-%d", "-tf", "%H:%M",
+    """今日と明日の、終日でない予定(今日の、もう終わった予定も含む)。取れなければ None。"""
+    # -n(いま以降だけ)は付けない。付けると、終わった予定が予定表から消える
+    args = ["-nc", "-nrd", "-ea", "-b", "", "-df", "%Y-%m-%d", "-tf", "%H:%M",
             "-iep", "datetime,title,location,url,notes", "-po", "datetime,title,location,url,notes", "-ps", f"|{PROP_SEP}|"]
     if EXCLUDE:
         args += ["-ec", EXCLUDE]

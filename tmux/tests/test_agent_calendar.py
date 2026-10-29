@@ -68,6 +68,11 @@ class CalendarTest(unittest.TestCase):
         self.assertEqual([r[3] for r in rows], ["終日に近い予定", "朝会"])
         self.assertEqual(rows[1][:3], ["E", str(s1), str(e1)])
 
+    def test_icalbuddy_へ_いま以降だけにする_n_を渡さない(self):
+        # -n を付けると、今日もう終わった予定が取れず、予定表(--agenda)から消える
+        self.run_script(self.fake_icalbuddy(""), "--stdout")
+        self.assertNotIn("-n", self.read(self.args_log).split())
+
     def test_終わった予定は書かない(self):
         out = self.block(-1, "10:00", "11:00", "昨日の予定")
         self.assertEqual(self.run_script(self.fake_icalbuddy(out)).returncode, 0)
