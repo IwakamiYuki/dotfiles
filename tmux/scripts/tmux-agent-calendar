@@ -15,7 +15,8 @@ icalBuddy が無い Mac では、何もしないで終わる（sidebar はカー
 使い方:
   tmux-agent-calendar                  取得して、キャッシュへ書く
   tmux-agent-calendar --stdout         書かずに、標準出力へ出す(確認用)
-  tmux-agent-calendar --agenda [--color always|never] [--width N] [--height N]   今日と明日の予定の画面
+  tmux-agent-calendar --agenda [--color always|never] [--width N] [--height N]   今日と明日の日表示(縦の時間軸に予定を置く。空いている所が空き)
+  tmux-agent-calendar --agenda --list ...   同じ画面を、埋まり具合の横棒と予定の一覧にしたもの
   tmux-agent-calendar --check          icalBuddy と、カレンダーの許可の確認(カレンダーの数を出す)
 
 環境変数（主にテスト用）:
@@ -243,12 +244,12 @@ def timeline(spans, day, lo, hi, now, width, paint):
     return rows
 
 
-def free_line(spans, day, lo, hi, now, width, paint):
-    """空き時間(FREE_MIN_SEC 以上)の一覧 1 行。今日は、いま以降だけ。時間帯がもう終わっていれば出さない。"""
+def free_text(spans, day, lo, hi, now):
+    """空き時間(FREE_MIN_SEC 以上)の 1 行の文字と色。今日は、いま以降だけ。時間帯がもう終わっていれば None。"""
     end = at(day, hi)
     cur = max(at(day, lo), now)
     if cur >= end:
-        return []
+        return None
     slots = []
     for s, e in spans:
         gap_end = min(s, end)
@@ -260,13 +261,20 @@ def free_line(spans, day, lo, hi, now, width, paint):
     if end - cur >= FREE_MIN_SEC:
         slots.append((cur, end))
     if not slots:
-        return ["  " + paint(DIM, "空きなし")]
-    text = "空き " + " ".join(f"{hhmm(a)}-{hhmm(b)}" for a, b in slots)
-    return ["  " + paint(GREEN, clip(text, width - 2))]
+        return "空きなし", DIM
+    return "空き " + " ".join(f"{hhmm(a)}-{hhmm(b)}" for a, b in slots), GREEN
 
 
-def agenda(events, now, width, height, color):
-    """今日と明日を、日ごとに「埋まり具合の横棒 → 空き時間 → 予定の一覧」にする。終わった予定は薄く、いま進行中は黄色、これからは通常の色。"""
+def free_line(spans, day, lo, hi, now, width, paint):
+    free = free_text(spans, day, lo, hi, now)
+    if free is None:
+        return []
+    text, code = free
+    return ["  " + paint(code, clip(text, width - 2))]
+
+
+def agenda_list(events, now, width, height, color):
+    """(--list) 今日と明日を、日ごとに「埋まり具合の横棒 → 空き時間 → 予定の一覧」にする。終わった予定は薄く、いま進行中は黄色、これからは通常の色。"""
     def paint(code, text):
         return f"{code}{text}{RESET}" if color else text
 
@@ -300,6 +308,142 @@ def agenda(events, now, width, height, color):
     return lines[:height]
 
 
+# 日表示(Google カレンダーの「日」のように、縦の時間軸に予定のブロックを置く)。予定の無い所が空き
+GUTTER = 6  # 左の時刻の欄(「09:00」+ 空白)
+GRID = f"{ESC}[38;5;238m"
+# 予定のブロックの色(背景, 文字, 左端の縁): これから / 進行中 / 終わった
+BLOCK_STYLE = {"next": (94, 255, 208), "now": (136, 16, 226), "past": (236, 245, 240)}
+
+
+def layout(events, day, start_min, step, n):
+    """day の予定を、表示する行の範囲(r0 以上 r1 未満)と、重なったときの横の並び(lane / lanes)にする。"""
+    base, size = at(day, start_min), step * 60
+    day_lo, day_hi = at(day, 0), at(day, 24 * 60)
+    items = []
+    for e in events:
+        if e["start"] >= day_hi or max(e["end"], e["start"] + 1) <= day_lo:
+            continue
+        s = max(e["start"], day_lo)
+        t = max(min(e["end"], day_hi), s + 1)
+        r0 = (s - base) // size
+        r1 = max(-(-(t - base) // size), r0 + 1)
+        r0, r1 = max(r0, 0), min(r1, n)
+        if r1 > r0:
+            items.append({"ev": e, "r0": r0, "r1": r1})
+    items.sort(key=lambda it: (it["r0"], it["r0"] - it["r1"]))
+    # 重なる予定のかたまりごとに、同時に必要な列の数で横に分ける
+    cluster, lanes, cluster_end = [], [], 0
+    for it in items:
+        if cluster and it["r0"] >= cluster_end:
+            for c in cluster:
+                c["lanes"] = len(lanes)
+            cluster, lanes = [], []
+        for k, lane_end in enumerate(lanes):
+            if lane_end <= it["r0"]:
+                it["lane"], lanes[k] = k, it["r1"]
+                break
+        else:
+            it["lane"] = len(lanes)
+            lanes.append(it["r1"])
+        cluster.append(it)
+        cluster_end = max(cluster_end, it["r1"])
+    for c in cluster:
+        c["lanes"] = len(lanes)
+    return items
+
+
+def block(ev, k, w, now, color):
+    """予定のブロックの 1 行(幅 w)。k = 予定の何行目か(0 行目がタイトル、1 行目が時間)。"""
+    kind = "past" if ev["end"] <= now else ("now" if ev["start"] <= now else "next")
+    bg, fg, edge = BLOCK_STYLE[kind]
+    text = ev["title"] if k == 0 else (f"{hhmm(ev['start'])}-{hhmm(ev['end'])}" if k == 1 else "")
+    body = " " + clip(text, w - 3) if text and w >= 4 else ""
+    body += " " * max(w - 1 - width_of(body), 0)
+    if not color:
+        return ("▌" + body)[:w] if w > 0 else ""
+    return f"{ESC}[48;5;{bg};38;5;{edge}m▌{ESC}[38;5;{fg}m{body[:max(w - 1, 0)]}{RESET}"
+
+
+def day_column(events, day, start_min, step, n, now, cw, paint, color):
+    """1 日ぶんの列(n 行、各行は表示幅 cw)。予定の無い所は空白(1 時間ごとに薄い線。いまの行は黄色の線)。"""
+    items = layout(events, day, start_min, step, n)
+    by_row = [[] for _ in range(n)]
+    for it in items:
+        for i in range(it["r0"], it["r1"]):
+            by_row[i].append((it, i - it["r0"]))
+    size = step * 60
+    now_row = (now - at(day, start_min)) // size if day == day_of(now) else -1
+    rows = []
+    for i in range(n):
+        if i == now_row:
+            fill = lambda k: paint(YELLOW, "─" * k)
+        elif (start_min + i * step) % 60 == 0:
+            fill = lambda k: paint(GRID, "─" * k)
+        else:
+            fill = lambda k: " " * k
+        pieces, x = [], 0
+        for it, k in sorted(by_row[i], key=lambda r: r[0]["lane"]):
+            lw = cw // it["lanes"]
+            x0 = it["lane"] * lw
+            w = cw - x0 if it["lane"] == it["lanes"] - 1 else lw
+            if x0 > x:
+                pieces.append(fill(x0 - x))
+            pieces.append(block(it["ev"], k, w, now, color))
+            x = x0 + w
+        if x < cw:
+            pieces.append(fill(cw - x))
+        rows.append("".join(pieces))
+    return rows
+
+
+def gutter(start_min, step, i, now_row, now, paint):
+    m = start_min + i * step
+    if i == now_row:
+        return paint(YELLOW, hhmm(now)) + " "
+    return (paint(DIM, f"{m // 60:02d}:00") if m % 60 == 0 else "     ") + " "
+
+
+def agenda_grid(events, now, width, height, color):
+    """今日(幅が 80 以上なら、明日も右に並べる)の日表示。上 2 行は日付と空き時間、残りが縦の時間軸。"""
+    def paint(code, text):
+        return f"{code}{text}{RESET}" if color else text
+
+    today, tomorrow = day_of(now), day_of(now + 86400)
+    lo, hi = day_range(events, (today, tomorrow))
+    hours, avail = (hi - lo) // 60, max(height - 2, 1)
+    # 行数に収まる最も細かい刻み。1 時間でも収まらなければ、いまの付近の時間帯だけを出す
+    step = next((c for c in (15, 30, 60) if hours * 60 // c <= avail), 60)
+    n, start_min = hours * 60 // step, lo
+    if n > avail:
+        n = avail
+        first = min(max(lo // 60, time.localtime(now).tm_hour - 1), hi // 60 - n)
+        start_min = max(first, lo // 60) * 60
+    two = width >= 2 * GUTTER + 2 * 30 + 2
+    if two:
+        days, cw = [(today, "予定"), (tomorrow, "明日")], (width - GUTTER - 2) // 2
+    else:
+        # 1 列のときは、今日の時間帯が終わっていれば明日を出す
+        days, cw = [(today, "予定") if now < at(today, hi) else (tomorrow, "明日")], width - GUTTER
+    heads, frees, cols = [], [], []
+    for day, label in days:
+        plain = f"{label}  {time.strftime('%m/%d', time.localtime(at(day, 0)))}"
+        heads.append(paint(ORANGE, label) + paint(DIM, plain[len(label):]))
+        spans = busy_spans(events, day)
+        free = free_text(spans, day, lo, hi, now)
+        text, code = free if free else ("", DIM)
+        text = clip(text, cw)
+        frees.append(paint(code, text) + " " * (cw - width_of(text)))
+        heads[-1] += " " * (cw - width_of(plain))
+        cols.append(day_column(events, day, start_min, step, n, now, cw, paint, color))
+    gap = "  "
+    pad = " " * GUTTER
+    lines = [pad + gap.join(heads), pad + gap.join(frees)]
+    now_row = (now - at(today, start_min)) // (step * 60)
+    for i in range(n):
+        lines.append(gutter(start_min, step, i, now_row if today == day_of(now) else -1, now, paint) + gap.join(c[i] for c in cols))
+    return lines[:height]
+
+
 def option(args, name, default):
     return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else default
 
@@ -319,7 +463,8 @@ def main(args):
         width = int(option(args, "--width", "60"))
         height = int(option(args, "--height", "24"))
         color = option(args, "--color", "always") != "never"
-        print("\n".join(agenda(events or [], now, width, height, color)))
+        draw = agenda_list if "--list" in args else agenda_grid
+        print("\n".join(draw(events or [], now, width, height, color)))
         return 0
     if events is None:
         return 1

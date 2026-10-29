@@ -148,8 +148,18 @@ class CalendarTest(unittest.TestCase):
     # ---- 今日の予定の画面(--agenda): cockpit の右の枠 ----
 
     def agenda(self, out, now, width=50, height=24, color="never"):
+        """一覧と横棒の画面(--list)。"""
+        return self.run_script(self.fake_icalbuddy(out), "--agenda", "--list", "--color", color, "--width", str(width), "--height", str(height),
+                               env={"AGENT_CALENDAR_NOW": now}).stdout
+
+    def grid(self, out, now, width=50, height=44, color="never"):
+        """日表示(縦の時間軸に予定のブロックを置く)。"""
         return self.run_script(self.fake_icalbuddy(out), "--agenda", "--color", color, "--width", str(width), "--height", str(height),
                                env={"AGENT_CALENDAR_NOW": now}).stdout
+
+    def row(self, screen, text):
+        """text を含む行(時刻の欄を除いた部分は、そのまま見える)。"""
+        return next(l for l in screen.splitlines() if text in l)
 
     def test_agenda_終わった予定は薄く_進行中には印_これからの予定は時間つき(self):
         today = stamp(0, "00:00")[0]
@@ -241,6 +251,86 @@ class CalendarTest(unittest.TestCase):
     def test_agenda_幅が狭ければ_粗い棒にする(self):
         today = stamp(0, "00:00")[0]
         self.assertEqual(len(self.bar(self.agenda("", f"{today} 08:00", width=30))), 20)
+
+    # ---- 日表示(既定): Google カレンダーの「日」のように縦の時間軸へ置く ----
+
+    def test_日表示_予定は開始の時刻の行に出て_時間の長さだけ縦に伸びる(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.grid(self.day_events(("10:00", "11:00", "定例")), f"{today} 08:00")
+        lines = screen.splitlines()
+        i = next(i for i, l in enumerate(lines) if "▌ 定例" in l)
+        self.assertTrue(lines[i].startswith("10:00"), lines[i])
+        # タイトルの次の行に時間が出て、1 時間ぶん(15 分刻みなら 4 行)が ▌ でつながる
+        self.assertIn("▌ 10:00-11:00", lines[i + 1])
+        self.assertEqual(sum(1 for l in lines if l[6:].startswith("▌")), 4)
+
+    def test_日表示_左の欄には_1時間ごとの時刻が出る(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.grid("", f"{today} 08:00")
+        for h in ("09:00", "12:00", "18:00"):
+            self.assertIn(h, screen)
+
+    def test_日表示_予定の無い時間は空白_予定のある行だけにブロックが出る(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.grid(self.day_events(("13:00", "14:00", "共有会")), f"{today} 08:00")
+        self.assertEqual(sum(1 for l in screen.splitlines() if "▌" in l), 4)
+
+    def test_日表示_重なる予定は横に並ぶ(self):
+        today = stamp(0, "00:00")[0]
+        out = self.day_events(("10:00", "11:00", "A予定"), ("10:00", "11:00", "B予定"))
+        line = self.row(self.grid(out, f"{today} 08:00"), "A予定")
+        self.assertIn("B予定", line)
+        self.assertLess(line.index("A予定"), line.index("B予定"))
+
+    def test_日表示_いまの行には現在時刻が出る(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.grid("", f"{today} 11:10")
+        self.assertIn("11:10", screen)
+
+    def test_日表示_空き時間の行がある(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.grid(self.day_events(("13:00", "14:00", "共有会")), f"{today} 11:10", width=70)
+        self.assertIn("空き 11:10-13:00 14:00-19:00", screen)
+
+    def test_日表示_幅が広ければ_明日を右に並べる_狭ければ今日だけ(self):
+        today = stamp(0, "00:00")[0]
+        tomorrow = stamp(1, "00:00")[0]
+        out = self.day_events(("10:00", "11:00", "今日の予定")) + self.day_events(("10:00", "11:00", "明日の予定"), day=tomorrow)
+        wide = self.grid(out, f"{today} 08:00", width=100)
+        self.assertIn("明日の予定", self.row(wide, "今日の予定"))
+        narrow = self.grid(out, f"{today} 08:00", width=50)
+        self.assertNotIn("明日の予定", narrow)
+
+    def test_日表示_狭い列では_今日の時間帯が終わっていれば明日を出す(self):
+        today = stamp(0, "00:00")[0]
+        tomorrow = stamp(1, "00:00")[0]
+        out = self.day_events(("10:00", "11:00", "明日の予定"), day=tomorrow)
+        self.assertIn("明日の予定", self.grid(out, f"{today} 20:00", width=50))
+
+    def test_日表示_行数が足りなければ_いまの付近の時間帯だけを出す(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.grid("", f"{today} 15:30", width=50, height=8)
+        lines = screen.splitlines()
+        self.assertLessEqual(len(lines), 8)
+        self.assertIn("15:30", screen)
+
+    def test_日表示_幅と高さに収まる(self):
+        import unicodedata
+        today = stamp(0, "00:00")[0]
+        out = "".join(f"{today} at {h:02d}:00 - {h:02d}:45 ¦ {'長いタイトル' * 10}{h}\n" for h in range(8, 22))
+        for width in (30, 50, 100):
+            lines = self.grid(out, f"{today} 07:00", width=width, height=12).splitlines()
+            self.assertLessEqual(len(lines), 12)
+            for line in lines:
+                self.assertLessEqual(sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in line), width, line)
+
+    def test_日表示_色ありでも_行の幅は同じ(self):
+        import re
+        today = stamp(0, "00:00")[0]
+        out = self.day_events(("10:00", "11:00", "定例"), ("10:30", "11:30", "重なり"))
+        plain = self.grid(out, f"{today} 08:00", width=100).splitlines()
+        colored = [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in self.grid(out, f"{today} 08:00", width=100, color="always").splitlines()]
+        self.assertEqual(plain, colored)
 
     def test_check_は_カレンダーの件数を出す(self):
         proc = self.run_script(self.fake_icalbuddy("• 仕事\n  type: CalDAV\n• 個人\n  type: Local\n"), "--check")
