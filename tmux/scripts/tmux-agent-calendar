@@ -25,7 +25,7 @@ icalBuddy が無い Mac では、何もしないで終わる（sidebar はカー
   AGENT_CALENDAR_EXCLUDE      除くカレンダー名(カンマ区切り。icalBuddy の -ec)
   AGENT_CALENDAR_INCLUDE      対象にするカレンダー名(カンマ区切り。icalBuddy の -ic。既定は全部)
   AGENT_CALENDAR_NOW          「いま」(YYYY-MM-DD HH:MM。--agenda の表示確認用)
-  AGENT_CALENDAR_DAY_FROM / _DAY_TO   予定表の横棒の時間帯(時。既定 9 と 19。予定がはみ出せば広がる)
+  AGENT_CALENDAR_DAY_FROM / _DAY_TO   勤務時間(時。既定 10 と 19。空き時間はこの中だけで数える。予定がはみ出せば表示だけ広がる)
 """
 import os
 import re
@@ -40,8 +40,8 @@ CACHE = os.environ.get("AGENT_CALENDAR_CACHE", "/tmp/tmux-agent-sidebar-calendar
 EXCLUDE = os.environ.get("AGENT_CALENDAR_EXCLUDE", "")
 INCLUDE = os.environ.get("AGENT_CALENDAR_INCLUDE", "")
 TIMEOUT_SEC = 10
-# 予定表の横棒に出す時間帯(予定がはみ出せば広がる)と、「空き」として数える最短の長さ
-DAY_FROM = int(os.environ.get("AGENT_CALENDAR_DAY_FROM", "9"))
+# 勤務時間(予定表に出す時間帯の基本。予定がはみ出せば表示だけ広がる)。「空き」はこの時間帯の中だけで数える。空きとして数える最短の長さも
+DAY_FROM = int(os.environ.get("AGENT_CALENDAR_DAY_FROM", "10"))
 DAY_TO = int(os.environ.get("AGENT_CALENDAR_DAY_TO", "19"))
 FREE_MIN_SEC = 1800
 # 1 行目は「日付 at 開始 - 終了」。終了が別の日なら、終了にも日付が付く。本文などの続きの行は字下げされるので、行頭の一致だけで予定の始まりが分かる
@@ -244,12 +244,10 @@ def timeline(spans, day, lo, hi, now, width, paint):
     return rows
 
 
-def free_text(spans, day, lo, hi, now):
-    """空き時間(FREE_MIN_SEC 以上)の 1 行の文字と色。今日は、いま以降だけ。時間帯がもう終わっていれば None。"""
-    end = at(day, hi)
-    cur = max(at(day, lo), now)
-    if cur >= end:
-        return None
+def free_slots(spans, day, now):
+    """勤務時間(DAY_FROM〜DAY_TO)の中の空き(FREE_MIN_SEC 以上の隙間)を [開始, 終了] のリストにする。いまより前は含めない。"""
+    end = at(day, DAY_TO * 60)
+    cur = max(at(day, DAY_FROM * 60), now)
     slots = []
     for s, e in spans:
         gap_end = min(s, end)
@@ -260,13 +258,36 @@ def free_text(spans, day, lo, hi, now):
             break
     if end - cur >= FREE_MIN_SEC:
         slots.append((cur, end))
+    return slots
+
+
+def duration(sec):
+    """2h30m / 2h / 45m。"""
+    m = int(sec) // 60
+    return f"{m // 60}h{m % 60:02d}m" if m >= 60 and m % 60 else (f"{m // 60}h" if m >= 60 else f"{m}m")
+
+
+def free_summary(spans, day, now):
+    """日の見出しに添える空きの合計。今日は「残り(いまから) / 全体(勤務時間の全部)」、ほかの日は全体だけ。"""
+    total = sum(b - a for a, b in free_slots(spans, day, 0))
+    if day != day_of(now):
+        return f"空き {duration(total)}"
+    left = sum(b - a for a, b in free_slots(spans, day, now))
+    return f"空き 残り {duration(left)} / 全体 {duration(total)}"
+
+
+def free_text(spans, day, now):
+    """空き時間の 1 行の文字と色(今日は、いま以降だけ)。勤務時間がもう終わっていれば None。"""
+    if now >= at(day, DAY_TO * 60):
+        return None
+    slots = free_slots(spans, day, now)
     if not slots:
         return "空きなし", DIM
     return "空き " + " ".join(f"{hhmm(a)}-{hhmm(b)}" for a, b in slots), GREEN
 
 
-def free_line(spans, day, lo, hi, now, width, paint):
-    free = free_text(spans, day, lo, hi, now)
+def free_line(spans, day, now, width, paint):
+    free = free_text(spans, day, now)
     if free is None:
         return []
     text, code = free
@@ -290,7 +311,7 @@ def agenda_list(events, now, width, height, color):
         lines.append(paint(ORANGE, label) + paint(DIM, "  " + time.strftime("%m/%d", time.localtime(at(day, 0)))))
         spans = busy_spans(events, day)
         lines += timeline(spans, day, lo, hi, now, width, paint)
-        lines += free_line(spans, day, lo, hi, now, width, paint)
+        lines += free_line(spans, day, now, width, paint)
         lines.append("")
         for e in bucket:
             span = f"{hhmm(e['start'])}-{hhmm(e['end'])}"
@@ -352,8 +373,8 @@ def layout(events, day, start_min, step, n):
     return items
 
 
-def block(ev, k, w, now, color):
-    """予定のブロックの 1 行(幅 w)。k = 予定の何行目か(0 行目がタイトル、1 行目が時間)。"""
+def block(ev, k, w, now, color, last):
+    """予定のブロックの 1 行(幅 w)。k = 予定の何行目か(0 行目がタイトル、1 行目が時間)。last = 最後の行(黒い下線で、続く予定との境目を示す)。"""
     kind = "past" if ev["end"] <= now else ("now" if ev["start"] <= now else "next")
     bg, fg, edge = BLOCK_STYLE[kind]
     text = ev["title"] if k == 0 else (f"{hhmm(ev['start'])}-{hhmm(ev['end'])}" if k == 1 else "")
@@ -361,7 +382,9 @@ def block(ev, k, w, now, color):
     body += " " * max(w - 1 - width_of(body), 0)
     if not color:
         return ("▌" + body)[:w] if w > 0 else ""
-    return f"{ESC}[48;5;{bg};38;5;{edge}m▌{ESC}[38;5;{fg}m{body[:max(w - 1, 0)]}{RESET}"
+    # 下線の色は黒(58)。文字色のままだと白っぽい線になって目立ちすぎる
+    underline = f"{ESC}[4m{ESC}[58;5;16m" if last else ""
+    return f"{ESC}[48;5;{bg};38;5;{edge}m{underline}▌{ESC}[38;5;{fg}m{body[:max(w - 1, 0)]}{RESET}"
 
 
 def day_column(events, day, start_min, step, n, now, cw, paint, color):
@@ -388,7 +411,7 @@ def day_column(events, day, start_min, step, n, now, cw, paint, color):
             w = cw - x0 if it["lane"] == it["lanes"] - 1 else lw
             if x0 > x:
                 pieces.append(fill(x0 - x))
-            pieces.append(block(it["ev"], k, w, now, color))
+            pieces.append(block(it["ev"], k, w, now, color, i == it["r1"] - 1))
             x = x0 + w
         if x < cw:
             pieces.append(fill(cw - x))
@@ -426,10 +449,12 @@ def agenda_grid(events, now, width, height, color):
         days, cw = [(today, "予定") if now < at(today, hi) else (tomorrow, "明日")], width - GUTTER
     heads, frees, cols = [], [], []
     for day, label in days:
-        plain = f"{label}  {time.strftime('%m/%d', time.localtime(at(day, 0)))}"
-        heads.append(paint(ORANGE, label) + paint(DIM, plain[len(label):]))
         spans = busy_spans(events, day)
-        free = free_text(spans, day, lo, hi, now)
+        date = f"  {time.strftime('%m/%d', time.localtime(at(day, 0)))}"
+        summary = clip("   " + free_summary(spans, day, now), max(cw - width_of(label + date), 0))
+        plain = label + date + summary
+        heads.append(paint(ORANGE, label) + paint(DIM, date) + paint(GREEN, summary))
+        free = free_text(spans, day, now)
         text, code = free if free else ("", DIM)
         text = clip(text, cw)
         frees.append(paint(code, text) + " " * (cw - width_of(text)))

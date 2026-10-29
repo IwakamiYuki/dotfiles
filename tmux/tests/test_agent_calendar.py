@@ -246,11 +246,11 @@ class CalendarTest(unittest.TestCase):
     def test_agenda_明日の棒は全部が空きで_空きは朝から(self):
         today = stamp(0, "00:00")[0]
         screen = self.agenda("", f"{today} 08:00", width=80)
-        self.assertEqual(screen.count("空き 09:00-19:00"), 2)
+        self.assertEqual(screen.count("空き 10:00-19:00"), 2)
 
     def test_agenda_幅が狭ければ_粗い棒にする(self):
         today = stamp(0, "00:00")[0]
-        self.assertEqual(len(self.bar(self.agenda("", f"{today} 08:00", width=30))), 20)
+        self.assertEqual(len(self.bar(self.agenda("", f"{today} 08:00", width=30))), 18)
 
     # ---- 日表示(既定): Google カレンダーの「日」のように縦の時間軸へ置く ----
 
@@ -267,7 +267,7 @@ class CalendarTest(unittest.TestCase):
     def test_日表示_左の欄には_1時間ごとの時刻が出る(self):
         today = stamp(0, "00:00")[0]
         screen = self.grid("", f"{today} 08:00")
-        for h in ("09:00", "12:00", "18:00"):
+        for h in ("10:00", "12:00", "18:00"):
             self.assertIn(h, screen)
 
     def test_日表示_予定の無い時間は空白_予定のある行だけにブロックが出る(self):
@@ -331,6 +331,37 @@ class CalendarTest(unittest.TestCase):
         plain = self.grid(out, f"{today} 08:00", width=100).splitlines()
         colored = [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in self.grid(out, f"{today} 08:00", width=100, color="always").splitlines()]
         self.assertEqual(plain, colored)
+
+    def test_日表示_ブロックの最後の行に下線を引いて_続く予定との境目を示す(self):
+        today = stamp(0, "00:00")[0]
+        underline = "\x1b[4m\x1b[58;5;16m"  # 黒い下線
+        one = self.grid(self.day_events(("10:00", "11:00", "定例")), f"{today} 08:00", color="always")
+        self.assertEqual(sum(underline in l for l in one.splitlines()), 1)
+        # 連続する 2 つの予定は、それぞれの最後の行に引く(境目が 2 本の下線で分かる)
+        two = self.grid(self.day_events(("10:00", "11:00", "前の予定"), ("11:00", "12:00", "後の予定")), f"{today} 08:00", color="always")
+        self.assertEqual(sum(underline in l for l in two.splitlines()), 2)
+
+    def test_空き時間は_10時から19時の中だけで数える(self):
+        today = stamp(0, "00:00")[0]
+        # 9:30-10:00 は勤務時間の外。10:00 からが空き
+        out = self.day_events(("09:30", "10:00", "朝会"), ("13:00", "14:00", "共有会"))
+        screen = self.grid(out, f"{today} 08:00", width=70)
+        self.assertIn("空き 10:00-13:00 14:00-19:00", screen)
+        self.assertNotIn("空き 09:", screen)
+
+    def test_見出しに_空きの残りと全体を出す(self):
+        today = stamp(0, "00:00")[0]
+        # 10:30-11:30 / 13:00-14:00 / 15:00-15:30 が埋まる。空きは 10:00-10:30、11:30-13:00、14:00-15:00、15:30-19:00 の計 6h30m
+        out = self.day_events(("10:30", "11:30", "a"), ("13:00", "14:00", "b"), ("15:00", "15:30", "c"))
+        self.assertIn("空き 残り 6h30m / 全体 6h30m", self.grid(out, f"{today} 08:00", width=100))
+        # 11:10 には 10:00-10:30 が過ぎて、残りは 6h(11:10-11:30 の 20 分は 30 分に満たないので数えない)
+        self.assertIn("空き 残り 6h / 全体 6h30m", self.grid(out, f"{today} 11:10", width=100))
+
+    def test_見出しの空きは_勤務時間が終わると残り_0_になる_明日は全体だけ(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.grid("", f"{today} 19:30", width=100)
+        self.assertIn("空き 残り 0m / 全体 9h", screen)
+        self.assertIn("空き 9h", screen.splitlines()[0].split("明日")[1])
 
     def test_check_は_カレンダーの件数を出す(self):
         proc = self.run_script(self.fake_icalbuddy("• 仕事\n  type: CalDAV\n• 個人\n  type: Local\n"), "--check")
