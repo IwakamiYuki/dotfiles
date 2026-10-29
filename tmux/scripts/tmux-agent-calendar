@@ -24,6 +24,7 @@ icalBuddy が無い Mac では、何もしないで終わる（sidebar はカー
   AGENT_CALENDAR_EXCLUDE      除くカレンダー名(カンマ区切り。icalBuddy の -ec)
   AGENT_CALENDAR_INCLUDE      対象にするカレンダー名(カンマ区切り。icalBuddy の -ic。既定は全部)
   AGENT_CALENDAR_NOW          「いま」(YYYY-MM-DD HH:MM。--agenda の表示確認用)
+  AGENT_CALENDAR_DAY_FROM / _DAY_TO   予定表の横棒の時間帯(時。既定 9 と 19。予定がはみ出せば広がる)
 """
 import os
 import re
@@ -38,6 +39,10 @@ CACHE = os.environ.get("AGENT_CALENDAR_CACHE", "/tmp/tmux-agent-sidebar-calendar
 EXCLUDE = os.environ.get("AGENT_CALENDAR_EXCLUDE", "")
 INCLUDE = os.environ.get("AGENT_CALENDAR_INCLUDE", "")
 TIMEOUT_SEC = 10
+# 予定表の横棒に出す時間帯(予定がはみ出せば広がる)と、「空き」として数える最短の長さ
+DAY_FROM = int(os.environ.get("AGENT_CALENDAR_DAY_FROM", "9"))
+DAY_TO = int(os.environ.get("AGENT_CALENDAR_DAY_TO", "19"))
+FREE_MIN_SEC = 1800
 # 1 行目は「日付 at 開始 - 終了」。終了が別の日なら、終了にも日付が付く。本文などの続きの行は字下げされるので、行頭の一致だけで予定の始まりが分かる
 EVENT_LINE = re.compile(r"^(\d{4})-(\d\d)-(\d\d) at (\d\d):(\d\d)(?: - (?:(\d{4})-(\d\d)-(\d\d) at )?(\d\d):(\d\d))?")
 URL = re.compile(r"https?://[^\s<>\")\]」』]+")
@@ -167,31 +172,131 @@ def hhmm(epoch):
     return time.strftime("%H:%M", time.localtime(epoch))
 
 
+def day_of(epoch):
+    t = time.localtime(epoch)
+    return (t.tm_year, t.tm_mon, t.tm_mday)
+
+
+def at(day, minutes):
+    """day の 0 時から minutes 分後の epoch(24 * 60 なら翌日の 0 時)。"""
+    return int(time.mktime((day[0], day[1], day[2], minutes // 60, minutes % 60, 0, 0, 0, -1)))
+
+
+def busy_spans(events, day):
+    """day に埋まっている時間帯を [開始, 終了] のリストにする(日をまたぐ予定は day の中に切る。重なりは 1 つにまとめる)。"""
+    lo, hi = at(day, 0), at(day, 24 * 60)
+    spans = sorted((max(e["start"], lo), min(e["end"], hi)) for e in events if e["end"] > e["start"])
+    merged = []
+    for s, e in spans:
+        if e <= s:
+            continue
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return merged
+
+
+def day_range(events, days):
+    """横棒に出す時間帯(0 時からの分)。勤務時間を基本に、はみ出す予定があれば時間単位で広げる。日が変わっても棒がそろうよう、全日で共通にする。"""
+    lo, hi = DAY_FROM * 60, DAY_TO * 60
+    for day in days:
+        base = at(day, 0)
+        for s, e in busy_spans(events, day):
+            lo = min(lo, (s - base) // 3600 * 60)
+            hi = max(hi, -(-(e - base) // 3600) * 60)
+    lo, hi = max(lo, 0), min(hi, 24 * 60)
+    return (lo, hi) if hi > lo else (lo, lo + 60)
+
+
+def timeline(spans, day, lo, hi, now, width, paint):
+    """1 日の埋まり具合の横棒(時刻の目盛り・棒・いまの印)。空き = 緑の ░、予定あり = 橙の █、過ぎた時間は薄く。幅に収まる細かさ(15 分・30 分・1 時間)を選ぶ。"""
+    hours = (hi - lo) // 60
+    per = next((c for c in (4, 2, 1) if hours * c <= width - 2), 0)
+    if not per:
+        return []
+    step = 60 // per
+    base = at(day, lo)
+    n = hours * per
+    labels = [" "] * n
+    # 目盛りの数字が隣と くっつかないよう、細かさに応じて間引く
+    for h in range(0, hours, {4: 1, 2: 2, 1: 3}[per]):
+        for k, ch in enumerate(str(lo // 60 + h)):
+            if h * per + k < n:
+                labels[h * per + k] = ch
+    cells = []
+    for i in range(n):
+        t0, t1 = at(day, lo + i * step), at(day, lo + (i + 1) * step)
+        busy = any(s < t1 and e > t0 for s, e in spans)
+        cells.append(paint(DIM if t1 <= now else (ORANGE if busy else GREEN), "█" if busy else "░"))
+    rows = ["  " + paint(DIM, "".join(labels)), "  " + "".join(cells)]
+    if base <= now < at(day, hi):
+        col = (now - base) // (step * 60)
+        stamp = hhmm(now)
+        if col + 2 + len(stamp) <= n:
+            mark = " " * col + f"▲ {stamp}"
+        elif col >= len(stamp) + 1:
+            mark = " " * (col - len(stamp) - 1) + f"{stamp} ▲"
+        else:
+            mark = " " * col + "▲"
+        rows.append("  " + paint(YELLOW, mark))
+    return rows
+
+
+def free_line(spans, day, lo, hi, now, width, paint):
+    """空き時間(FREE_MIN_SEC 以上)の一覧 1 行。今日は、いま以降だけ。時間帯がもう終わっていれば出さない。"""
+    end = at(day, hi)
+    cur = max(at(day, lo), now)
+    if cur >= end:
+        return []
+    slots = []
+    for s, e in spans:
+        gap_end = min(s, end)
+        if gap_end - cur >= FREE_MIN_SEC:
+            slots.append((cur, gap_end))
+        cur = max(cur, e)
+        if cur >= end:
+            break
+    if end - cur >= FREE_MIN_SEC:
+        slots.append((cur, end))
+    if not slots:
+        return ["  " + paint(DIM, "空きなし")]
+    text = "空き " + " ".join(f"{hhmm(a)}-{hhmm(b)}" for a, b in slots)
+    return ["  " + paint(GREEN, clip(text, width - 2))]
+
+
 def agenda(events, now, width, height, color):
-    """今日と明日の予定を、行のリストにする。終わった予定は薄く、いま進行中は黄色、これからは通常の色。"""
+    """今日と明日を、日ごとに「埋まり具合の横棒 → 空き時間 → 予定の一覧」にする。終わった予定は薄く、いま進行中は黄色、これからは通常の色。"""
     def paint(code, text):
         return f"{code}{text}{RESET}" if color else text
 
-    today = time.strftime("%Y-%m-%d", time.localtime(now))
-    lines = [paint(ORANGE, "予定") + paint(DIM, "  " + time.strftime("%m/%d", time.localtime(now))), ""]
-    last_day = today
-    for e in events:
-        day = time.strftime("%Y-%m-%d", time.localtime(e["start"]))
-        if day != last_day:
-            lines += ["", paint(ORANGE, "明日") + paint(DIM, "  " + time.strftime("%m/%d", time.localtime(e["start"]))), ""]
-            last_day = day
-        span = f"{hhmm(e['start'])}-{hhmm(e['end'])}"
-        title = clip(e["title"], max(width - len(span) - 3, 4))
-        if e["end"] <= now:
-            lines.append(paint(DIM, f"  {span} {title}"))
-        elif e["start"] <= now:
-            lines.append(paint(YELLOW, f"▶ {span} {title}"))
-        else:
-            lines.append(f"  {paint(GREEN, span)} {title}")
-        if e["url"] and e["end"] > now:
-            lines.append(paint(DIM, "    " + clip(e["url"], width - 4)))
-    if len(lines) == 2:
-        lines.append(paint(DIM, "  予定はありません"))
+    today = day_of(now)
+    tomorrow = day_of(now + 86400)
+    boundary = at(tomorrow, 0)
+    lo, hi = day_range(events, (today, tomorrow))
+    lines = []
+    for day, label, bucket in ((today, "予定", [e for e in events if e["start"] < boundary]),
+                               (tomorrow, "明日", [e for e in events if e["start"] >= boundary])):
+        if lines:
+            lines.append("")
+        lines.append(paint(ORANGE, label) + paint(DIM, "  " + time.strftime("%m/%d", time.localtime(at(day, 0)))))
+        spans = busy_spans(events, day)
+        lines += timeline(spans, day, lo, hi, now, width, paint)
+        lines += free_line(spans, day, lo, hi, now, width, paint)
+        lines.append("")
+        for e in bucket:
+            span = f"{hhmm(e['start'])}-{hhmm(e['end'])}"
+            title = clip(e["title"], max(width - len(span) - 3, 4))
+            if e["end"] <= now:
+                lines.append(paint(DIM, f"  {span} {title}"))
+            elif e["start"] <= now:
+                lines.append(paint(YELLOW, f"▶ {span} {title}"))
+            else:
+                lines.append(f"  {paint(GREEN, span)} {title}")
+            if e["url"] and e["end"] > now:
+                lines.append(paint(DIM, "    " + clip(e["url"], width - 4)))
+        if not bucket:
+            lines.append(paint(DIM, "  予定はありません"))
     return lines[:height]
 
 

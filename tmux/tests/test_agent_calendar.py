@@ -186,6 +186,62 @@ class CalendarTest(unittest.TestCase):
         for line in lines:
             self.assertLessEqual(sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in line), 30, line)
 
+    # ---- 埋まり具合の横棒と空き時間 ----
+
+    def day_events(self, *rows, day=None):
+        day = day or stamp(0, "00:00")[0]
+        return "".join(f"{day} at {a} - {b} ¦ {t}\n" for a, b, t in rows)
+
+    def bar(self, screen):
+        """今日の横棒の行(█ と ░ だけでできた最初の行)。"""
+        return next(l.strip() for l in screen.splitlines() if l.strip() and set(l.strip()) <= {"█", "░"})
+
+    def test_agenda_予定のある時間は_埋まり_無い時間は空きとして横棒に出る(self):
+        today = stamp(0, "00:00")[0]
+        # 9:00-19:00 を 15 分ごと(40 マス)で描く。9:30-10:00 と 13:00-14:00 が埋まる
+        screen = self.agenda(self.day_events(("09:30", "10:00", "朝会"), ("13:00", "14:00", "共有会")), f"{today} 08:00")
+        bar = self.bar(screen)
+        self.assertEqual(len(bar), 40)
+        self.assertEqual(bar[:2], "░░")
+        self.assertEqual(bar[2:4], "██")
+        self.assertEqual(bar[16:20], "████")
+        self.assertEqual(bar.count("█"), 6)
+
+    def test_agenda_空き時間を一覧する_30分に満たない隙間は数えない(self):
+        today = stamp(0, "00:00")[0]
+        out = self.day_events(("09:00", "10:00", "a"), ("10:20", "12:00", "b"), ("13:00", "19:00", "c"))
+        screen = self.agenda(out, f"{today} 08:00", width=80)
+        self.assertIn("空き 12:00-13:00", screen)
+        self.assertNotIn("10:00-10:20", screen)
+
+    def test_agenda_今日の空きは_いま以降だけ(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.agenda(self.day_events(("13:00", "14:00", "共有会")), f"{today} 11:10", width=80)
+        self.assertIn("空き 11:10-13:00 14:00-19:00", screen)
+
+    def test_agenda_いまの位置に印と時刻を出す(self):
+        today = stamp(0, "00:00")[0]
+        self.assertIn("▲ 11:10", self.agenda("", f"{today} 11:10"))
+
+    def test_agenda_勤務時間の外の予定があれば_時間帯が広がる(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.agenda(self.day_events(("07:30", "08:30", "早朝"), ("20:00", "21:30", "夜")), f"{today} 06:00", width=100)
+        self.assertEqual(len(self.bar(screen)), (22 - 7) * 4)
+
+    def test_agenda_重なる予定は_1つの埋まりとして空きを数える(self):
+        today = stamp(0, "00:00")[0]
+        out = self.day_events(("09:00", "12:00", "長い会議"), ("10:00", "11:00", "重なる"), ("12:00", "19:00", "続き"))
+        self.assertIn("空きなし", self.agenda(out, f"{today} 08:00"))
+
+    def test_agenda_明日の棒は全部が空きで_空きは朝から(self):
+        today = stamp(0, "00:00")[0]
+        screen = self.agenda("", f"{today} 08:00", width=80)
+        self.assertEqual(screen.count("空き 09:00-19:00"), 2)
+
+    def test_agenda_幅が狭ければ_粗い棒にする(self):
+        today = stamp(0, "00:00")[0]
+        self.assertEqual(len(self.bar(self.agenda("", f"{today} 08:00", width=30))), 20)
+
     def test_check_は_カレンダーの件数を出す(self):
         proc = self.run_script(self.fake_icalbuddy("• 仕事\n  type: CalDAV\n• 個人\n  type: Local\n"), "--check")
         self.assertIn("2 件", proc.stdout)
