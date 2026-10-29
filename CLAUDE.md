@@ -360,7 +360,9 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 - 制御は `tmux-agent-cockpit open | show <pane_id> | restore | teardown | close | heal`。`teardown` は sidebar の終了時に呼ばれ、`restore` で Agent を戻したあと slot を消す（Agent を戻せなかったときは、巻き込まないよう何も消さない）。`heal` は、枠の Agent が終了して slot が元の window に取り残されたときに slot を cockpit へ戻す（`join-pane` は既定で sidebar と slot を 1:1 に分けてしまうので、戻したあと sidebar を `@agent_sidebar_width` の幅へ直す。slot を作り直すときも同じ）
   （sidebar は起動時と、cockpit の main pane が 0 になったときに呼ぶ。直後に次の Agent が自動で枠に入る）
 - `show` は高速パスで動く: 状態の確認を `list-panes -a` の 1 回にまとめ、「元へ戻す → 元の位置を記録 → 入れ替え → 記録」を tmux の複合コマンド（`;` 区切り）1 回で実行する
-  （以前は tmux を約 25 回呼んで約 130ms、今は約 26ms）。想定外の状態（slot が無い・表示中の pane が消えた・複合コマンドが途中で失敗）は、確実に直せる従来の処理（`do_show_slow`）に任せる。
+  （以前は tmux を約 25 回呼んで約 130ms、今は約 26ms）。**外部コマンドの起動（exec）を数えて減らしている**: セキュリティ製品の検査などで exec が 1 回 0.3 秒ほどかかる環境では、j/k の待ちが exec の数に比例するため。
+  高速パスの起動は bash 本体 + tmux 2 回（`list-panes -a` と複合コマンド）だけで、`dirname` は使わず（`${0%/*}`）、自分の window は取得済みの一覧から引く（`display-message` を別に呼ばない）。sidebar の `save_cockpit_selection`（選択の保存）は背景で実行し、入力ループを止めない。
+  テスト `test_agent_cockpit_show.py` が、PATH 上の偽物で tmux / dirname の起動回数を数えて守る。想定外の状態（slot が無い・表示中の pane が消えた・複合コマンドが途中で失敗）は、確実に直せる従来の処理（`do_show_slow`）に任せる。
   sidebar は j/k で、入れ替えを待たずに先に選択の罫線を描き、そのあとで入れ替える（罫線は約 13ms で動く）
 - `display-message -t <存在しない pane>` はエラーにならず空を返すので、pane の存在確認は返ってきた `#{pane_id}` の一致で行う
 

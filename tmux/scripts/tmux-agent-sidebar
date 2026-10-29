@@ -2245,7 +2245,8 @@ save_cockpit_selection() {
   [ "$DAILY_VIEW" = 1 ] && view=$VIEW_NAME
   [ "$SEL_KEY|$view" = "$LAST_SAVED" ] && return 0
   LAST_SAVED="$SEL_KEY|$view"
-  tmux set-option -g @agent_sidebar_last_sel "$SEL_KEY" ';' set-option -g @agent_sidebar_last_view "$view" 2>/dev/null
+  # 次回開いたときの復元用なので、結果を待たない。tmux の起動(exec の検査待ち)で、j/k の入力ループを止めないため
+  tmux set-option -g @agent_sidebar_last_sel "$SEL_KEY" ';' set-option -g @agent_sidebar_last_view "$view" >/dev/null 2>&1 &
 }
 
 # Daily ダッシュボードの表示を解除する(Agent は出さない。Agent を出すときは、続けて show が呼ばれる)

@@ -29,8 +29,13 @@
 
 set -u
 
-# symlink 経由（~/.tmux/scripts/）で呼ばれたときは、同じ場所にある兄弟スクリプトを使う
-BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+# symlink 経由（~/.tmux/scripts/）で呼ばれたときは、同じ場所にある兄弟スクリプトを使う。
+# dirname は外部コマンドで、起動のたびに exec の検査を待たされる環境があるため、文字列操作で済ませる
+case $0 in
+  */*) BIN_DIR="${0%/*}" ;;
+  *) BIN_DIR=. ;;
+esac
+BIN_DIR="$(cd "${BIN_DIR:-/}" && pwd)"
 
 wopt() { tmux show-options -wqv -t "$1" "$2" 2>/dev/null; }
 # display-message は存在しない -t でもエラーにならず空を返すので、返ってきた pane_id が一致するかで確かめる
@@ -141,9 +146,14 @@ do_show() {
   local pid wid widx pidx wname flags c_flag c_shown c_slot
   local t_wid="" t_widx="" t_pidx="" t_wname="" t_flags="" shown_ok=0 slot_wid="" slot_ok=0
 
-  [ -n "${TMUX_PANE:-}" ] && my_win=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)
-
   state=$(tmux list-panes -a -F '#{pane_id}|#{window_id}|#{window_index}|#{pane_index}|#{window_name}|#{@agent_sidebar}#{@agent_cockpit_slot_pane}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_cockpit_slot}' 2>/dev/null) || state=""
+
+  # 自分(sidebar)がいる window は、display-message を別に呼ばず、取得済みの一覧から引く(tmux の起動を 1 回減らす)
+  if [ -n "${TMUX_PANE:-}" ]; then
+    while IFS='|' read -r pid wid _; do
+      if [ "$pid" = "$TMUX_PANE" ]; then my_win=$wid; break; fi
+    done <<< "$state"
+  fi
 
   # 1 周目: cockpit window(自分がいる window を優先)の状態を拾う
   while IFS='|' read -r pid wid widx pidx wname flags c_flag c_shown c_slot; do
