@@ -574,10 +574,16 @@ class SidebarUsageTest(unittest.TestCase):
         self.assertIn("NEXT", card)
         self.assertRegex(card, r"in 2[45]m")
 
-    def test_cal_開始の_10分前からは_SOON(self):
-        card = self.cal_card(self.render(calendar=[(8 * 60, 3600, "定例", "")]))
+    def test_cal_開始の_5分前からは_SOON_それより先は_NEXT(self):
+        self.assertIn("NEXT", self.cal_card(self.render(calendar=[(8 * 60, 3600, "定例", "")])))
+        card = self.cal_card(self.render(calendar=[(4 * 60, 3600, "定例", "")]))
         self.assertIn("SOON", card)
         self.assertNotIn("NEXT", card)
+
+    def test_cal_SOON_の分数は_option_や環境変数で変えられる(self):
+        # 8 分前: 既定(5 分)では NEXT、10 分にすれば SOON。4 分前を 3 分にすれば NEXT
+        self.assertIn("SOON", self.cal_card(self.render(calendar=[(8 * 60, 3600, "定例", "")], extra_env={"AGENT_SIDEBAR_CALENDAR_SOON_MIN": "10"})))
+        self.assertIn("NEXT", self.cal_card(self.render(calendar=[(4 * 60, 3600, "定例", "")], extra_env={"AGENT_SIDEBAR_CALENDAR_SOON_MIN": "3"})))
 
     def test_cal_進行中は_NOW_で_WORKING_と同じ色(self):
         screen = self.render(calendar=[(-10 * 60, 3600, "進行中の会議", "")], colors=True)
@@ -604,7 +610,7 @@ class SidebarUsageTest(unittest.TestCase):
         self.assertRegex(card, r"\+1")
 
     def test_cal_開始前の予定が_SOON_の範囲に入ったら_進行中の予定より優先する(self):
-        card = self.cal_card(self.render(calendar=[(-20 * 60, 3600, "進行中", ""), (5 * 60, 1800, "もうすぐ", "")]))
+        card = self.cal_card(self.render(calendar=[(-20 * 60, 3600, "進行中", ""), (3 * 60, 1800, "もうすぐ", "")]))
         self.assertIn("もうすぐ", card)
         self.assertIn("SOON", card)
 
@@ -1400,9 +1406,9 @@ class SidebarUsageTest(unittest.TestCase):
             time.sleep(0.2)
         self.assertEqual(self.bells(), expected)
 
-    def start_bell_session(self, extra_env=None):
+    def start_bell_session(self, extra_env=None, calendar=None):
         """idle の Codex が 1 つ居て、クライアントがつながり、基準(記録)が書かれた状態にする。いまの BEL の数を返す。"""
-        self.render(codex_threads=[self.thread_line()], extra_env=extra_env)
+        self.render(codex_threads=[self.thread_line()], extra_env=extra_env, calendar=calendar)
         self.start_codex_pane()
         self.wait_screen(lambda scr: "IDLE" in scr)
         self.attach_client()
@@ -1434,6 +1440,53 @@ class SidebarUsageTest(unittest.TestCase):
         self.wait_screen(lambda scr: "WORKING" in scr)
         time.sleep(3)
         self.assertEqual(self.bells(), base)
+
+    # --- 予定が SOON(開始の 10 分前から)になったときのベルと音 ---
+
+    def test_ベル_予定が_SOON_になったら_1回だけ鳴らす(self):
+        base = self.start_bell_session(calendar=[(30 * 60, 1800, "定例", "")])
+        self.write_calendar([(3 * 60, 1800, "定例", "")])
+        self.wait_screen(lambda scr: "SOON" in scr)
+        self.wait_bells(base + 1)
+        time.sleep(5)  # 同じ予定の SOON のままでは、収集が回っても鳴らさない
+        self.assertEqual(self.bells(), base + 1)
+
+    def test_ベル_まだ先の予定_NEXT_では鳴らさない(self):
+        base = self.start_bell_session(calendar=[(30 * 60, 1800, "定例", "")])
+        self.wait_screen(lambda scr: "NEXT" in scr)
+        time.sleep(4)
+        self.assertEqual(self.bells(), base)
+
+    def test_ベル_別の予定が_SOON_になれば_もう一度鳴らす(self):
+        base = self.start_bell_session(calendar=[(30 * 60, 1800, "朝会", "")])
+        self.write_calendar([(3 * 60, 1800, "朝会", "")])
+        self.wait_bells(base + 1)
+        self.write_calendar([(4 * 60, 1800, "夕会", "")])  # 開始の違う予定
+        self.wait_screen(lambda scr: "夕会" in scr)
+        self.wait_bells(base + 2)
+
+    def test_ベル_bell_が_waiting_なら_予定では鳴らさない(self):
+        base = self.start_bell_session(extra_env={"AGENT_SIDEBAR_BELL": "waiting"}, calendar=[(30 * 60, 1800, "定例", "")])
+        self.write_calendar([(3 * 60, 1800, "定例", "")])
+        self.wait_screen(lambda scr: "SOON" in scr)
+        time.sleep(4)
+        self.assertEqual(self.bells(), base)
+
+    def test_音_予定の_SOON_は_Hero_を鳴らす(self):
+        fake, log = self.fake_sound_cmd()
+        self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake}, calendar=[(30 * 60, 1800, "定例", "")])
+        self.write_calendar([(3 * 60, 1800, "定例", "")])
+        self.wait_sounds(log, ["/System/Library/Sounds/Hero.aiff"])
+        time.sleep(4)
+        self.assertEqual(self.sounds(log), ["/System/Library/Sounds/Hero.aiff"])
+
+    def test_音_予定の音だけ_off_にしても_BEL_は鳴る(self):
+        fake, log = self.fake_sound_cmd()
+        base = self.start_bell_session(extra_env={"AGENT_SIDEBAR_SOUND_CMD": fake, "AGENT_SIDEBAR_SOUND_CALENDAR": "off"}, calendar=[(30 * 60, 1800, "定例", "")])
+        self.write_calendar([(3 * 60, 1800, "定例", "")])
+        self.wait_bells(base + 1)
+        time.sleep(1)
+        self.assertEqual(self.sounds(log), [])
 
     # --- 状態ごとの音(afplay)。BEL と同じ契機で、WAITING = Sosumi、DONE = Glass が既定 ---
 

@@ -106,7 +106,7 @@ CALENDAR_CACHE="${AGENT_SIDEBAR_CALENDAR_CACHE:-/tmp/tmux-agent-sidebar-calendar
 CALENDAR_BIN="${AGENT_SIDEBAR_CALENDAR_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-calendar}"
 CALENDAR_TTL=30          # 取得(裏で起動)の間隔(秒)
 CALENDAR_MAX_AGE=300     # 取得がこれより止まっていたら、古い予定は出さない(秒)
-CALENDAR_SOON_SEC=600    # 開始の何秒前から SOON にするか
+CALENDAR_SOON_SEC=300    # 開始の何秒前から SOON にするか(既定。tmux の option @agent_sidebar_calendar_soon に分で書けば替わる)
 CALENDAR_HORIZON_SEC=43200   # 何秒先の予定まで NEXT として出すか(12 時間)
 CODEX_THREADS_MAX_AGE=30
 # リポジトリ・worktree の判定(git の呼び出し)を取り直す間隔。ブランチは HEAD ファイルを毎回読むので、この間隔に依らない
@@ -1628,7 +1628,7 @@ daily_status() {
 }
 
 # 次の予定(Mac のカレンダー)。tmux-agent-calendar が書くキャッシュ(F|取得時刻 / E|開始|終了|タイトル|会議の URL)から、いま出す 1 件を選ぶ。
-#   SOON = 開始の CALENDAR_SOON_SEC 秒前から / NOW = 進行中 / NEXT = それ以外で、CALENDAR_HORIZON_SEC 秒先まで
+#   SOON = 開始の CALENDAR_SOON_SEC 秒(既定 5 分)前から / NOW = 進行中 / NEXT = それ以外で、CALENDAR_HORIZON_SEC 秒先まで
 #   開始前の予定が SOON の範囲に入ったら、進行中の予定よりそちらを優先する(次の予定に気づくため)。
 #   取得が CALENDAR_MAX_AGE 秒止まっていたら、古い予定は出さない。CAL_STATE が空なら、カードを出さない
 CAL_STATE=""
@@ -1638,12 +1638,15 @@ CAL_REL=""       # "in 25m"(開始まで)/ "25m left"(終了まで)
 CAL_URL=""       # 会議の URL(無ければ空)
 CAL_FMT_KEY=""
 CAL_FMT=""
+CAL_START=""     # 選んだ予定の開始(epoch)。SOON のベルが、予定ごとに 1 回だけ鳴る目印
 read_calendar() {
-  local now tag a b title url fetched=0 m
+  local now tag a b title url fetched=0 m soon=$CALENDAR_SOON_SEC v
   local up_s="" up_e="" up_t="" up_u="" up_n=0 on_s="" on_e="" on_t="" on_u="" on_n=0 ps pe pt pu pn
   CAL_STATE=""
   CAL_URL=""
   [ "${AGENT_SIDEBAR_CALENDAR:-${opt_calendar:-on}}" = off ] && return 0
+  v=${AGENT_SIDEBAR_CALENDAR_SOON_MIN:-$opt_calendar_soon}
+  [[ $v =~ ^[0-9]+$ ]] && soon=$((v * 60))
   [ -r "$CALENDAR_CACHE" ] || return 0
   now=$(date +%s)
   while IFS='|' read -r tag a b title url; do
@@ -1664,7 +1667,7 @@ read_calendar() {
     esac
   done < "$CALENDAR_CACHE"
   ((now - fetched > CALENDAR_MAX_AGE)) && return 0
-  if [ -n "$up_s" ] && ((up_s - now <= CALENDAR_SOON_SEC)); then
+  if [ -n "$up_s" ] && ((up_s - now <= soon)); then
     CAL_STATE=soon; ps=$up_s; pe=$up_e; pt=$up_t; pu=$up_u; pn=$up_n
   elif [ -n "$on_s" ]; then
     CAL_STATE=now; ps=$on_s; pe=$on_e; pt=$on_t; pu=$on_u; pn=$on_n
@@ -1675,6 +1678,7 @@ read_calendar() {
   fi
   CAL_TITLE=$pt
   CAL_URL=$pu
+  CAL_START=$ps
   # 時刻の表示は、選んだ予定が変わったときだけ作る(date の fork を減らす)
   if [ "$CAL_FMT_KEY" != "$ps|$pe" ]; then
     CAL_FMT_KEY="$ps|$pe"
@@ -2773,6 +2777,7 @@ BELL_LOCK_STALE_SEC=10
 SOUND_CMD="${AGENT_SIDEBAR_SOUND_CMD:-afplay}"
 SOUND_WAITING_DEFAULT=Sosumi
 SOUND_DONE_DEFAULT=Glass
+SOUND_CALENDAR_DEFAULT=Hero   # 予定の SOON(開始の 5 分前)
 
 ring_bell() {
   local tty
@@ -2781,16 +2786,16 @@ ring_bell() {
   done < <(tmux list-clients -F '#{client_tty}' 2>/dev/null)
 }
 
-# 状態($1 = waiting | done)の音を鳴らす(待たない)。@agent_sidebar_bell_sound が off なら全部、
-# @agent_sidebar_sound_waiting / @agent_sidebar_sound_done が off ならその状態だけ鳴らさない。値は /System/Library/Sounds の名前か、音声ファイルのパス
+# 状態($1 = waiting | done | soon)の音を鳴らす(待たない)。@agent_sidebar_bell_sound が off なら全部、
+# @agent_sidebar_sound_waiting / _done / _calendar が off ならその状態だけ鳴らさない。値は /System/Library/Sounds の名前か、音声ファイルのパス
 play_bell_sound() {
   local value file
   [ "${AGENT_SIDEBAR_BELL_SOUND:-${opt_bell_sound:-on}}" = off ] && return 0
-  if [ "$1" = waiting ]; then
-    value=${AGENT_SIDEBAR_SOUND_WAITING:-${opt_sound_waiting:-$SOUND_WAITING_DEFAULT}}
-  else
-    value=${AGENT_SIDEBAR_SOUND_DONE:-${opt_sound_done:-$SOUND_DONE_DEFAULT}}
-  fi
+  case $1 in
+    waiting) value=${AGENT_SIDEBAR_SOUND_WAITING:-${opt_sound_waiting:-$SOUND_WAITING_DEFAULT}} ;;
+    soon) value=${AGENT_SIDEBAR_SOUND_CALENDAR:-${opt_sound_calendar:-$SOUND_CALENDAR_DEFAULT}} ;;
+    *) value=${AGENT_SIDEBAR_SOUND_DONE:-${opt_sound_done:-$SOUND_DONE_DEFAULT}} ;;
+  esac
   [ "$value" = off ] && return 0
   case $value in
     "~/"*) file="$HOME/${value#\~/}" ;;
@@ -2803,15 +2808,21 @@ play_bell_sound() {
   return 0
 }
 
-# mode: all（既定。WAITING と DONE）| waiting | off。tmux の option @agent_sidebar_bell、環境変数 AGENT_SIDEBAR_BELL が先
+# mode: all（既定。WAITING・DONE・予定の SOON）| waiting | off。tmux の option @agent_sidebar_bell、環境変数 AGENT_SIDEBAR_BELL が先
+# 予定のカードが SOON(開始の 10 分前から)になったときも鳴らす。記録の行は "@cal|cal_soon|開始" で、予定ごとに 1 回(同じ予定では、収集が回っても鳴らさない)
 bell_check() {
-  local mode=${AGENT_SIDEBAR_BELL:-${opt_bell:-all}} cur="" old="" line i ring="" lock="$BELL_STATE_FILE.lock" first=0
+  local mode=${AGENT_SIDEBAR_BELL:-${opt_bell:-all}} cur="" old="" line i ring="" st lock="$BELL_STATE_FILE.lock" first=0
   [ "$mode" = off ] && return 0
   for ((i = 0; i < AG_N; i++)); do
     [ "${AG_TYPE[i]}" = Shell ] && continue
     case ${AG_STATUS[i]} in
       waiting) ;;
       done) [ "$mode" = waiting ] && continue ;;
+      cal_soon)
+        [ "$mode" = waiting ] && continue
+        cur+="${AG_ID[i]}|cal_soon|$CAL_START"$'\n'
+        continue
+        ;;
       *) continue ;;
     esac
     cur+="${AG_ID[i]}|${AG_STATUS[i]}"$'\n'
@@ -2835,8 +2846,15 @@ bell_check() {
       [ -z "$line" ] && continue
       case $'\n'"$old"$'\n' in
         *$'\n'"$line"$'\n'*) ;;
-        # 新しく現れた状態。WAITING があれば、DONE より急ぐので WAITING の音にする
-        *) [ "${line##*|}" = waiting ] && ring=waiting || [ -n "$ring" ] || ring=done ;;
+        # 新しく現れた状態。WAITING > 予定の SOON > DONE の順に急ぐので、いちばん急ぐ状態の音にする
+        *)
+          st=${line#*|}
+          case ${st%%|*} in
+            waiting) ring=waiting ;;
+            cal_soon) [ "$ring" = waiting ] || ring=soon ;;
+            *) [ -n "$ring" ] || ring=done ;;
+          esac
+          ;;
       esac
     done <<< "$cur"
   fi
@@ -2984,8 +3002,8 @@ while :; do
 
   if [ -z "$COLLECT_PID" ] && ((SECONDS - last_collect >= INTERVAL)); then
     # option は 1 回の tmux 呼び出しでまとめて読む（scope | icons | auto_preview）
-    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_last_sel}|#{@agent_sidebar_last_view}|#{@agent_sidebar_daily_dir}|#{@agent_sidebar_bell}|#{@agent_sidebar_bell_sound}|#{@agent_sidebar_sound_waiting}|#{@agent_sidebar_sound_done}|#{@agent_sidebar_calendar}' 2>/dev/null)
-    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_last_sel opt_last_view opt_daily_dir opt_bell opt_bell_sound opt_sound_waiting opt_sound_done opt_calendar <<< "$opts"
+    opts=$(tmux display-message -p -t "$TMUX_PANE" '#{@agent_sidebar_scope}|#{@agent_sidebar_icons}|#{@agent_sidebar_auto_preview}|#{@agent_sidebar_type_icon}|#{allow-passthrough}|#{@agent_cockpit}|#{@agent_cockpit_shown}|#{@agent_new_pane}|#{@agent_cockpit_view}|#{@agent_sidebar_daily_blink}|#{@agent_sidebar_last_sel}|#{@agent_sidebar_last_view}|#{@agent_sidebar_daily_dir}|#{@agent_sidebar_bell}|#{@agent_sidebar_bell_sound}|#{@agent_sidebar_sound_waiting}|#{@agent_sidebar_sound_done}|#{@agent_sidebar_calendar}|#{@agent_sidebar_sound_calendar}|#{@agent_sidebar_calendar_soon}' 2>/dev/null)
+    IFS='|' read -r opt_scope ICON_STYLE AUTO_PREVIEW opt_type_icon opt_passthrough opt_cockpit cockpit_shown new_pane opt_view opt_daily_blink opt_last_sel opt_last_view opt_daily_dir opt_bell opt_bell_sound opt_sound_waiting opt_sound_done opt_calendar opt_sound_calendar opt_calendar_soon <<< "$opts"
     [ "$opt_cockpit" = 1 ] && COCKPIT=1 || COCKPIT=0
     if [ "$COCKPIT" = 1 ] && { [ "$opt_view" = daily ] || [ "$opt_view" = calendar ]; }; then
       DAILY_VIEW=1
