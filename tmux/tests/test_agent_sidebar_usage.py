@@ -1767,6 +1767,28 @@ class SidebarUsageTest(unittest.TestCase):
         self.assertEqual(args[2], os.path.realpath(self.dir))
         self.assertIn("--focus", args)
 
+    def test_見出しの_プラス_を押して_あとから指を離しても_メニューは閉じない(self):
+        fake = os.path.join(self.dir, "fake-new")
+        log = os.path.join(self.dir, "new-args.log")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/bash\necho "$*" > {log}\n')
+        os.chmod(fake, 0o755)
+        self.render(codex_threads=[self.thread_line()], extra_env={"AGENT_SIDEBAR_NEW_BIN": fake})
+        self.start_codex_pane()
+        self.wait_screen(lambda scr: "IDLE" in scr)
+        self.attach_client()
+        time.sleep(1.5)
+        screen = self.wait_screen(lambda scr: "IDLE" in scr)
+        row = self.header_row(screen, "")
+        col = len(screen.splitlines()[row].rstrip())
+        # 押下だけを送り、メニューが開いたあとで、端末からの「ボタンの解放」(メニューの外)が届く
+        self.tmux("send-keys", "-t", self.sidebar_pane(), "-l", f"\033[<0;{col};{row + 1}M")
+        time.sleep(1)
+        os.write(self.client_master, f"\033[<0;{col};{row + 1}m".encode())
+        time.sleep(1)
+        os.write(self.client_master, b"c")
+        self.assertEqual(self.wait_file(log).split()[0], "claude")
+
     def test_見出しの_プラス_以外をクリックしても_メニューは開かない(self):
         fake = os.path.join(self.dir, "fake-new")
         log = os.path.join(self.dir, "new-args.log")

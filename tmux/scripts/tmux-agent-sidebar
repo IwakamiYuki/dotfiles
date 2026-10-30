@@ -2638,7 +2638,10 @@ new_agent_menu() {
       ;;
   esac
   if [ "$COCKPIT" = 1 ]; then mode="--notify '$TMUX_PANE'"; else mode="--focus"; fi
-  tmux display-menu -T "New agent: ${repo//\#/##}" -x C -y C \
+  # -M -O: 見出しの「+」のクリックは押下でメニューが開くので、そのあとの指を離す操作(ボタンの解放)が届く。
+  # マウスを扱わないメニューは、ボタン 1 以外のマウスイベント(解放)で閉じてしまう。-M でマウスを扱わせ、
+  # -O で「項目の上でない解放」では閉じないようにする(項目はクリックで選べる)
+  tmux display-menu -M -O -T "New agent: ${repo//\#/##}" -x C -y C \
     "Claude" c "run-shell -b \"'$NEW_BIN' claude '$anchor' '$dir' $mode$here\"" \
     "Codex" x "run-shell -b \"'$NEW_BIN' codex '$anchor' '$dir' $mode$here\"" 2>/dev/null
 }
