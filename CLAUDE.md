@@ -146,6 +146,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - 新しい pane は **Agent の cwd** で開く（セッションは cwd ごとに保存されるため、同じ場所でないと `--resume` で見つからない）
   - 引き継ぐ引数は `R` と同じ許可リストだけ（落とした数はメッセージに出る）。Codex は未対応。空きシェルの欄では「Agent が起動していません」と出す
 - sidebar 上で `n` → 選択中のカードの **リポジトリで新しい pane を作り**、Claude Code / Codex を新規セッションで起動する（tmux のメニューで `c` = Claude / `x` = Codex を選ぶ。通常の sidebar・cockpit のどちらでも効く）
+  - **見出しの `+`**: リポジトリの見出し右端（`── dotfiles ──── 3 +`）の `+` をクリックすると、そのリポジトリで `n` と同じメニューが開く（カードを選ばなくてよい。`+` とその前後 3 桁だけが反応し、見出しのほかの場所は何もしない）。NOTES の見出しには付けない。対象はそのグループの先頭の Agent（`n` と同じ置き場所・ディレクトリ）で、空きシェルだけのリポジトリなら `--here`。クリックの列は `read_key` が `CLICK_COL` に入れ、行 → グループ先頭の対応は `ROW_NEW`。テスト用に `AGENT_SIDEBAR_NEW_BIN`（`tmux-agent-new` の代わり）。テスト: `test_見出しの_プラス_*`
   - `tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id> | --print)` が処理する（`--print` は、スマホの Web 画面（`tmux-agent-web`）用。Mac のフォーカスを動かさず、作った pane_id だけを標準出力へ返す）
   - **ディレクトリ**: リポジトリの本体（worktree のカードを選んでいても、大本のディレクトリ。見出しのリポジトリと同じ `AG_RKEY`）。git 管理外のグループはそのディレクトリ
   - **置き場所**: そのリポジトリの **先頭に表示されている Agent の window**（anchor の pane を分割する。幅が 120 以上なら左右、狭ければ上下。anchor が小さくて分割できない（`no space for new pane`）ときは、反対向き → 新しい window の順に切り替える）。anchor が cockpit の枠に入っているときは、元の window を交換用の枠（slot）の位置から割り出す（slot は枠に入った Agent の元の位置に居るため）。割り出せなければ新しい window にする

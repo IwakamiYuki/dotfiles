@@ -1335,6 +1335,7 @@ class SidebarUsageTest(unittest.TestCase):
                                   env={**os.environ, "TERM": "xterm-256color"}, start_new_session=True)
         os.close(slave)
         stop = threading.Event()
+        self.client_master = master  # クライアントへキー入力を送る(メニューの選択など)
         self.client_output = bytearray()  # クライアントの端末(= Ghostty の役)に届いた出力。BEL の確認に使う
 
         def drain():
@@ -1722,6 +1723,67 @@ class SidebarUsageTest(unittest.TestCase):
         while time.time() < deadline and self.active_pane() == sidebar:
             time.sleep(0.2)
         self.assertNotEqual(self.active_pane(), sidebar, "クリックしても右の枠へフォーカスが移りません")
+
+    # ---- 見出し右端の「+」: クリックすると n と同じメニュー(New agent)を出す ----
+
+    def click_at(self, row, col):
+        """sidebar の画面の row 行目(0 始まり)・col 列目(1 始まり)をクリックする。"""
+        self.tmux("send-keys", "-t", self.sidebar_pane(), "-l", f"\033[<0;{col};{row + 1}M\033[<0;{col};{row + 1}m")
+
+    def header_row(self, screen, name):
+        return next(i for i, l in enumerate(screen.splitlines()) if l.startswith("── ") and name in l)
+
+    def test_見出しの右端に_プラスを出す(self):
+        self.render(codex_threads=[self.thread_line()])
+        self.start_codex_pane()
+        screen = self.wait_screen(lambda scr: "IDLE" in scr)
+        header = screen.splitlines()[self.header_row(screen, "")]
+        self.assertTrue(header.rstrip().endswith("+"), header)
+
+    def test_NOTES_の見出しには_プラスを出さない(self):
+        self.render(daily_dir=self.daily_note(600))
+        screen = self.wait_screen(lambda scr: "NOTES" in scr)
+        self.assertFalse(screen.splitlines()[self.header_row(screen, "NOTES")].rstrip().endswith("+"))
+
+    def test_見出しの_プラス_をクリックすると_n_と同じメニューが開き_選ぶと新規起動する(self):
+        fake = os.path.join(self.dir, "fake-new")
+        log = os.path.join(self.dir, "new-args.log")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/bash\necho "$*" > {log}\n')
+        os.chmod(fake, 0o755)
+        self.render(codex_threads=[self.thread_line()], extra_env={"AGENT_SIDEBAR_NEW_BIN": fake})
+        self.start_codex_pane()
+        self.wait_screen(lambda scr: "IDLE" in scr)
+        self.attach_client()
+        time.sleep(1.5)
+        # クライアントがつながると pane の幅が変わるので、つないだあとの画面で「+」の桁を求める
+        screen = self.wait_screen(lambda scr: "IDLE" in scr)
+        header = screen.splitlines()[self.header_row(screen, "")]
+        self.click_at(self.header_row(screen, ""), len(header.rstrip()))
+        time.sleep(1)
+        os.write(self.client_master, b"c")  # メニューの Claude
+        args = self.wait_file(log).split()
+        self.assertEqual(args[0], "claude")
+        self.assertEqual(args[2], os.path.realpath(self.dir))
+        self.assertIn("--focus", args)
+
+    def test_見出しの_プラス_以外をクリックしても_メニューは開かない(self):
+        fake = os.path.join(self.dir, "fake-new")
+        log = os.path.join(self.dir, "new-args.log")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/bash\necho "$*" > {log}\n')
+        os.chmod(fake, 0o755)
+        self.render(codex_threads=[self.thread_line()], extra_env={"AGENT_SIDEBAR_NEW_BIN": fake})
+        self.start_codex_pane()
+        self.wait_screen(lambda scr: "IDLE" in scr)
+        self.attach_client()
+        time.sleep(1.5)
+        screen = self.wait_screen(lambda scr: "IDLE" in scr)
+        self.click_at(self.header_row(screen, ""), 5)
+        time.sleep(1)
+        os.write(self.client_master, b"c")
+        time.sleep(1)
+        self.assertFalse(os.path.exists(log), "見出しの + 以外のクリックでメニューが開きました")
 
     def test_cockpit_j_k_では_フォーカスは_sidebar_のまま(self):
         self.render(cockpit="early", windows=self.two_windows())

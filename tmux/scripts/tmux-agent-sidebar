@@ -696,6 +696,8 @@ row=0
 # いま描画中の Agent の添字（Agent 以外の行は空）と、画面の行 → Agent 添字の対応（クリック判定用）
 CUR_IDX=""
 ROW_AGENT=()
+# 見出し行 → そのグループの先頭の添字(右端の「+」のクリック判定用。NOTES の見出しには「+」が無いので入れない)
+ROW_NEW=()
 # 現在描画中のカードの背景色
 CARD_BG_NOW=""
 
@@ -815,15 +817,20 @@ git_info_of() {
 
 # window の見出し行（"── 6 dotfiles ────"）。scope=all のときは session 名も添える
 put_group_header() {
-  local i=$1 count right right_w room fill_n fill
+  local i=$1 count right right_w room fill_n fill plus
   count=${AG_RCOUNT[i]}
   right=" ${count} "
   # 空きシェルだけのリポジトリ(Agent が 0)は件数を出さない
   ((count == 0)) && right=" "
+  # 右端の「+」: クリックすると n と同じ(そのリポジトリで Claude / Codex を新規起動)。NOTES(Agent ではないカード)には付けない
+  plus=0
+  [ "${AG_RKEY[i]}" != "@notes" ] && plus=1
+  ((plus)) && right+="+ "
   right_w=${#right}
   ((row >= height)) && return 0
   row=$((row + 1))
   ROW_AGENT[row]=""
+  ((plus)) && ROW_NEW[row]=$i
   # 「── リポジトリ名 ──────── 件数」。ブランチは各カードに出す(同じリポジトリでも worktree ごとにブランチが違うため)
   room=$((width - 1 - 3 - right_w - 1))
   trunc "${AG_REPO[i]}" "$room"
@@ -831,7 +838,9 @@ put_group_header() {
   # printf の幅が負だと絶対値ぶんの空白を出してしまうので、0 未満は 0 にする
   ((fill_n < 0)) && fill_n=0
   printf -v fill '%*s' "$fill_n" ''
-  frame+="${ESC}[${row};1H${C_RULE}── ${C_GROUP}${BOLD_ON}${REPLY}${BOLD_OFF} ${C_RULE}${fill// /─}${FG_DEFAULT}${C_DIM}${right}${ESC}[K${C_RESET}"
+  frame+="${ESC}[${row};1H${C_RULE}── ${C_GROUP}${BOLD_ON}${REPLY}${BOLD_OFF} ${C_RULE}${fill// /─}${FG_DEFAULT}${C_DIM}${right%+ }${ESC}[K${C_RESET}"
+  ((plus)) && frame+="${ESC}[${row};$((width - 2))H${C_ACTIVE}+${C_RESET}"
+  return 0
 }
 
 
@@ -1869,6 +1878,7 @@ render() {
   frame=""
   row=0
   ROW_AGENT=()
+  ROW_NEW=()
   # カード中身の桁数(左の縁 1 + 空白 1 + 中身 + 右の縁 1 + 右端の余白 1)と、選択罫線の横線の長さ
   CARD_INNER=$((width - 4))
   printf -v BORDER_FILL '%*s' $((width - 3)) ''
@@ -2190,7 +2200,7 @@ PREVIEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-sidebar-preview"
 COCKPIT=0
 COCKPIT_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-cockpit"
 RESTART_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-restart"
-NEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-new"
+NEW_BIN="${AGENT_SIDEBAR_NEW_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-new}"
 WEB_BIN="${AGENT_SIDEBAR_WEB_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-web-toggle}"
 # tmux-agent-new が通知してきた「作ったばかりの pane」。Agent として検出されるまで探す秒数と合わせて持つ
 PENDING_ID=""
@@ -2341,6 +2351,7 @@ help_lines() {
   printf '%s\n' \
     "-" \
     "n|リポジトリで Claude / Codex を新規起動|(Agent の居ない所は、空きシェルで起動)" \
+    "click +|見出し右端の + で、そのリポジトリを n と同じ新規起動" \
     "f|Claude のセッションを複製(止めない)" \
     "R|Claude を再起動(--resume で入り直す)" \
     "r|即時更新" \
@@ -2598,19 +2609,21 @@ fork_selected() {
 # ディレクトリはリポジトリの本体(worktree でも大本のディレクトリ)。実際の処理は tmux-agent-new
 new_agent_menu() {
   ((AG_N > 0)) || return 0
-  if is_note_card "${AG_TYPE[SEL_IDX]}"; then
-    tmux display-message "new: Agent のカードを選んでください(${AG_TYPE[SEL_IDX]} は Agent ではありません)" 2>/dev/null
+  # $1 = 対象のカードの添字(見出しの「+」のクリックはそのグループの先頭)。無ければ選択中のカード
+  local t=${1:-$SEL_IDX}
+  if is_note_card "${AG_TYPE[t]}"; then
+    tmux display-message "new: Agent のカードを選んでください(${AG_TYPE[t]} は Agent ではありません)" 2>/dev/null
     return 0
   fi
-  local s=$SEL_IDX dir anchor repo mode here=""
-  while ((s > 0)) && [ "${AG_RKEY[s - 1]}" = "${AG_RKEY[SEL_IDX]}" ]; do s=$((s - 1)); done
+  local s=$t dir anchor repo mode here=""
+  while ((s > 0)) && [ "${AG_RKEY[s - 1]}" = "${AG_RKEY[t]}" ]; do s=$((s - 1)); done
   anchor=${AG_ID[s]}
-  dir=${AG_RKEY[SEL_IDX]}
-  repo=${AG_REPO[SEL_IDX]}
+  dir=${AG_RKEY[t]}
+  repo=${AG_REPO[t]}
   # 空きシェルの欄: その pane のシェルへそのまま入力して起動する(pane を分割しない。cwd はシェルの今の場所)
-  if [ "${AG_TYPE[SEL_IDX]}" = Shell ]; then
-    anchor=${AG_ID[SEL_IDX]}
-    dir=${AG_WT[SEL_IDX]}
+  if [ "${AG_TYPE[t]}" = Shell ]; then
+    anchor=${AG_ID[t]}
+    dir=${AG_WT[t]}
     here=" --here"
   fi
   if [ ! -d "$dir" ]; then
@@ -2703,7 +2716,7 @@ cpu_watchdog() {
 # 入力を 1 件読み、KEY に up / down / enter / refresh / click / other を、
 # クリックなら CLICK_ROW に行番号を入れる。タイムアウト時は KEY が空になる
 read_key() {
-  local c seq="" params b y final
+  local c seq="" params b x y final
   KEY=""
   IFS= read -rsn1 -t "$TICK" c || { note_read_failure; return 0; }
 
@@ -2746,9 +2759,11 @@ read_key() {
           params=${params%[Mm]}
           b=${params%%;*}
           y=${params##*;}
+          x=${params#*;}
+          x=${x%%;*}
           if [ "$final" = "M" ]; then
             case $b in
-              0) KEY=click; CLICK_ROW=$y ;;
+              0) KEY=click; CLICK_ROW=$y; CLICK_COL=$x ;;
               64) KEY=wheel_up ;;
               65) KEY=wheel_down ;;
             esac
@@ -2973,6 +2988,7 @@ last_collect=-999
 need_render=1
 KEY=""
 CLICK_ROW=0
+CLICK_COL=0
 
 COLLECT_PID=""
 COLLECT_STARTED=0
@@ -3130,7 +3146,11 @@ while :; do
       ;;
     click)
       idx=${ROW_AGENT[CLICK_ROW]:-}
-      if [ -n "$idx" ]; then
+      new_idx=${ROW_NEW[CLICK_ROW]:-}
+      if [ -n "$new_idx" ]; then
+        # 見出しの右端(「+」とその前後)だけが反応する。見出しのほかの場所は何もしない
+        ((CLICK_COL >= width - 3)) && new_agent_menu "$new_idx"
+      elif [ -n "$idx" ]; then
         SEL_IDX=$idx
         SEL_KEY="${AG_ID[idx]}|${AG_TYPE[idx]}"
         if is_note_card "${AG_TYPE[idx]}"; then
