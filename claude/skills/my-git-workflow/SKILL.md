@@ -1,5 +1,5 @@
 ---
-name: git-workflow
+name: my-git-workflow
 description: |-
   Git 操作の汎用ガイドライン。コミット、PR 作成、ブランチ操作のルールを定義。
   以下の場面で **プロアクティブに** 適用：

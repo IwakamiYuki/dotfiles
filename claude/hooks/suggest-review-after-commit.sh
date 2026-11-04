@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# PostToolUse フック: git commit 後に review-diff スキルを提案する
+# PostToolUse フック: git commit 後に my-review-diff スキルを提案する
 # Claude Code が git commit を実行した直後に発動
 
 INPUT=$(cat)
@@ -34,7 +34,7 @@ fi
 cat <<'EOF'
 {
   "type": "inject_context",
-  "message": "\n---\n💡 **コードレビューの提案**: コミットが完了しました。`/review-diff` を実行すると、このコミットの差分を Security・Performance・Code Quality・Architecture・Testing の 5 観点から並列でレビューできます。"
+  "message": "\n---\n💡 **コードレビューの提案**: コミットが完了しました。`/my-review-diff` を実行すると、このコミットの差分を Security・Performance・Code Quality・Architecture・Testing の 5 観点から並列でレビューできます。"
 }
 EOF
 

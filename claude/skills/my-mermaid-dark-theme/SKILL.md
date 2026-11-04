@@ -1,5 +1,5 @@
 ---
-name: mermaid-dark-theme
+name: my-mermaid-dark-theme
 description: Use this skill when creating diagrams in markdown files, designing system architecture, visualizing workflows or processes, creating timelines and schedules, making data visualizations, or fixing diagrams that look unclear or have poor contrast in dark mode.
 ---
 

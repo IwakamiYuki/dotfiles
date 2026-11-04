@@ -1,5 +1,5 @@
 ---
-name: review-markdown
+name: my-review-markdown
 description: Automatically review Markdown files for quality and accuracy using interactive MD Review UI. Use proactively after generating Markdown (documentation, specs, API docs, design documents, README files, etc.) to validate content before delivery. Trigger when: (1) creating/generating Markdown content, (2) documentation authoring/editing tasks, (3) AI-generated content validation needed, (4) user requests quality review/checking. Provides interactive review session with severity-based comments, auto-analyzes results, and suggests improvements.
 ---
 
@@ -9,7 +9,7 @@ Markdown ファイルの品質をインタラクティブに確認する MCP (Mo
 
 ## 🚀 自動発動ガイド
 
-**このスキルは Markdown 生成後に自動的に使うべき** です。以下のシーンで自分から review-markdown を呼び出してください：
+**このスキルは Markdown 生成後に自動的に使うべき** です。以下のシーンで自分から my-review-markdown を呼び出してください：
 
 ### 自動発動すべき場面
 
@@ -143,7 +143,7 @@ AI の動作（自動発動）:
 1. ユーザーの指示で仕様書 (API_SPEC.md) を生成
 2. ファイルサイズ・セクション数を確認
 3. 「レビュー対象」と判定
-4. 【ここで review-markdown スキルを自動呼び出し】
+4. 【ここで my-review-markdown スキルを自動呼び出し】
 5. セッション生成 → Electron アプリ起動
 6. ユーザーがレビュー
 7. 結果を分析 → 改善提案を提示
@@ -380,7 +380,7 @@ Markdown ファイルを生成した時点で、以下を確認：
               ↓ YES
               レビュー対象と判定
               ↓
-              【Skill: review-markdown を呼び出す】
+              【Skill: my-review-markdown を呼び出す】
               ↓
               セッション生成 → ユーザーレビュー
 ```

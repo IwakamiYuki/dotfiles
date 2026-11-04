@@ -497,7 +497,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 - Codex CLI では `/prompts:serena`、`/prompts:wiki` で実行
 - コマンドファイルは両方の AI CLI で共有可能
 
-**skills/review-pr/**: PR レビュー自動対応スキル
+**skills/my-review-pr/**: PR レビュー自動対応スキル
 - ユーザーが「レビューコメントに対応」と依頼すると自動起動
 - 完全自動化ワークフロー:
   1. 直前 push 以降のコメントを取得
@@ -511,11 +511,11 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 - `wait_and_recheck_pr_comments.sh`: AI レビュー待機スクリプト（30 秒 × 20 回チェック）
 - AI 署名を自動追加（透明性確保）
 
-**skills/start-worktree/**: worktree 作業開始スキル
-- `/start-worktree <作業内容>` で、作業内容からブランチ名を決めて worktree を作成
+**skills/my-start-worktree/**: worktree 作業開始スキル
+- `/my-start-worktree <作業内容>` で、作業内容からブランチ名を決めて worktree を作成
 - `bin/create-worktree` で作成 → `EnterWorktree(path)` でセッション移動 → プランモード開始
 
-**skills/cleanup-worktrees/**: merge 済み worktree 削除スキル
+**skills/my-cleanup-worktrees/**: merge 済み worktree 削除スキル
 - 「merge 済みの worktree を消して」で、merge 済みの worktree を検知 → 一覧提示 → 一括承認 → worktree とブランチを削除
 - 判定は worktree の HEAD SHA で行い、命名規則に依存しない（`gh api commits/<sha>/pulls` で merged かつ `head.sha` 一致。`gh` が使えなければ merge commit の第 2 親で判定）
 - 未コミット変更があってもスキップしない。tracked の変更は削除前に `.claude/tmp/worktree-patches/` へ patch を退避
@@ -569,7 +569,7 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 
 ### bin/create-worktree
 - `create-worktree <branch>` で `../<repo>_worktree_<branch>` に worktree を作成し、未コミット・gitignore 対象のファイルをコピー
-- stdout は作成したパスのみ（lazygit と start-worktree スキルで共用）
+- stdout は作成したパスのみ（lazygit と my-start-worktree スキルで共用）
 
 ### Ghostty (ghostty/config)
 - Dracula テーマ + 透過背景（opacity 0.70）
@@ -605,8 +605,8 @@ Enter まで一度に押すと、`/` やスキルの補完（Tab・↑↓で選�
 │   ├── scripts/           # 通知フックスクリプト
 │   ├── agents/            # カスタムエージェント
 │   └── skills/            # カスタムスキル
-│       ├── review-pr/     # PR レビュー自動対応スキル
-│       ├── sequential-thinking/  # 段階的思考スキル
+│       ├── my-review-pr/     # PR レビュー自動対応スキル
+│       ├── my-sequential-thinking/  # 段階的思考スキル
 │       └── ...            # その他スキル
 ├── tmux/scripts/          # Tmux ステータスバー用スクリプト
 │   ├── tmux-claude-agents-status  # sidebar の DONE 判定用の状態ファイルを更新（--state-only、表示なし）

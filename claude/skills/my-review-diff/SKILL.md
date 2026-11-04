@@ -1,12 +1,12 @@
 ---
-name: review-diff
+name: my-review-diff
 description: |-
   現在のブランチの Git 差分（git diff）を取得し、5 つの専門的観点から並列でコードレビューを実行する。
   以下の場面で使用：
   - ユーザーが「差分をレビューして」「diff をレビュー」「コードレビューして」と依頼した場合
   - ユーザーが「変更点をチェックして」「commit 前にレビュー」と依頼した場合
   - コミット直後に「レビューしてほしい」と依頼した場合
-  - "/review-diff" を手動で実行した場合
+  - "/my-review-diff" を手動で実行した場合
   - "review diff", "レビュー", "review changes" のキーワードを含む依頼
 
   Workflow:
@@ -411,7 +411,7 @@ diff:
 コミットが完了しました ✅
 
 このコミットの差分をレビューしますか？
-/review-diff を実行することで、7 つの専門観点（Security・Performance・Code Quality・Architecture・Testing・Documentation・Error Handling）から並列でコードレビューを実施します。
+/my-review-diff を実行することで、7 つの専門観点（Security・Performance・Code Quality・Architecture・Testing・Documentation・Error Handling）から並列でコードレビューを実施します。
 ```
 
 ---
@@ -420,10 +420,10 @@ diff:
 
 ### 手動実行
 ```
-/review-diff                    # 現在の差分（HEAD vs ベースブランチ）
-/review-diff HEAD~1             # 直前のコミットの差分
-/review-diff main               # main ブランチとの差分
-/review-diff abc123             # 特定コミットとの差分
+/my-review-diff                    # 現在の差分（HEAD vs ベースブランチ）
+/my-review-diff HEAD~1             # 直前のコミットの差分
+/my-review-diff main               # main ブランチとの差分
+/my-review-diff abc123             # 特定コミットとの差分
 ```
 
 ### Codex MCP 経由での実行

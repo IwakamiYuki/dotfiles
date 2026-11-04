@@ -1,11 +1,11 @@
 ---
-name: start-worktree
+name: my-start-worktree
 description: |-
   作業内容からブランチ名（worktree 名）を決めて worktree を作成し、セッションをその worktree へ移してプランモードで作業を始める。
   以下の場面で使用：
   - 「worktree で作業を始めて」「worktree 切って〇〇して」等、worktree での作業開始を依頼された場合
   - 「ブランチ名を考えて worktree を作って」等、命名を任された場合
-  - "/start-worktree <作業内容>" を手動で実行した場合
+  - "/my-start-worktree <作業内容>" を手動で実行した場合
 ---
 
 # Start Worktree
@@ -33,7 +33,7 @@ description: |-
 ### 2. ブランチ名の決定
 
 - 形式: `<type>/<kebab-case の英語>`
-  - type: `feature` / `fix` / `refactor` / `docs` / `chore`（git-workflow スキルの命名規則）
+  - type: `feature` / `fix` / `refactor` / `docs` / `chore`（my-git-workflow スキルの命名規則）
   - 説明部分は 2〜5 語程度、全体で 40 文字以内を目安にする
   - 例: 「lazygit の除外パターンにテストを追加」→ `feature/lazygit-exclude-pattern-test`
 - `git branch -a --format='%(refname:short)'` で既存ブランチを確認し、

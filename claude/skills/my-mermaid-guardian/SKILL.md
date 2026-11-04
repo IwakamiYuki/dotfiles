@@ -1,5 +1,5 @@
 ---
-name: mermaid-guardian
+name: my-mermaid-guardian
 description: |
   Validate and auto-fix Mermaid diagram syntax errors before and after generation.
   Prevents common issues: self-messages in sequenceDiagram, complex control structures,
@@ -20,9 +20,9 @@ Mermaid Guardian は、実証済みのベストプラクティスを強制する
 
 | モード | 使う場面 | コマンド例 | 出力内容 |
 |--------|---------|----------|--------|
-| **pre-check** | 図を生成する前にベストプラクティスを確認したい | `/mermaid-guardian pre-check`<br>[図の概要] | 推奨構成、注意点 |
-| **post-check** | 生成された図にエラーがある | `/mermaid-guardian post-check`<br>[Mermaidコード] | 問題検出、修正提案、修正済みコード |
-| **fix** | 修正コードだけが欲しい | `/mermaid-guardian fix`<br>[Mermaidコード] | 修正済みコード（説明なし） |
+| **pre-check** | 図を生成する前にベストプラクティスを確認したい | `/my-mermaid-guardian pre-check`<br>[図の概要] | 推奨構成、注意点 |
+| **post-check** | 生成された図にエラーがある | `/my-mermaid-guardian post-check`<br>[Mermaidコード] | 問題検出、修正提案、修正済みコード |
+| **fix** | 修正コードだけが欲しい | `/my-mermaid-guardian fix`<br>[Mermaidコード] | 修正済みコード（説明なし） |
 
 **tip**: 図の複雑さに不安があれば **pre-check** で相談するのが最短です。
 
@@ -106,7 +106,7 @@ Claude に生成を頼む前に：
 プランを Mermaid Guardian に検証させます：
 
 ```
-/mermaid-guardian pre-check
+/my-mermaid-guardian pre-check
 
 図種：sequenceDiagram
 参加者：4 人（Client、Server、AuthService、Database）
@@ -122,7 +122,7 @@ Claude に生成を頼む前に：
 常に生成結果を検証します：
 
 ```
-/mermaid-guardian post-check
+/my-mermaid-guardian post-check
 
 [生成されたコード]
 ```

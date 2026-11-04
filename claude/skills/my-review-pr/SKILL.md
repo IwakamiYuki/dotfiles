@@ -1,5 +1,5 @@
 ---
-name: review-pr
+name: my-review-pr
 description: |-
   Automatically handle Pull Request review comments from GitHub. Use this skill when:
   - User says "レビューコメントに対応" / "respond to review comments"

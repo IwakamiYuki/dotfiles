@@ -437,7 +437,7 @@ sequenceDiagram
 3. 見た目は表示されているが崩れている？
    ├→ sequenceDiagram なら rect, activate 確認
    ├→ graph なら ノード数やラベル長を確認
-   └→ 修正がわからなければ /mermaid-guardian post-check で相談
+   └→ 修正がわからなければ /my-mermaid-guardian post-check で相談
 ```
 
 ---

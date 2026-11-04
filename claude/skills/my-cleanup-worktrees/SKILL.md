@@ -1,16 +1,16 @@
 ---
-name: cleanup-worktrees
+name: my-cleanup-worktrees
 description: |-
   merge 済みブランチの worktree を検知し、承認後に worktree とブランチをまとめて削除する。
   以下の場面で使用：
   - 「merge 済みの worktree を消して」「worktree を掃除して」「不要な worktree を削除して」等の依頼
   - PR が merge された後の後片付けを依頼された場合
-  - "/cleanup-worktrees" を手動で実行した場合
+  - "/my-cleanup-worktrees" を手動で実行した場合
 ---
 
 # Cleanup Worktrees
 
-merge 済みの worktree を検知 → 一覧提示 → 一括承認 → 削除、を行う。`start-worktree` と対になるスキル。
+merge 済みの worktree を検知 → 一覧提示 → 一括承認 → 削除、を行う。`my-start-worktree` と対になるスキル。
 
 ## 前提
 
@@ -19,14 +19,14 @@ merge 済みの worktree を検知 → 一覧提示 → 一括承認 → 削除�
   - `git`（`gh` が使えない場合のフォールバック）: HEAD が既定ブランチの merge commit の第 2 親。squash / rebase merge は検知できない
 - どちらも「HEAD の内容は merge 済み」なので、未 push コミットの確認は不要
 - 未コミットの変更があってもスキップしない。`create-worktree` が untracked / ignored ファイルをコピーするため、ほぼ全 worktree に何かしら残っている。代わりに承認時に件数を見せる
-- スクリプトは `~/.claude/skills/cleanup-worktrees/bin/` にある
+- スクリプトは `~/.claude/skills/my-cleanup-worktrees/bin/` にある
 
 ## 手順
 
 ### 1. 検知
 
 ```bash
-~/.claude/skills/cleanup-worktrees/bin/scan-worktrees
+~/.claude/skills/my-cleanup-worktrees/bin/scan-worktrees
 ```
 
 - 削除はしない。stdout は JSON、stderr は進捗・警告
@@ -58,7 +58,7 @@ merge 済みの worktree を検知 → 一覧提示 → 一括承認 → 削除�
 承認された worktree ごとに実行する。1 件が失敗しても残りは続ける。
 
 ```bash
-~/.claude/skills/cleanup-worktrees/bin/remove-worktree <path> <branch|-> <merged_via>
+~/.claude/skills/my-cleanup-worktrees/bin/remove-worktree <path> <branch|-> <merged_via>
 ```
 
 - `branch` が null の場合は `-` を渡す

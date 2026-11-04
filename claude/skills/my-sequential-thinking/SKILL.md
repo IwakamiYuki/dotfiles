@@ -1,5 +1,5 @@
 ---
-name: sequential-thinking
+name: my-sequential-thinking
 description: "Break complex problems into manageable sequential steps with structured reasoning. Use when: (1) Problems require multi-step analysis, (2) Multiple hypotheses need validation, (3) Design/architecture decisions need systematic evaluation, (4) Root cause analysis requires progressive investigation, (5) Ambiguous requirements need clarification through staged exploration."
 ---
 
