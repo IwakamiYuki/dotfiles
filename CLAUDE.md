@@ -102,7 +102,8 @@ go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 - `Ctrl-t S` → window の並び替えポップアップ（`tmux-window-reorder`）。`j`/`k` で選択、`J`/`K` で選択中の window を上下へ移動（`swap-window -d` で即座に反映）、`Enter` で開く、`q` で閉じる、`Esc` で開く前の並びに戻して閉じる
 - `Ctrl-t g` → Lazygit 起動
 - `Ctrl-t m` → Claude powered コミットメッセージ生成
-- `Ctrl-t T` → Claude Code の /todos 表示（Ctrl+t との競合を回避）
+- `Ctrl-t t` → 背景を全 pane 透過にする（一時的。`Ctrl-t r` で元に戻る）
+- `Ctrl-t T` → 背景を不透明にする（全 pane を非アクティブと同じ colour233 で塗る。一時的。`Ctrl-t r` で元に戻る）
 - `Ctrl-t r` → 設定リロード
 - `Ctrl-t Ctrl-s` / `Ctrl-t Ctrl-r` → セッション保存/復元
 
