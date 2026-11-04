@@ -226,5 +226,6 @@
   "skipWorkflowUsageWarning": true,
   "theme": "dark",
   "autoCompactEnabled": true,
+  "idleCompaction": false,
   "notificationStyle": "hook"
 }
