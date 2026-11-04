@@ -78,6 +78,7 @@ brew install reattach-to-user-namespace  # tmux クリップボード連携
 brew install lazygit                      # Git UI（Ctrl-t g で起動）
 brew install terminal-notifier            # Claude Code 通知（フック用）
 brew install ical-buddy                   # sidebar の「次の予定」カード（Mac のカレンダー。無くても他は動く）
+brew install --cask swiftbar            # Mac のメニューバーに Agent の状態を出す（tmux/swiftbar/。無くても他は動く）
 go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 ```
 
@@ -370,6 +371,16 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
 **危険な点（重要）**: Agent が枠に入っている間に cockpit window を **tmux の外から** 閉じると、Agent も終了する。tmux には「閉じる直前」のフックが無い（`window-unlinked` 等は閉じた後）。
 守れる経路: `prefix + &`（差し替え済み）、sidebar の終了、次回起動時の `heal`。**守れない経路**: `prefix :` から `kill-window` を直接実行、`kill-session`、tmux サーバーの終了。
 その場合も会話の記録は残る（`claude --resume`）が、実行中の処理は失われる。
+
+### メニューバー（SwiftBar）(tmux/swiftbar/)
+Mac のメニューバーに、Agent の状態を常時出す。tmux の外（Ghostty を見ていないとき）でも、WAITING / DONE に気づける。Dock のバウンス・音（sidebar）と同じ目的の、常時表示版。
+- **表示**: タイトルは `🔴1 🟢2 🟡1`（WAITING / DONE / WORKING の件数。どれも無ければ `🤖 <Agent の数>`）。開くと **要確認（WAITING・DONE）→ 作業中 → 待機** の順に、`🔴 リポジトリ / 名前 · WAITING 3m` の 1 行ずつ。**項目をクリック**すると、通知のクリックと同じ処理（`claude/hooks/focus-tmux-pane.sh`）でその Agent へ飛ぶ（cockpit があれば右の枠へ入れて、Ghostty を前面に出す）。サブメニューは付けない（付けると、クリックが「ジャンプ」でなく「開く」になるため）
+- **仕組み**: プラグイン `tmux/swiftbar/tmux-agents.10s.py`（ファイル名の `10s` が更新間隔。検出が数百 ms かかるので短くしない）が、`tmux-agent-web --list-agents`（sidebar と同じ検出の Python 版。サーバーは起動せず、認証もポートも要らない読み取りだけ。JSON を出して終了）を呼んで整形する。tmux のソケットは `tmux display-message -p '#{socket_path}'` で求める。SwiftBar の PATH は最小限なので、プラグインが `~/.local/bin`（claude）と `/opt/homebrew/bin`（tmux）を足す
+- **導入**: `brew install --cask swiftbar` → プラグインのフォルダを `tmux/swiftbar` にする（`defaults write com.ameba.SwiftBar PluginDirectory -string ~/dotfiles/tmux/swiftbar`、または SwiftBar の初回の選択）→ SwiftBar を起動。**このフォルダには、プラグイン以外の実行ファイルを置かない**（SwiftBar が全部プラグインとして実行する）。メニューバーの項目が多くて隠れるときは、Cmd を押しながらアイコンをドラッグして並べ替える
+- 検出の仕様（`build_agents`）を変えたら、`--list-agents` の出力も変わる（sidebar とは別実装なので、`tmux-agent-web` 側を直す）
+- 環境変数（テスト用）: `TMUX_AGENTS_SWIFTBAR_LIST_BIN`（一覧のコマンド）/ `_FOCUS_BIN`（ジャンプのスクリプト）/ `_SOCKET`（tmux のソケット。空なら「tmux が動いていません」）
+- 既知の制限: 件数は WORKING・WAITING・DONE だけ（IDLE は数えない）。DONE（未読）の判定は、状態ファイル（ステータスバーの `--state-only` が更新）に依る。クリックしても、メニューバーの表示は次の更新（10 秒以内）まで変わらない（`refresh=true` で、クリック直後には更新する）
+- テスト: `test_swiftbar_plugin.py`（偽の一覧で、件数・並び・クリックの引数・`|` の無害化・取得失敗）
 
 ### Agent Web (tmux/scripts/tmux-agent-web)
 スマホのブラウザから、この Mac の tmux 上の Claude Code / Codex を **確認・操作**する小さな Web サーバー（Python 3 標準ライブラリのみ）。

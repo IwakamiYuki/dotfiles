@@ -1301,12 +1301,17 @@ def parse_args(argv=None):
                    help=f"一度ログインした端末の有効期間（既定 {SESSION_DAYS} 日。サーバーを起動し直しても続く）")
     p.add_argument("--revoke-sessions", action="store_true", help="全端末のログインを取り消して終了する（動いているサーバーにも効く）")
     p.add_argument("--tls-dir", metavar="パス", help="HTTPS 用の自己署名の証明書の置き場所（既定: ~/.cache/tmux-agent-web/tls。無ければ自動で作る）")
+    p.add_argument("--list-agents", action="store_true", help="いまの Agent 一覧を JSON で標準出力へ出して終了する（サーバーは起動しない。メニューバー用）")
     p.add_argument("--no-tls", action="store_true", help="HTTPS を使わず、HTTP だけで待ち受ける（既定は、同じポートで HTTP と HTTPS の両方）")
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if args.list_agents:
+        # 認証もポートも要らない読み取りだけ。トークン・URL は出さない
+        print(json.dumps(Collector(config_from_env()).agents(max_age=0), ensure_ascii=False))
+        return 0
     state_path = args.state_file or default_state_path()
     if args.revoke_sessions:
         revoke_sessions(sessions_path_for(state_path))
