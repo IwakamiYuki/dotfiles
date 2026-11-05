@@ -210,6 +210,22 @@ class CalendarTest(unittest.TestCase):
         screen = self.agenda(out, f"{today} 09:00", width=60)
         self.assertEqual(screen.count("終日 出張"), 2)
 
+    def test_終日の予定と同じ予定が_時刻つきで別のカレンダーにあれば_終日のほうを除く(self):
+        # 共有カレンダーの「[公開]タイトル」(終日相当)と、自分のカレンダーの「タイトル」(10:00-16:30)は同じ予定
+        d1, _ = stamp(1, "00:00")
+        d2, _ = stamp(2, "00:00")
+        out = f"{d1} at 00:00 - {d2} at 00:00 ¦ [公開]【東京】ワクチン接種\n"
+        out += self.block(1, "10:00", "16:30", "【東京】ワクチン接種")
+        screen = self.agenda(out, f"{d1} 09:00", width=60)
+        self.assertNotIn("終日", screen)
+        self.assertEqual(screen.count("ワクチン接種"), 1)
+        self.assertIn("10:00-16:30", screen)
+
+    def test_終日の予定は_タイトルが違えば_時刻つきの予定があっても残す(self):
+        d1, _ = stamp(1, "00:00")
+        out = f"{d1} ¦ 祝日\n" + self.block(1, "10:00", "11:00", "朝会")
+        self.assertIn("終日 祝日", self.agenda(out, f"{d1} 09:00", width=60))
+
     def test_grid_終日の予定は_時間軸の上に置き_空きには数えない(self):
         today = stamp(0, "00:00")[0]
         out = f"{today} ¦ 祝日\n"

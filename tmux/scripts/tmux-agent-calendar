@@ -126,7 +126,23 @@ def parse(output):
         seen.add(key)
         events.append({"start": start, "end": end, "title": title, "url": meeting_url("\n".join(lines)), "allday": allday})
     events.sort(key=lambda e: (e["start"], e["end"], e["title"]))
-    return events
+    return drop_allday_twins(events)
+
+
+TAGS = re.compile(r"^(?:\s*\[[^\]]*\])+\s*")
+
+
+def bare_title(title):
+    """先頭の [公開] / [非公開] などのタグを除いたタイトル(同じ予定が別のカレンダーで違うタグつきで入っていても、同じと見るため)。"""
+    return TAGS.sub("", title)
+
+
+def drop_allday_twins(events):
+    """終日の予定と、同じ日に同じタイトル(タグを除く)の時刻つきの予定があれば、終日のほうを除く。
+    共有カレンダーの終日の枠と、自分のカレンダーの時刻つきの予定が、同じ予定として 2 つ出るため。時刻つきのほうが、実際の時間が分かる。"""
+    timed = [(bare_title(e["title"]), e["start"], e["end"]) for e in events if not e["allday"]]
+    return [e for e in events
+            if not e["allday"] or not any(t == bare_title(e["title"]) and s < e["end"] and f > e["start"] for t, s, f in timed)]
 
 
 def fetch():
