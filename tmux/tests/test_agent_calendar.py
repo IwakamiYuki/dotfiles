@@ -86,6 +86,19 @@ class CalendarTest(unittest.TestCase):
         row = [l.split("|") for l in proc.stdout.splitlines() if l.startswith("E|")][0]
         self.assertEqual(row[1:3], [str(s), str(e)])
 
+    def test_0時から0時までの予定は_終日の予定なので除く(self):
+        # Google カレンダーの終日の予定は、icalBuddy の -ea をすり抜けて「00:00 - 翌日 00:00」で返ってくることがある
+        d1, _ = stamp(1, "00:00")
+        d2, _ = stamp(2, "00:00")
+        d3, _ = stamp(3, "00:00")
+        out = f"{d1} at 00:00 - {d2} at 00:00 ¦ 終日の予定\n"
+        out += f"{d1} at 00:00 - {d3} at 00:00 ¦ 複数日の終日の予定\n"
+        out += self.block(1, "10:00", "16:30", "普通の予定")
+        out += self.block(1, "00:00", "23:59", "0時始まりの普通の予定")
+        proc = self.run_script(self.fake_icalbuddy(out), "--stdout")
+        titles = [l.split("|")[3] for l in proc.stdout.splitlines() if l.startswith("E|")]
+        self.assertEqual(titles, ["0時始まりの普通の予定", "普通の予定"])
+
     def test_終了時刻が無い予定は_開始と同じ時刻にする(self):
         date, s = stamp(1, "09:00")
         proc = self.run_script(self.fake_icalbuddy(f"{date} at 09:00 ¦ リマインド\n"), "--stdout")

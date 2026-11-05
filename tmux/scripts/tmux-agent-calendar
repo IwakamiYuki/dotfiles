@@ -102,6 +102,10 @@ def parse(output):
             end = int(time.mktime((ey, emo, ed, int(m.group(9)), int(m.group(10)), 0, 0, 0, -1)))
             if end < start:
                 end += 86400
+        # 0:00 から 0:00(翌日以降)までの予定は、Google カレンダーの「終日」の予定。icalBuddy の -ea が終日と見なさず、
+        # 時刻つきの予定として返ってくる(予定表で 00:00-00:00 の 1 日ぶんのブロックになってしまう)ので、ここで除く
+        if end - start >= 82800 and (h, mi) == (0, 0) and time.localtime(end)[3:5] == (0, 0):
+            continue
         # 最初の行の、日時より後ろ: " ¦ " でプロパティが区切られる。最初がタイトル
         head = lines[0][m.end():]
         head = head[len(PROP_SEP):] if head.startswith(PROP_SEP) else head.lstrip()
@@ -116,7 +120,7 @@ def parse(output):
 
 
 def fetch():
-    """今日と明日の、終日でない予定(今日の、もう終わった予定も含む)。取れなければ None。"""
+    """今日と明日の、終日でない予定(今日の、もう終わった予定も含む。0:00〜0:00 の終日相当も除く)。取れなければ None。"""
     # -n(いま以降だけ)は付けない。付けると、終わった予定が予定表から消える
     args = ["-nc", "-nrd", "-ea", "-b", "", "-df", "%Y-%m-%d", "-tf", "%H:%M",
             "-iep", "datetime,title,location,url,notes", "-po", "datetime,title,location,url,notes", "-ps", f"|{PROP_SEP}|"]
