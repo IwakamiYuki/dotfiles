@@ -1,7 +1,7 @@
 """tmux-agent-calendar（Mac のカレンダーの予定の取得・キャッシュ・今日の予定の画面）のテスト。
 
 偽の icalBuddy（決まった出力を返すスクリプト）を使うので、本物のカレンダーには触れない。
-偽の icalBuddy は、受け取った引数も記録する（終日の予定を除く -ea などが渡っているかの確認用）。
+偽の icalBuddy は、受け取った引数も記録する（-n や -ea が渡っていないかの確認用）。
 """
 import os
 import shutil
@@ -86,8 +86,8 @@ class CalendarTest(unittest.TestCase):
         row = [l.split("|") for l in proc.stdout.splitlines() if l.startswith("E|")][0]
         self.assertEqual(row[1:3], [str(s), str(e)])
 
-    def test_0時から0時までの予定は_終日の予定なので除く(self):
-        # Google カレンダーの終日の予定は、icalBuddy の -ea をすり抜けて「00:00 - 翌日 00:00」で返ってくることがある
+    def test_0時から0時までの予定は_終日の予定なので_キャッシュに書かない(self):
+        # Google カレンダーの終日の予定は、icalBuddy が「00:00 - 翌日 00:00」の時刻つきで返すことがある(終日として扱い、カードには出さない)
         d1, _ = stamp(1, "00:00")
         d2, _ = stamp(2, "00:00")
         d3, _ = stamp(3, "00:00")
@@ -130,10 +130,11 @@ class CalendarTest(unittest.TestCase):
         self.run_script(self.fake_icalbuddy(self.block(1, "10:00", "11:00", "A|B")))
         self.assertEqual(self.events()[0][3], "A｜B")
 
-    def test_icalBuddy_には_終日の予定を除く引数と_今日と明日を渡す(self):
+    def test_icalBuddy_には_今日と明日を渡し_終日を除く_ea_は渡さない(self):
+        # -ea を付けると、予定表の上に出す終日の予定が取れない(カードとキャッシュには、終日は書かない)
         self.run_script(self.fake_icalbuddy(""))
         args = self.read(self.args_log)
-        self.assertIn("-ea", args)
+        self.assertNotIn("-ea", args.split())
         self.assertIn("eventsToday+1", args)
 
     def test_除くカレンダーと対象のカレンダーを環境変数で渡せる(self):
@@ -186,6 +187,48 @@ class CalendarTest(unittest.TestCase):
         self.assertIn("  09:00-10:00 朝会", screen)
         self.assertIn("▶ 13:00-14:00 進行中の会議", screen)
         self.assertIn("  16:00-17:00 夕会", screen)
+
+    def test_終日の予定は_カードのキャッシュに書かない(self):
+        today = stamp(0, "00:00")[0]
+        proc = self.run_script(self.fake_icalbuddy(f"{today} ¦ 祝日\n"), "--stdout")
+        self.assertEqual([l for l in proc.stdout.splitlines() if l.startswith("E|")], [])
+
+    def test_agenda_終日の予定は_日ごとに先頭へ出す(self):
+        today = stamp(0, "00:00")[0]
+        tomorrow = stamp(1, "00:00")[0]
+        out = f"{today} ¦ 今日の祝日\n{tomorrow} ¦ 明日の記念日\n{today} at 10:00 - 11:00 ¦ 朝会\n"
+        screen = self.agenda(out, f"{today} 09:00", width=60)
+        today_part = screen.split("明日")[0]
+        self.assertIn("終日 今日の祝日", today_part)
+        self.assertLess(today_part.index("終日"), today_part.index("朝会"))
+        self.assertIn("終日 明日の記念日", screen.split("明日", 1)[1])
+
+    def test_agenda_複数日の終日の予定は_かかる日すべてに出す_重複は1つ(self):
+        today = stamp(0, "00:00")[0]
+        tomorrow = stamp(1, "00:00")[0]
+        out = f"{today} - {tomorrow} ¦ 出張\n{today} - {tomorrow} ¦ 出張\n"
+        screen = self.agenda(out, f"{today} 09:00", width=60)
+        self.assertEqual(screen.count("終日 出張"), 2)
+
+    def test_grid_終日の予定は_時間軸の上に置き_空きには数えない(self):
+        today = stamp(0, "00:00")[0]
+        out = f"{today} ¦ 祝日\n"
+        screen = self.grid(out, f"{today} 09:00", width=50)
+        lines = screen.splitlines()
+        all_row = next(i for i, l in enumerate(lines) if "祝日" in l)
+        first_hour = next(i for i, l in enumerate(lines) if l.startswith("10:00"))
+        self.assertLess(all_row, first_hour)
+        self.assertTrue(lines[all_row].startswith("終日"))
+        self.assertIn("空き 残り 9h / 全体 9h", screen)  # 10〜19 時がまるごと空き(終日の予定で埋まらない)
+
+    def test_grid_終日の予定が多いときは_3行までで_残りは件数にする(self):
+        today = stamp(0, "00:00")[0]
+        out = "".join(f"{today} ¦ 予定{i}\n" for i in range(5))
+        screen = self.grid(out, f"{today} 09:00", width=50)
+        self.assertIn("予定0", screen)
+        self.assertIn("予定1", screen)
+        self.assertNotIn("予定2", screen)  # 3 行目は「+3」(残りの件数)
+        self.assertIn("+3", screen)
 
     def test_agenda_明日の予定は見出しで分ける(self):
         today = stamp(0, "00:00")[0]

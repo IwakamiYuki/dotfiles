@@ -46,6 +46,8 @@ DAY_TO = int(os.environ.get("AGENT_CALENDAR_DAY_TO", "19"))
 FREE_MIN_SEC = 1800
 # 1 行目は「日付 at 開始 - 終了」。終了が別の日なら、終了にも日付が付く。本文などの続きの行は字下げされるので、行頭の一致だけで予定の始まりが分かる
 EVENT_LINE = re.compile(r"^(\d{4})-(\d\d)-(\d\d) at (\d\d):(\d\d)(?: - (?:(\d{4})-(\d\d)-(\d\d) at )?(\d\d):(\d\d))?")
+# 終日の予定の最初の行: 日付だけ(複数日は「開始日 - 終了日」。終了日を含む)。時刻つきの EVENT_LINE と区別する
+ALLDAY_LINE = re.compile(r"^(\d{4})-(\d\d)-(\d\d)(?: - (\d{4})-(\d\d)-(\d\d))?(?= ¦ |$)")
 URL = re.compile(r"https?://[^\s<>\")\]」』]+")
 MEETING_HOSTS = ("zoom.us", "zoom.com", "meet.google.com", "teams.microsoft.com", "teams.live.com", "webex.com", "whereby.com")
 PROP_SEP = " ¦ "
@@ -84,45 +86,53 @@ def meeting_url(text):
 
 
 def parse(output):
-    """icalBuddy の出力を [{start, end, title, url}] にする(開始の早い順。重複は 1 つ)。"""
+    """icalBuddy の出力を [{start, end, title, url, allday}] にする(開始の早い順。重複は 1 つ)。
+    allday は終日の予定(日付だけの行、および 0:00 〜 翌日以降の 0:00 の予定)。start / end は 0 時の epoch(end は最終日の翌日 0 時)。"""
     blocks = []
     for line in output.splitlines():
-        if EVENT_LINE.match(line):
+        if EVENT_LINE.match(line) or ALLDAY_LINE.match(line):
             blocks.append([line])
         elif blocks:
             blocks[-1].append(line)
     events, seen = [], set()
     for lines in blocks:
         m = EVENT_LINE.match(lines[0])
-        y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
-        start = int(time.mktime((y, mo, d, h, mi, 0, 0, 0, -1)))
-        end = start
-        if m.group(9):
-            ey, emo, ed = (int(m.group(i)) for i in (6, 7, 8)) if m.group(6) else (y, mo, d)
-            end = int(time.mktime((ey, emo, ed, int(m.group(9)), int(m.group(10)), 0, 0, 0, -1)))
-            if end < start:
-                end += 86400
-        # 0:00 から 0:00(翌日以降)までの予定は、Google カレンダーの「終日」の予定。icalBuddy の -ea が終日と見なさず、
-        # 時刻つきの予定として返ってくる(予定表で 00:00-00:00 の 1 日ぶんのブロックになってしまう)ので、ここで除く
-        if end - start >= 82800 and (h, mi) == (0, 0) and time.localtime(end)[3:5] == (0, 0):
-            continue
+        allday = m is None
+        if allday:
+            m = ALLDAY_LINE.match(lines[0])
+            y, mo, d = (int(m.group(i)) for i in (1, 2, 3))
+            ey, emo, ed = (int(m.group(i)) for i in (4, 5, 6)) if m.group(4) else (y, mo, d)
+            start = int(time.mktime((y, mo, d, 0, 0, 0, 0, 0, -1)))
+            end = int(time.mktime((ey, emo, ed + 1, 0, 0, 0, 0, 0, -1)))
+        else:
+            y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
+            start = int(time.mktime((y, mo, d, h, mi, 0, 0, 0, -1)))
+            end = start
+            if m.group(9):
+                ey, emo, ed = (int(m.group(i)) for i in (6, 7, 8)) if m.group(6) else (y, mo, d)
+                end = int(time.mktime((ey, emo, ed, int(m.group(9)), int(m.group(10)), 0, 0, 0, -1)))
+                if end < start:
+                    end += 86400
+            # 0:00 から 0:00(翌日以降)までの予定は、Google カレンダーの「終日」の予定。icalBuddy の -ea が終日と見なさず、
+            # 時刻つきの予定として返ってくる(予定表で 00:00-00:00 の 1 日ぶんのブロックになってしまう)ので、終日として扱う
+            allday = end - start >= 82800 and (h, mi) == (0, 0) and time.localtime(end)[3:5] == (0, 0)
         # 最初の行の、日時より後ろ: " ¦ " でプロパティが区切られる。最初がタイトル
         head = lines[0][m.end():]
         head = head[len(PROP_SEP):] if head.startswith(PROP_SEP) else head.lstrip()
         title = head.split(PROP_SEP)[0].strip()
-        key = (start, end, title)
+        key = (start, end, title, allday)
         if key in seen:
             continue
         seen.add(key)
-        events.append({"start": start, "end": end, "title": title, "url": meeting_url("\n".join(lines))})
+        events.append({"start": start, "end": end, "title": title, "url": meeting_url("\n".join(lines)), "allday": allday})
     events.sort(key=lambda e: (e["start"], e["end"], e["title"]))
     return events
 
 
 def fetch():
-    """今日と明日の、終日でない予定(今日の、もう終わった予定も含む。0:00〜0:00 の終日相当も除く)。取れなければ None。"""
+    """今日と明日の予定(今日の、もう終わった予定も含む。終日の予定は allday つき)。取れなければ None。"""
     # -n(いま以降だけ)は付けない。付けると、終わった予定が予定表から消える
-    args = ["-nc", "-nrd", "-ea", "-b", "", "-df", "%Y-%m-%d", "-tf", "%H:%M",
+    args = ["-nc", "-nrd", "-b", "", "-df", "%Y-%m-%d", "-tf", "%H:%M",
             "-iep", "datetime,title,location,url,notes", "-po", "datetime,title,location,url,notes", "-ps", f"|{PROP_SEP}|"]
     if EXCLUDE:
         args += ["-ec", EXCLUDE]
@@ -142,7 +152,8 @@ def clean(text):
 def lines_for_cache(events, now):
     out = [f"F|{now}"]
     for e in events:
-        if e["end"] > now:
+        # 終日の予定はカード(次の予定)の対象外。予定表(--agenda)にだけ出す
+        if e["end"] > now and not e.get("allday"):
             out.append(f"E|{e['start']}|{e['end']}|{clean(e['title'])}|{e['url']}")
     return out
 
@@ -304,6 +315,8 @@ def agenda_list(events, now, width, height, color):
     def paint(code, text):
         return f"{code}{text}{RESET}" if color else text
 
+    allday = [e for e in events if e.get("allday")]
+    events = [e for e in events if not e.get("allday")]
     today = day_of(now)
     tomorrow = day_of(now + 86400)
     boundary = at(tomorrow, 0)
@@ -314,6 +327,7 @@ def agenda_list(events, now, width, height, color):
         if lines:
             lines.append("")
         lines.append(paint(ORANGE, label) + paint(DIM, "  " + time.strftime("%m/%d", time.localtime(at(day, 0)))))
+        lines += [f"  {paint(DIM, '終日')} {clip(t, max(width - 8, 4))}" for t in allday_titles(allday, day)]
         spans = busy_spans(events, day)
         lines += timeline(spans, day, lo, hi, now, width, paint)
         lines += free_line(spans, day, now, width, paint)
@@ -431,14 +445,40 @@ def gutter(start_min, step, i, now_row, now, paint):
     return (paint(DIM, f"{m // 60:02d}:00") if m % 60 == 0 else "     ") + " "
 
 
+ALLDAY_ROWS = 3  # 予定表の上に並べる終日の予定の最大行数(超えた分は「+N」)
+ALLDAY_BG = {"fg": 255, "bg": 60, "edge": 103}
+
+
+def allday_titles(allday, day):
+    """day にかかる終日の予定のタイトル(重複は 1 つ。複数のカレンダーに同じ予定があるため)。"""
+    lo, hi = at(day, 0), at(day, 24 * 60)
+    return list(dict.fromkeys(e["title"] for e in allday if e["start"] < hi and e["end"] > lo))
+
+
+def allday_rows(titles, cw, color):
+    """終日の予定の行(幅 cw)。ALLDAY_ROWS を超えるときは、最後の行を「+N」にする。"""
+    shown = titles if len(titles) <= ALLDAY_ROWS else titles[:ALLDAY_ROWS - 1] + [f"+{len(titles) - ALLDAY_ROWS + 1}"]
+    rows = []
+    for t in shown:
+        body = " " + clip(t, cw - 3)
+        body += " " * max(cw - 1 - width_of(body), 0)
+        rows.append(f"{ESC}[48;5;{ALLDAY_BG['bg']};38;5;{ALLDAY_BG['edge']}m▌{ESC}[38;5;{ALLDAY_BG['fg']}m{body}{RESET}" if color else "▌" + body)
+    return rows
+
+
 def agenda_grid(events, now, width, height, color):
     """今日(幅が 80 以上なら、明日も右に並べる)の日表示。上 2 行は日付と空き時間、残りが縦の時間軸。"""
     def paint(code, text):
         return f"{code}{text}{RESET}" if color else text
 
+    allday = [e for e in events if e.get("allday")]
+    events = [e for e in events if not e.get("allday")]
     today, tomorrow = day_of(now), day_of(now + 86400)
     lo, hi = day_range(events, (today, tomorrow))
-    hours, avail = (hi - lo) // 60, max(height - 2, 1)
+    two = width >= 2 * GUTTER + 2 * 30 + 2
+    shown_days = [today, tomorrow] if two else [today if now < at(today, hi) else tomorrow]
+    n_allday = min(max((len(allday_titles(allday, d)) for d in shown_days), default=0), ALLDAY_ROWS)
+    hours, avail = (hi - lo) // 60, max(height - 2 - n_allday, 1)
     # 行数に収まる最も細かい刻み。1 時間でも収まらなければ、いまの付近の時間帯だけを出す
     step = next((c for c in (15, 30, 60) if hours * 60 // c <= avail), 60)
     n, start_min = hours * 60 // step, lo
@@ -446,13 +486,12 @@ def agenda_grid(events, now, width, height, color):
         n = avail
         first = min(max(lo // 60, time.localtime(now).tm_hour - 1), hi // 60 - n)
         start_min = max(first, lo // 60) * 60
-    two = width >= 2 * GUTTER + 2 * 30 + 2
     if two:
         days, cw = [(today, "予定"), (tomorrow, "明日")], (width - GUTTER - 2) // 2
     else:
         # 1 列のときは、今日の時間帯が終わっていれば明日を出す
         days, cw = [(today, "予定") if now < at(today, hi) else (tomorrow, "明日")], width - GUTTER
-    heads, frees, cols = [], [], []
+    heads, frees, cols, alls = [], [], [], []
     for day, label in days:
         spans = busy_spans(events, day)
         date = f"  {time.strftime('%m/%d', time.localtime(at(day, 0)))}"
@@ -465,9 +504,14 @@ def agenda_grid(events, now, width, height, color):
         frees.append(paint(code, text) + " " * (cw - width_of(text)))
         heads[-1] += " " * (cw - width_of(plain))
         cols.append(day_column(events, day, start_min, step, n, now, cw, paint, color))
+        alls.append(allday_rows(allday_titles(allday, day), cw, color))
     gap = "  "
     pad = " " * GUTTER
     lines = [pad + gap.join(heads), pad + gap.join(frees)]
+    # 終日の予定は、Google カレンダーのように時間軸の上に置く(行の左に「終日」)
+    for i in range(n_allday):
+        label = paint(DIM, "終日") + "  " if i == 0 else pad
+        lines.append(label + gap.join(a[i] if i < len(a) else " " * cw for a in alls))
     now_row = (now - at(today, start_min)) // (step * 60)
     for i in range(n):
         lines.append(gutter(start_min, step, i, now_row if today == day_of(now) else -1, now, paint) + gap.join(c[i] for c in cols))
