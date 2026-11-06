@@ -2352,8 +2352,8 @@ help_lines() {
     "-" \
     "n|リポジトリで Claude / Codex を新規起動|(Agent の居ない所は、空きシェルで起動)" \
     "click +|見出し右端の + で、そのリポジトリを n と同じ新規起動" \
-    "f|Claude のセッションを複製(止めない)" \
-    "R|Claude を再起動(--resume で入り直す)" \
+    "f|Claude / Codex のセッションを複製(止めない)" \
+    "R|Claude / Codex を再起動(resume で入り直す)" \
     "r|即時更新" \
     "o|Daily Note を Obsidian で開く" \
     "⏎ click|Daily / 予定のカードでは、Note / 会議を開く|(予定: 会議の URL が無ければカレンダー)" \
@@ -2571,10 +2571,6 @@ restart_selected() {
     tmux display-message "restart: ${AG_TYPE[i]} は Agent ではありません" 2>/dev/null
     return 0
   fi
-  if [ "${AG_TYPE[i]}" != Claude ]; then
-    tmux display-message "restart: ${AG_TYPE[i]} の再起動は未対応です" 2>/dev/null
-    return 0
-  fi
   case ${AG_STATUS[i]} in
     working | waiting)
       name=${AG_TITLE[i]:-${AG_PROJ[i]}}
@@ -2595,7 +2591,7 @@ fork_selected() {
   local i=$SEL_IDX mode
   ((AG_N > 0)) || return 0
   case ${AG_TYPE[i]} in
-    Claude) ;;
+    Claude | Codex) ;;
     Shell) tmux display-message "fork: Agent が起動していません(n で新規起動)" 2>/dev/null; return 0 ;;
     Daily | Cal) tmux display-message "fork: ${AG_TYPE[i]} は Agent ではありません" 2>/dev/null; return 0 ;;
     *) tmux display-message "fork: ${AG_TYPE[i]} の複製は未対応です" 2>/dev/null; return 0 ;;

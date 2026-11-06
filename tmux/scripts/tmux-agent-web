@@ -320,6 +320,10 @@ def codex_view(thread: Optional[dict], now: float) -> Tuple[str, str, Optional[i
     return status, detail, elapsed, thread["name"]
 
 
+# 一覧に含めるが、スマホ(API)へは渡さないキー: tmux-agent-restart が再起動・複製に使う(プロセスの pid、Codex のスレッド ID)
+INTERNAL_KEYS = ("pid", "threadId")
+
+
 def build_agents(
     panes: List[Pane],
     procs: Dict[int, Tuple[int, str]],
@@ -335,7 +339,7 @@ def build_agents(
 ) -> List[dict]:
     """sidebar の collect と同じ方式で Agent を pane に紐付け、リポジトリ → worktree → window → pane の順に並べる。"""
     by_pid = {p.pid: p for p in panes if not p.sidebar}
-    found = []  # (pane, type, status, detail, elapsed, name, cwd)
+    found = []  # (pane, type, status, detail, elapsed, name, cwd, pid, thread_id)
 
     for c in claude:
         pid = _int(str(c.get("pid", "")), None)
@@ -349,13 +353,14 @@ def build_agents(
             name = str(c.get("name") or "")
         parent = procs.get(pid, (0, ""))[0]
         status = claude_status(str(c.get("status", "")), bool(alerting.get(parent)))
-        found.append((p, "Claude", status, str(c.get("waitingFor") or ""), elapsed, name, str(c.get("cwd") or p.path)))
+        found.append((p, "Claude", status, str(c.get("waitingFor") or ""), elapsed, name, str(c.get("cwd") or p.path), pid, ""))
 
     # Codex: 状態・名前・モデルは、Codex の常駐デーモンのスレッドから取る(sidebar の collect と同じ規則)。スレッドと pane は cwd で対応付け、
     # 一意なとき(その cwd の Codex の pane もスレッドも 1 つだけ)は、それを使う。同じ cwd に複数あるときは、pane のタイトルの先頭
     # (Codex の TUI がスレッド名を入れる)が、スレッドの名前とちょうど 1 つずつ一致するときだけ使う。それでも決まらなければ推測せず unknown にする
     codex_seen = set()
     codex_panes = []
+    codex_pid = {}  # pane_id → Codex のプロセスの pid(再起動で終了させる対象)
     for pid, (_, args) in procs.items():
         argv = args.split()
         if not argv:
@@ -367,6 +372,7 @@ def build_agents(
         if p is None or p.pane_id in codex_seen:
             continue
         codex_seen.add(p.pane_id)
+        codex_pid[p.pane_id] = pid
         codex_panes.append(p)
     threads = codex_threads or []
     titles = pane_titles or {}
@@ -385,10 +391,10 @@ def build_agents(
                 if len(by_name) == 1 and len(same_title) == 1:
                     chosen = by_name[0]
         status, detail, elapsed, name = codex_view(chosen, now)
-        found.append((p, "Codex", status, detail, elapsed, name, p.path))
+        found.append((p, "Codex", status, detail, elapsed, name, p.path, codex_pid[p.pane_id], chosen["id"] if chosen else ""))
 
     agents = []
-    for p, kind, status, detail, elapsed, name, cwd in found:
+    for p, kind, status, detail, elapsed, name, cwd, pid, thread_id in found:
         g = git_of(cwd)
         win = p.origin_window if p.origin_window is not None else p.window
         idx = p.origin_index if p.origin_index is not None else p.index
@@ -398,7 +404,7 @@ def build_agents(
                 "detail": detail, "name": name or _base(cwd), "repo": g.repo, "repoKey": g.repo_key,
                 "branch": g.branch, "worktree": g.worktree, "cwd": cwd, "elapsed": elapsed,
                 "window": f"{p.session}:{win}.{idx}", "active": p.active and p.window_active,
-                "cols": p.cols, "rows": p.rows, "_win": win, "_idx": idx,
+                "cols": p.cols, "rows": p.rows, "pid": pid, "threadId": thread_id, "_win": win, "_idx": idx,
             }
         )
 
@@ -1046,7 +1052,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, asset[0], asset[1])
         if url.path == "/api/agents":
             if self._authed():
-                self._json(200, {"agents": self.server.collector.agents(), "readOnly": self.server.cfg.read_only,
+                # pid・threadId は tmux-agent-restart(--list-agents)用。スマホへは渡さない
+                agents = [{k: v for k, v in a.items() if k not in INTERNAL_KEYS} for a in self.server.collector.agents()]
+                self._json(200, {"agents": agents, "readOnly": self.server.cfg.read_only,
                                  "now": int(time.time())})
             return
         if url.path == "/api/pane":

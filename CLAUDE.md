@@ -134,19 +134,22 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - **j/k で行を選ぶ案はやめた**: 一覧は 15 行ほどで、選んでも何も起きない（選択が意味を持たない）うえ、再描画で表示が崩れた。**ポップアップの中で sidebar 自身を動かす案もやめた**: ポップアップの中は `TMUX_PANE` が無く、先頭の「tmux の pane 内で実行してください」の確認で起動前に終了して、一瞬で閉じた
   - 説明は表示幅で収める（日本語は 1 文字 2 桁。`HELP_WIDTH` / `HELP_KEY_COL`）。各行は内側の幅より 1 桁短くする（右端の桁まで書くと、端末によっては折り返して崩れるため）
 - sidebar 上で `Enter` / `l` / `h`、または Agent の行を **クリック** → その Agent の window・pane へジャンプ（`r` で即時更新）
-- sidebar 上で `R`（大文字）→ 選択中の Claude Code を **再起動**（バージョンアップや設定の反映用。通常の sidebar・cockpit のどちらでも効く。ヒント行には出さない）
+- sidebar 上で `R`（大文字）→ 選択中の Claude Code / Codex を **再起動**（バージョンアップや設定の反映用。通常の sidebar・cockpit のどちらでも効く。ヒント行には出さない）
   - `tmux-agent-restart <pane_id>` が、`claude agents --json` で pane の Agent（pid・sessionId・cwd）を特定 → `SIGTERM` で終了 → 戻ったシェルに `claude <引き継ぐ引数> --resume <sessionId>` を入力して実行する
+  - **Codex**: Claude が居ない pane で、`tmux-agent-web --list-agents`（sidebar と同じ検出。一覧に Codex のプロセスの `pid` と、cwd・pane のタイトルで対応づけたスレッドの `threadId` を持つ）から特定し、`codex resume <引き継ぐ引数> <threadId>` を入力する。**スレッドが一意に決まらない（unknown と同じ状況）ときは、間違ったセッションを再開しないよう、何もせず終了しない**（メッセージだけ）。引き継ぐ引数の許可リストは、フラグ `--dangerously-bypass-approvals-and-sandbox` / `--approve-for-me` / `--search` / `--no-alt-screen`、値つき `-m` `--model` / `-s` `--sandbox` / `-a` `--ask-for-approval` / `-p` `--profile` / `-c` `--config`（`key=value` の安全な文字のものだけ）。元から `codex resume <id>` で起動していても、サブコマンドと ID は重ねない。`node` 経由の起動（`node …/codex`）なら、スクリプトの 1 語も飛ばす
   - IDLE / DONE は確認なしで再起動。WORKING / WAITING のときは、tmux の確認プロンプト（`y/n`）を挟む（会話は resume で戻るが、実行中の処理は失われる）。結果は `display-message` に出る
   - 引き継ぐ引数は許可リストだけ（`--dangerously-skip-permissions` / `--allow-dangerously-skip-permissions` / `--chrome` / `--no-chrome` / `--ide` / `--model` / `--effort` / `--permission-mode` / `--fallback-model`）。`ps` から引用符つきの引数を正確に復元できないため、`--append-system-prompt` などは引き継がない（落とした数を結果に出す）
   - Agent の cwd がシェルの cwd と違うとき（worktree へ移った場合など）は、`cd <cwd> &&` を付けて再開する
-  - **扱わないケース**: Agent が pane の直下で起動されていて、シェルが無い pane（終了すると pane ごと閉じるため）。戻った先が既知のシェル（zsh / bash / sh / dash / ksh / fish）でないときも、何も入力しない。Codex は未対応
-  - 環境変数: `AGENT_RESTART_CLAUDE_CMD`（入力するコマンド名。既定 `claude`）
-- sidebar 上で `f`（fork）→ 選択中の Claude Code の **セッションを複製して、新しい pane で開く**（通常の sidebar・cockpit のどちらでも効く。ヒント行には出さない）。「別のセッションで質問・調査したい。メインは作業を続けたまま」という用途
-  - `tmux-agent-restart <pane_id> --fork (--focus | --notify <sidebar_pane_id>)` が、`claude agents --json` で pane の Agent（pid・sessionId・cwd）を特定 → **Agent は止めずに** 新しい pane で `claude <引き継ぐ引数> --resume <sessionId> --fork-session` を実行する。複製は元の会話を引き継ぐ新しいセッションで、元のセッションには影響しない（`--fork-session` は新しい session ID を付けるだけで、対話セッションとして開く）
+  - **扱わないケース**: Agent が pane の直下で起動されていて、シェルが無い pane（終了すると pane ごと閉じるため）。戻った先が既知のシェル（zsh / bash / sh / dash / ksh / fish）でないときも、何も入力しない
+  - 環境変数: `AGENT_RESTART_CLAUDE_CMD` / `AGENT_RESTART_CODEX_CMD`（入力するコマンド名。既定 `claude` / `codex`）、`AGENT_RESTART_LIST_BIN`（Codex の検出に使う `--list-agents` のコマンド。テスト用）
+  - ⚠️ **Codex の `SIGTERM` での終了と、戻ったシェルへの入力は、実機の Codex では未確認**（テストは `exec -a codex sleep` の偽のプロセス）。`codex resume` / `codex fork` のコマンド形は `codex-cli 0.166.0` の `--help` で確認。Codex の TUI は常駐デーモンにつながるだけなので、TUI を終了してもスレッドは残る
+  - テスト: `test_agent_restart.py`（専用ソケットの tmux・偽の Agent・偽の検出。Claude も、変わっていないことを守る）
+- sidebar 上で `f`（fork）→ 選択中の Claude Code / Codex の **セッションを複製して、新しい pane で開く**（通常の sidebar・cockpit のどちらでも効く。ヒント行には出さない）。「別のセッションで質問・調査したい。メインは作業を続けたまま」という用途
+  - `tmux-agent-restart <pane_id> --fork (--focus | --notify <sidebar_pane_id>)` が、`claude agents --json` で pane の Agent（pid・sessionId・cwd）を特定 → **Agent は止めずに** 新しい pane で `claude <引き継ぐ引数> --resume <sessionId> --fork-session`（Codex は `codex fork <引き継ぐ引数> <threadId>`）を実行する。複製は元の会話を引き継ぐ新しいセッションで、元のセッションには影響しない（`--fork-session` は新しい session ID を付けるだけで、対話セッションとして開く）
   - WORKING / WAITING でも確認なしで動く（止めないため）。Agent がシェルを介さずに起動されていても使える
   - 新しい pane の作り方（置き場所・分割の向き・`--focus` で移動 / `--notify` で cockpit の右の枠へ入れる・複製が Agent として検出されたら選択）は `n` と同じ処理（`tmux-agent-new`）に任せる。anchor は複製元の pane。`tmux-agent-new` は環境変数 `AGENT_NEW_CMD`（入力するコマンドの差し替え）と `AGENT_NEW_LABEL`（完了メッセージの名前）を受け付ける
   - 新しい pane は **Agent の cwd** で開く（セッションは cwd ごとに保存されるため、同じ場所でないと `--resume` で見つからない）
-  - 引き継ぐ引数は `R` と同じ許可リストだけ（落とした数はメッセージに出る）。Codex は未対応。空きシェルの欄では「Agent が起動していません」と出す
+  - 引き継ぐ引数は `R` と同じ許可リストだけ（落とした数はメッセージに出る）。Codex もスレッドが決まらなければ何もしない。空きシェルの欄では「Agent が起動していません」と出す
 - sidebar 上で `n` → 選択中のカードの **リポジトリで新しい pane を作り**、Claude Code / Codex を新規セッションで起動する（tmux のメニューで `c` = Claude / `x` = Codex を選ぶ。通常の sidebar・cockpit のどちらでも効く）
   - **見出しの `+`**: リポジトリの見出し右端（`── dotfiles ──── 3 +`）の `+` をクリックすると、そのリポジトリで `n` と同じメニューが開く（カードを選ばなくてよい。`+` とその前後 3 桁だけが反応し、見出しのほかの場所は何もしない）。NOTES の見出しには付けない。**メニューは `display-menu -M -O`**: クリックは押下で開くので、指を離す操作（ボタンの解放）が届く。マウスを扱わないメニューは、ボタン 1 以外のマウスイベント（解放）で閉じてしまう（押した瞬間に開いて、離すと閉じる症状になった）ため、`-M` でマウスを扱わせ、`-O` で項目の上でない解放では閉じないようにする（項目はクリック / キーで選ぶ）。対象はそのグループの先頭の Agent（`n` と同じ置き場所・ディレクトリ）で、空きシェルだけのリポジトリなら `--here`。クリックの列は `read_key` が `CLICK_COL` に入れ、行 → グループ先頭の対応は `ROW_NEW`。テスト用に `AGENT_SIDEBAR_NEW_BIN`（`tmux-agent-new` の代わり）。テスト: `test_見出しの_プラス_*`
   - `tmux-agent-new <claude|codex> <anchor_pane_id> <dir> (--focus | --notify <sidebar_pane_id> | --print)` が処理する（`--print` は、スマホの Web 画面（`tmux-agent-web`）用。Mac のフォーカスを動かさず、作った pane_id だけを標準出力へ返す）

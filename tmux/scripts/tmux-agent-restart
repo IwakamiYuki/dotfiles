@@ -1,27 +1,36 @@
 #!/bin/bash
 # tmux-agent-restart <pane_id> [--fork (--focus | --notify <sidebar_pane_id>)]
 #
-# 通常: pane の Claude Code を終了し、同じ pane のシェルで --resume つきに起動し直す。
+# 通常: pane の Claude Code / Codex を終了し、同じ pane のシェルで再開コマンドつきに起動し直す。
 # バージョンアップや設定の反映のために再起動したいとき用(sidebar の R から呼ばれる)。
 #
-# --fork: Agent を止めずに、そのセッションを複製した新しい Claude Code を、新しい pane で起動する(sidebar の f から呼ばれる)。
+# --fork: Agent を止めずに、そのセッションを複製した新しい Claude Code / Codex を、新しい pane で起動する(sidebar の f から呼ばれる)。
 #   「別のセッションで質問・調査したい。メインは作業を続けたまま」という用途。複製は元の会話を引き継ぐ新しいセッションで、
-#   元のセッションには影響しない(claude --resume <id> --fork-session)。作業中・許可待ちでも確認なしで動く。
+#   元のセッションには影響しない(Claude: claude --resume <id> --fork-session / Codex: codex fork <id>)。作業中・許可待ちでも確認なしで動く。
 #   pane の作り方(置き場所・分割の向き・移動 / cockpit の枠への入れ方)は tmux-agent-new に任せる(anchor = 複製元の pane)。
 #   新しい pane は Agent の cwd で開く(セッションは cwd ごとに保存されているため、同じ場所でないと --resume で見つからない)。
 #   Agent がシェルを介さずに起動されていても使える(pane を終了しないため)
 #
-# 通常の流れ: claude agents --json から pane の Agent(pid・sessionId・cwd)を特定
-#       → SIGTERM で終了 → 戻ったシェルに「claude <引き継ぐ引数> --resume <sessionId>」を入力して実行
+# 通常の流れ: pane の Agent(pid・セッション ID・cwd)を特定
+#       → SIGTERM で終了 → 戻ったシェルに再開コマンドを入力して実行
+#   Claude: claude agents --json から特定し、「claude <引き継ぐ引数> --resume <sessionId>」
+#   Codex : tmux-agent-web --list-agents(sidebar と同じ検出。pane と Codex のスレッドは cwd・pane のタイトルで対応づける)から特定し、
+#           「codex resume <引き継ぐ引数> <threadId>」。スレッドが一意に決まらない(同じ cwd に複数あってタイトルでも見分けられない)ときは、
+#           間違ったセッションを再開しないよう、何もしない
 #
 # - 作業中でも止める(確認は呼び出し側の責務。sidebar が WORKING / WAITING のときに y/n を挟む)。
 #   会話は resume で戻るが、実行中の処理は失われる
 # - Agent が pane の直下で起動されている(シェルが無い)pane は、終了すると pane ごと閉じるので扱わない
 # - 戻った先が既知のシェルでなければ、何も入力しない(別のプログラムへキーを送らない)
 # - 引き継ぐ引数は許可リストだけ(ps から引用符つきの引数を正確に復元できないため。値は安全な文字のものに限る):
+#   Claude
 #     フラグ: --dangerously-skip-permissions / --allow-dangerously-skip-permissions / --chrome / --no-chrome / --ide
 #     値つき: --model / --effort / --permission-mode / --fallback-model（`--flag value` と `--flag=value`）
-# - 環境変数: AGENT_SIDEBAR_CLAUDE_BIN（agents --json を出すコマンド）、AGENT_RESTART_CLAUDE_CMD（入力するコマンド名。既定 claude）
+#   Codex
+#     フラグ: --dangerously-bypass-approvals-and-sandbox / --approve-for-me / --search / --no-alt-screen
+#     値つき: -m --model / -s --sandbox / -a --ask-for-approval / -p --profile / -c --config（key=value の安全な文字のものだけ）
+# - 環境変数: AGENT_SIDEBAR_CLAUDE_BIN（agents --json を出すコマンド）、AGENT_RESTART_CLAUDE_CMD / AGENT_RESTART_CODEX_CMD（入力するコマンド名。
+#   既定 claude / codex）、AGENT_RESTART_LIST_BIN（Codex の検出に使う --list-agents のコマンド）
 #
 # 結果は tmux の display-message で出す。
 
@@ -29,10 +38,12 @@ set -u
 
 CLAUDE_BIN="${AGENT_SIDEBAR_CLAUDE_BIN:-claude}"
 CLAUDE_CMD="${AGENT_RESTART_CLAUDE_CMD:-claude}"
+CODEX_CMD="${AGENT_RESTART_CODEX_CMD:-codex}"
 EXIT_WAIT_TICKS=50   # 0.2 秒 × 50 = 10 秒まで終了を待つ
 SAFE_VALUE='^[A-Za-z0-9._:/@+-]+$'
 
 NEW_BIN="$(cd "$(dirname "$0")" && pwd)/tmux-agent-new"
+LIST_BIN="${AGENT_RESTART_LIST_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-web}"
 
 say() { tmux display-message "$TAG: $*" 2>/dev/null; }
 die() { say "$*"; exit 1; }
@@ -67,7 +78,9 @@ is_descendant() {
   return 1
 }
 
-json=$("$CLAUDE_BIN" agents --json 2>/dev/null) || die "claude agents --json に失敗しました"
+kind=Claude
+claude_failed=0
+json=$("$CLAUDE_BIN" agents --json 2>/dev/null) || { json="[]"; claude_failed=1; }
 
 agent_pid=""; agent_sid=""; agent_cwd=""
 while IFS='|' read -r pid sid cwd; do
@@ -78,21 +91,72 @@ while IFS='|' read -r pid sid cwd; do
   fi
 done < <(printf '%s' "$json" | jq -r '.[] | "\(.pid)|\(.sessionId // "")|\(.cwd // "")"' 2>/dev/null)
 
-[ -n "$agent_pid" ] || die "この pane に Claude Code が見つかりません"
-[ -n "$agent_sid" ] || die "sessionId が分からないので再開できません"
+# Claude が居なければ Codex。sidebar と同じ検出(tmux-agent-web --list-agents)から、pane の Codex とそのスレッド ID を得る
+if [ -z "$agent_pid" ]; then
+  row=$("$LIST_BIN" --list-agents 2>/dev/null | jq -r --arg p "$pane" \
+    '[.[] | select(.pane == $p and .type == "Codex")][0] | select(. != null) | "\(.pid)|\(.threadId // "")|\(.cwd // "")"' 2>/dev/null)
+  if [ -n "$row" ]; then
+    kind=Codex
+    agent_pid=${row%%|*}; row=${row#*|}
+    agent_sid=${row%%|*}; agent_cwd=${row#*|}
+  fi
+fi
+
+if [ -z "$agent_pid" ]; then
+  ((claude_failed)) && die "claude agents --json に失敗しました"
+  die "この pane に Claude Code / Codex が見つかりません"
+fi
+[[ $agent_pid =~ ^[0-9]+$ ]] || die "pid が分かりません"
+if [ -z "$agent_sid" ]; then
+  if [ "$kind" = Codex ]; then
+    die "Codex のセッションを特定できません(同じディレクトリに複数あり、タイトルでも見分けられない可能性があります)"
+  fi
+  die "sessionId が分からないので再開できません"
+fi
 [[ $agent_sid =~ ^[A-Za-z0-9-]+$ ]] || die "sessionId の形式が想定外です"
 # 再起動は pane のシェルへ入力し直すので、シェルが無い pane は扱えない(複製は pane を終了しないので関係ない)
 ((fork)) || [ "$agent_pid" != "$pane_pid" ] || die "シェルを介さずに起動された Agent は未対応です(終了すると pane が閉じます)"
 
-# 引き継ぐ引数(許可リストだけ)。ps の 1 語目は実行ファイルなので飛ばす
+if [ "$kind" = Codex ]; then
+  type_arg=codex
+  resume_cmd="$CODEX_CMD resume"; fork_cmd="$CODEX_CMD fork"
+  resume_hint="$CODEX_CMD resume $agent_sid"
+else
+  type_arg=claude
+  resume_hint="$CLAUDE_CMD --resume $agent_sid"
+fi
+
+# 引き継ぐ引数(許可リストだけ)。ps の 1 語目は実行ファイルなので飛ばす(Codex が node 経由のときは、スクリプトの 1 語も)
 keep=""
 dropped=0
 set -f
 set -- $(ps -ww -o args= -p "$agent_pid" 2>/dev/null)
 set +f
+case ${1:-} in */node* | node*) [ "$kind" = Codex ] && shift 2>/dev/null ;; esac
 shift 2>/dev/null
+SAFE_CONFIG='^[A-Za-z0-9._-]+=[A-Za-z0-9._:/@+-]+$'
 while [ $# -gt 0 ]; do
   a=$1; shift
+  if [ "$kind" = Codex ]; then
+    case $a in
+      --dangerously-bypass-approvals-and-sandbox | --approve-for-me | --search | --no-alt-screen)
+        keep+=" $a" ;;
+      -m | --model | -s | --sandbox | -a | --ask-for-approval | -p | --profile)
+        v=${1:-}
+        if [[ $v =~ $SAFE_VALUE ]]; then keep+=" $a $v"; shift; else dropped=$((dropped + 1)); fi ;;
+      -c | --config)
+        v=${1:-}
+        if [[ $v =~ $SAFE_CONFIG ]]; then keep+=" $a $v"; shift; else dropped=$((dropped + 1)); fi ;;
+      --model=* | --sandbox=* | --ask-for-approval=* | --profile=*)
+        v=${a#*=}
+        if [[ $v =~ $SAFE_VALUE ]]; then keep+=" $a"; else dropped=$((dropped + 1)); fi ;;
+      # 再開・複製の指定は新しく付け直すので引き継がない(元から resume / fork で起動していた場合の、サブコマンドとセッション ID)
+      resume | fork | --last | --all) ;;
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*) ;;
+      *) dropped=$((dropped + 1)) ;;
+    esac
+    continue
+  fi
   case $a in
     --dangerously-skip-permissions | --allow-dangerously-skip-permissions | --chrome | --no-chrome | --ide)
       keep+=" $a" ;;
@@ -114,8 +178,9 @@ if ((fork)); then
   note=""
   ((dropped > 0)) && note=" (引き継がなかった引数: ${dropped})"
   # 結果の表示は tmux-agent-new が出す(後から出すと上書きされるので、引き継がなかった数は名前に含める)
-  AGENT_NEW_CMD="$CLAUDE_CMD$keep --resume $agent_sid --fork-session" AGENT_NEW_LABEL="Claude(複製 ${agent_sid:0:8})$note" \
-    exec "$NEW_BIN" claude "$pane" "$agent_cwd" "$mode" ${sidebar:+"$sidebar"}
+  if [ "$kind" = Codex ]; then fork_line="$fork_cmd$keep $agent_sid"; else fork_line="$CLAUDE_CMD$keep --resume $agent_sid --fork-session"; fi
+  AGENT_NEW_CMD="$fork_line" AGENT_NEW_LABEL="$kind(複製 ${agent_sid:0:8})$note" \
+    exec "$NEW_BIN" "$type_arg" "$pane" "$agent_cwd" "$mode" ${sidebar:+"$sidebar"}
 fi
 
 # SIGTERM で終了させる(Ctrl-C や /exit は入力欄の状態に左右されるため使わない)
@@ -129,17 +194,17 @@ sleep 0.3
 
 # 戻った先が既知のシェルのときだけ入力する
 cur=$(tmux display-message -p -t "$pane" '#{pane_id}|#{pane_current_command}|#{pane_current_path}' 2>/dev/null)
-[ "${cur%%|*}" = "$pane" ] || die "再起動前に pane が閉じました。再開: claude --resume $agent_sid"
+[ "${cur%%|*}" = "$pane" ] || die "再起動前に pane が閉じました。再開: $resume_hint"
 rest=${cur#*|}
 cmd_name=${rest%%|*}
 cur_path=${rest#*|}
 cmd_name=${cmd_name#-}
 case ${cmd_name##*/} in
   zsh | bash | sh | dash | ksh | fish) ;;
-  *) die "シェルに戻らなかったので入力しません ($cmd_name)。再開: claude --resume $agent_sid" ;;
+  *) die "シェルに戻らなかったので入力しません ($cmd_name)。再開: $resume_hint" ;;
 esac
 
-line="$CLAUDE_CMD$keep --resume $agent_sid"
+if [ "$kind" = Codex ]; then line="$resume_cmd$keep $agent_sid"; else line="$CLAUDE_CMD$keep --resume $agent_sid"; fi
 # Agent の cwd とシェルの cwd が違うとき(worktree へ移った場合など)は、同じ場所へ移ってから再開する
 if [ -n "$agent_cwd" ] && [ "$agent_cwd" != "$cur_path" ]; then
   printf -v q '%q' "$agent_cwd"
@@ -151,4 +216,4 @@ tmux send-keys -t "$pane" Enter
 
 note=""
 ((dropped > 0)) && note=" (引き継がなかった引数: ${dropped})"
-say "再起動しました (${agent_sid:0:8})$note"
+say "$kind を再起動しました (${agent_sid:0:8})$note"

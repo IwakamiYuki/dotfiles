@@ -138,6 +138,12 @@ class DetectTest(unittest.TestCase):
         (a,) = self.codex_agent([self.thread()])
         self.assertEqual((a["status"], a["name"], a["detail"], a["elapsed"]), ("idle", "設計書の確認", "gpt-6-astra low", 100))
 
+    def test_codex_再起動用に_プロセスの_pid_とスレッド_ID_を持つ(self):
+        (a,) = self.codex_agent([self.thread()])
+        self.assertEqual((a["pid"], a["threadId"]), (210, "t"))  # スレッドが決まらなければ空
+        (a,) = self.codex_agent([self.thread(cwd="/elsewhere")])
+        self.assertEqual(a["threadId"], "")
+
     def test_codex_作業中と待ちの状態(self):
         (a,) = self.codex_agent([self.thread(status="active")])
         self.assertEqual((a["status"], a["detail"]), ("working", "gpt-6-astra low"))
@@ -545,6 +551,9 @@ class ServerIntegrationTest(unittest.TestCase):
         agent = data["agents"][0]
         self.assertEqual((agent["type"], agent["status"], agent["detail"]), ("Claude", "waiting", "permission"))
         self.assertFalse(data["readOnly"])
+        # pid・スレッド ID は tmux-agent-restart 用で、スマホへは渡さない
+        self.assertNotIn("pid", agent)
+        self.assertNotIn("threadId", agent)
 
     def test_send_text_and_keys_reach_the_pane_and_capture_shows_them(self):
         cookie = self.login()
