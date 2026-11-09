@@ -1437,6 +1437,59 @@ class ToggleAutoTest(unittest.TestCase):
         self.run_toggle("stop")
         self.assertTrue(self.run_toggle("auto").returncode == 0 and self.running())  # 周期の判定でも起動する
 
+    def state_json(self):
+        with open(self.state) as f:
+            return json.load(f)
+
+    def write_state_host(self, host):
+        data = self.state_json()
+        data["host"] = host
+        with open(self.state, "w") as f:
+            json.dump(data, f)
+
+    def auto_env(self, lan_ip="127.0.0.1"):
+        """--host を付けない(= LAN 側の IP を自動で選ぶ)起動。選ばれる IP は TMUX_AGENT_WEB_LAN_IP で差し替える(テストでは loopback)。"""
+        self.env["AGENT_WEB_ARGS"] = "--port 0 --read-only"
+        self.env["TMUX_AGENT_WEB_LAN_IP"] = lan_ip
+
+    def test_auto_自宅のままで_LAN_の_IP_が変わったら_起動し直す(self):
+        self.auto_env()
+        self.register_home(self.HOME_MAC)
+        self.run_toggle("auto")
+        self.assertTrue(self.running())
+        old_pid = self.state_json()["pid"]
+        self.assertTrue(self.state_json()["hostAuto"])
+        # 有線 ↔ Wi-Fi などで、起動したときの IP が、いまの IP と違ってしまった(サーバーは古い IP に結びついたまま)
+        self.write_state_host("10.9.9.9")
+        self.run_toggle("auto")
+        state = self.state_json()
+        self.assertNotEqual(state["pid"], old_pid, "IP が変わったのに起動し直さなかった")
+        self.assertEqual(state["host"], "127.0.0.1")
+        self.assertTrue(self.running())
+
+    def test_auto_IP_が同じなら_起動し直さない(self):
+        self.auto_env()
+        self.register_home(self.HOME_MAC)
+        self.run_toggle("auto")
+        old_pid = self.state_json()["pid"]
+        self.run_toggle("auto")
+        self.assertEqual(self.state_json()["pid"], old_pid)
+
+    def test_auto_host_を指定して起動したものは_IP_が違っても触らない(self):
+        # setUp の既定は --host 127.0.0.1(指定あり)
+        self.register_home(self.HOME_MAC)
+        self.env["TMUX_AGENT_WEB_LAN_IP"] = "10.9.9.9"
+        self.run_toggle("auto")
+        old_pid = self.state_json()["pid"]
+        self.assertFalse(self.state_json()["hostAuto"])
+        self.run_toggle("auto")
+        self.assertEqual(self.state_json()["pid"], old_pid)
+
+    def test_print_host_は_いまの_LAN_側_IP_を出す(self):
+        self.env["TMUX_AGENT_WEB_LAN_IP"] = "192.168.9.9"
+        out = subprocess.run([str(SCRIPT), "--print-host"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.stdout.strip(), "192.168.9.9")
+
     def test_auto_自宅を離れたら_2回続けたときに止める(self):
         self.register_home(self.HOME_MAC)
         self.run_toggle("mode", "auto")

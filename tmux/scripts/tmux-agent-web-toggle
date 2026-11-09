@@ -292,6 +292,20 @@ do_home() {
   esac
 }
 
+# 起動中のサーバーが、いまの LAN 側 IP と違う IP で待ち受けていたら、起動し直す(起動し直したら 0、そうでなければ 1)。
+# サーバーは起動した時点の IP に結びつくので、自宅のままでも IP が変わると(有線 ↔ Wi-Fi、Wi-Fi のつなぎ直し、DHCP の更新)、
+# 「ON」のまま、スマホからつながらなくなる。--host を指定して起動したもの(hostAuto が true でない)は、指定どおりなので触らない
+restart_if_ip_changed() {
+  local old cur
+  [ "$(state_field hostAuto)" = true ] || return 1
+  old=$(state_field host)
+  cur=$("$BIN" --print-host 2>/dev/null)
+  [ -n "$cur" ] && [ -n "$old" ] && [ "$cur" != "$old" ] || return 1
+  say "ネットワークが変わりました ($old → $cur)。起動し直します"
+  do_stop && do_start
+  return 0
+}
+
 # auto: いまのネットワークが自宅なら起動、そうでなければ(2 回続けたら)停止。$1 = now は、モードを切り替えた直後
 # (続けずにすぐ判定どおりにして、変化が無くても状態を言う)
 do_auto() {
@@ -311,7 +325,7 @@ do_auto() {
   if at_home; then
     rm -f "$AUTO_MISS_FILE"
     if running_pid >/dev/null; then
-      [ "$now" = now ] && say "自宅のネットワークです (ON)"
+      restart_if_ip_changed || { [ "$now" = now ] && say "自宅のネットワークです (ON)"; }
     else
       say "自宅のネットワークです。起動します"
       do_start
