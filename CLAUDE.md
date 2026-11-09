@@ -78,6 +78,7 @@ brew install reattach-to-user-namespace  # tmux クリップボード連携
 brew install lazygit                      # Git UI（Ctrl-t g で起動）
 brew install terminal-notifier            # Claude Code 通知（フック用）
 brew install ical-buddy                   # sidebar の「次の予定」カード（Mac のカレンダー。無くても他は動く）
+brew install qrencode                       # sidebar の W で、スマホ用 WEB の URL の QR コードを出す（無くても、コピーだけは動く）
 brew install --cask swiftbar            # Mac のメニューバーに Agent の状態を出す（tmux/swiftbar/。無くても他は動く）
 go get -u github.com/Code-Hex/battery/cmd/battery  # バッテリー情報表示
 ```
@@ -215,7 +216,7 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - タスクの作り方（`daily-task-organizer.yml` と `98-ai/98-01-promptos/01-daily-task-organizer.md`）: ファイル名は `YYYY-MM-DD-タイトル.md`、frontmatter は `done: false` と `tags`（1 つ目 = プロジェクト、2 つ目 = カテゴリ）、本文に「元の Daily Note」へのリンク。**この形を前提にしている**ので、プロンプトの書式を変えたら `tmux-agent-tasks` も見直す
   - 環境変数（主にテスト用）: `AGENT_SIDEBAR_TASKS_BIN`（取得・一覧のコマンド）/ `AGENT_TASKS_NO_TMUX` / `AGENT_TASKS_TODAY`（`YYYY-MM-DD`）/ `AGENT_TASKS_OPEN_CMD`（既定 `open`）/ `AGENT_DAILY_OBSIDIAN_CONFIG`（Daily と共通）
   - テスト: `test_agent_tasks.py`（読み書き・CI の書式・`--status`・専用ソケットの tmux で対話画面を動かす）、`test_agent_sidebar_usage.py` の `test_tasks_*`（欄の表示・`t` でポップアップが開く。pty でクライアントをつなぐ）
-- sidebar 上で `w` → スマホ用 Web サーバー（`tmux-agent-web`、後述「Agent Web」）の **モード**を切り替える（**auto → on → off → auto**）。`W`（大文字）→ 起動中なら URL（トークンつき）をクリップボードへ。`H`（大文字）→ **いまのネットワークを「自宅」に登録 / 解除**（通常の sidebar・cockpit のどちらでも効く）
+- sidebar 上で `w` → スマホ用 Web サーバー（`tmux-agent-web`、後述「Agent Web」）の **モード**を切り替える（**auto → on → off → auto**）。`W`（大文字）→ 起動中なら URL（トークンつき）をクリップボードへコピーし、**続けて QR コードをポップアップに出す**（後述）。`H`（大文字）→ **いまのネットワークを「自宅」に登録 / 解除**（通常の sidebar・cockpit のどちらでも効く）
   - **モード**（既定は `auto`）: `auto` = **自宅のネットワークなら ON、離れたら OFF**（基本はこれ）/ `on` = 常に ON / `off` = 常に OFF。切り替えた直後に反映する（on は起動、off は停止、auto は判定して起動か停止）。モードは `~/.cache/tmux-agent-web/mode`（状態ファイルと同じディレクトリ。`AGENT_WEB_MODE_FILE`）に書くので、tmux を再起動しても残る
   - **自宅の判定は、SSID ではなく「デフォルト経路のルーターの MAC アドレス」**（`netstat -rn -f inet` の `default` のうち `en*` だけ = VPN は除く → `arp -n`。ARP に無ければ 1 回 ping して取り直す）。理由: macOS 15 では位置情報の許可が無いと SSID を取れない（`networksetup -getairportnetwork` は未接続と返し、`ipconfig getsummary` は `<redacted>`）うえ、**自宅では有線（USB LAN）でつながっていて、SSID が無い**ため。MAC は有線でも無線でも同じ値になり、同じ SSID の別の場所や、同じ `192.168.11.1` のルーターとも混ざらない。取れる値は `tmux-agent-web-toggle home`（いまのネットワークと、自宅かどうか）で確認できる
   - **登録**: `H`（= `tmux-agent-web-toggle home toggle`。`home add` / `remove` / `list` / `status` もある）。登録は `~/.config/tmux-agent-web/home-networks`（`AGENT_WEB_HOME_FILE`。1 行 1 MAC、`#` 以降はコメント。本人だけが読める 0600。**リポジトリには入れない**。MAC の書き方（先頭の 0 の省略・大文字）はそろえて比べる）。**登録が無ければ auto は絶対に起動しない**（初回は、自宅で `H` を押す）。複数の場所（実家・事務所など）を登録してもよい
@@ -227,6 +228,11 @@ daemon なし。各 sidebar が 2 秒ごとに tmux と ps を見て描画する
   - テスト: `test_agent_web.py` の `ToggleAutoTest`（モード・auto の起動と停止・2 回続けて止める・ロック・クリップボードに触れない・自宅の登録。ネットワークの指紋は偽物で差し替え）、`test_agent_sidebar_usage.py` の `test_web_*`（WEB 欄の表示・`w` / `H` / `W` の呼び出し・auto の判定を 15 秒おきにだけ呼ぶ）
   - 状態は `~/.cache/tmux-agent-web/state.json`（`tmux-agent-web` が書く。pid・ポート・URL）。sidebar は毎 tick（約 1 秒）これを fork なしで読み、変わったときだけ再描画する。pid が死んでいれば OFF 扱い（古い状態ファイルは無視される）
   - 手動（端末）で起動した `tmux-agent-web` も同じ状態ファイルを書くので、WEB 欄に ON と出て、`w` で止められる。**状態ファイルを書かない古い版で起動したものは、WEB 欄に出ず、`w` でも止められない**（二重起動はポート衝突で失敗する）。止めてから `w` で起動し直す
+  - **`W` の QR コード**: コピーに続けて、スマホのカメラで読み取る QR を、画面中央のポップアップ（橙の角丸の枠、`WEB QR`。何かキーを押すと閉じる）に出す。`qrencode`（`brew install qrencode`）が要る。無い・サーバーが止まっているときは、QR は出さず、コピーだけ（`tmux-agent-web-toggle qr --check` が失敗する）
+    - QR の元は **IP 版の URL**（状態ファイルの `ipUrl`。`.local` 名は Android で引けないことがあり、読み取った直後に開けないと困るため。QR はそのとき作るので、IP が変わっても追従する）。**白地に黒の ANSI + UTF-8**（`-t ANSIUTF8 -m 2 -l L`。端末の配色に左右されない。黒地に白の反転した QR は、読めない端末がある）
+    - **トークンつきの URL が画面に出る**ので、画面共有・録画中は `W` を押さない。QR はファイルに書かず、ポップアップの中で作る（大きさを測るために `qr --size` で 1 回、表示で 1 回、qrencode を呼ぶ）
+    - 実体は `tmux-agent-web-toggle qr [--check|--size]`（`--size` は「桁数 行数」）。環境変数 `AGENT_WEB_QR_CMD`（qrencode の代わり。テスト用）
+    - テスト: `test_agent_web.py` の `test_qr_*`（偽の qrencode）、`test_agent_sidebar_usage.py` の `test_web_W_*`（pty のクライアントに QR のポップアップが届くか。出せないときはコピーだけ）
 - sidebar 上で `p`（または Space）→ 選択中の Agent の pane を **ポップアップでプレビュー**（`tmux-agent-sidebar-preview`）
   - 中身は `tmux capture-pane -e -p`（色つき・読み取り専用）を 1 秒ごとに更新。Agent には影響しない
   - ポップアップ内で `j` / `k`（`↓` / `↑`、Tab）→ 前後の Agent に切り替え、`Enter` → その pane へ移動、`q` / Esc / `p` / Space → 閉じる

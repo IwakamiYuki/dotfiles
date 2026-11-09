@@ -14,6 +14,9 @@
 #   status        : 起動中なら "ON host:port" を出して 0、止まっていれば "OFF" を出して 1（トークンは出さない）
 #   url           : 起動中ならトークンつきの URL を標準出力へ（止まっていれば 1）
 #   copy          : 起動中なら URL をクリップボードへ（--notify のときだけ）
+#   qr [--check|--size] : 起動中なら、IP 版の URL(トークンつき)の QR コードを標準出力へ(黒地に白でなく、白地に黒の ANSI + UTF-8)。
+#                   スマホのカメラで読み取って開く(sidebar の W が、コピーに続けてポップアップに出す)。qrencode(brew install qrencode)が要る。
+#                   --check は、出せるか(起動中で qrencode がある)だけ調べる(出さない)。--size は「桁数 行数」(ポップアップの大きさ用)
 #   revoke        : 全端末のログインを取り消す（一度ログインした端末は 30 日有効なので、紛失・譲渡のときなどに使う）
 #   --notify      : 結果を tmux の display-message に出す。起動したとき URL をクリップボードへコピーする
 #                   （sidebar から呼ぶときに付ける。付けなければ tmux にもクリップボードにも触れない）
@@ -37,6 +40,7 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 BIN="${AGENT_WEB_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-web}"
 CLIP="${AGENT_WEB_CLIP_CMD:-pbcopy}"
+QR_CMD="${AGENT_WEB_QR_CMD:-qrencode}"
 STATE="${TMUX_AGENT_WEB_STATE:-${XDG_CACHE_HOME:-$HOME/.cache}/tmux-agent-web/state.json}"
 STATE_DIR=$(dirname "$STATE")
 LOG="$STATE_DIR/server.log"
@@ -51,7 +55,7 @@ AUTO_MISS_MAX=2          # 自宅でない判定がこの回数続いたら止�
 AUTO_LOCK_STALE_SEC=60   # 落ちたプロセスが取り残したロックを捨てるまで
 
 usage() {
-  echo "usage: tmux-agent-web-toggle [toggle|start|stop|status|url|copy|revoke|mode [auto|on|off|next]|auto|home [status|list|add|remove|toggle]] [--notify]" >&2
+  echo "usage: tmux-agent-web-toggle [toggle|start|stop|status|url|copy|qr [--check|--size]|revoke|mode [auto|on|off|next]|auto|home [status|list|add|remove|toggle]] [--notify]" >&2
   exit 2
 }
 
@@ -64,7 +68,7 @@ for arg in "$@"; do
     *)
       if [ -z "$action" ]; then
         case $arg in
-          toggle | start | stop | status | url | copy | revoke | mode | auto | home) action=$arg ;;
+          toggle | start | stop | status | url | copy | qr | revoke | mode | auto | home) action=$arg ;;
           *) usage ;;
         esac
       elif [ -z "$sub" ]; then
@@ -79,6 +83,8 @@ action=${action:-toggle}
 case "$action:$sub" in
   mode: | mode:auto | mode:on | mode:off | mode:next) ;;
   home: | home:status | home:list | home:add | home:remove | home:toggle) ;;
+  qr: | qr:--check | qr:--size) ;;
+  qr:*) usage ;;
   mode:* | home:*) usage ;;
   *:?*) usage ;;
 esac
@@ -387,6 +393,20 @@ case $action in
   url)
     running_pid >/dev/null || { echo "OFF" >&2; exit 1; }
     state_field url
+    ;;
+  qr)
+    running_pid >/dev/null || { echo "OFF です（w で起動してください）" >&2; exit 1; }
+    command -v "$QR_CMD" >/dev/null 2>&1 || { echo "qrencode がありません (brew install qrencode)" >&2; exit 1; }
+    [ "$sub" = --check ] && exit 0
+    # IP 版の URL: .local は Android で引けないことがあり、読み取った直後に開けないと困る(QR はそのとき作るので、IP が変わっても追従する)。
+    # URL(トークン)はファイルに書かず、パイプで渡す。ANSIUTF8 は白地に黒(端末の配色に左右されない。反転した QR は読めない端末がある)
+    url=$(state_field ipUrl)
+    [ -n "$url" ] || url=$(state_field url)
+    if [ "$sub" = --size ]; then
+      printf '%s' "$url" | "$QR_CMD" -t UTF8 -m 2 -l L -o - 2>/dev/null | python3 -c 'import sys; l = sys.stdin.read().splitlines(); print(max(map(len, l), default=0), len(l))'
+    else
+      printf '%s' "$url" | "$QR_CMD" -t ANSIUTF8 -m 2 -l L -o - 2>/dev/null
+    fi
     ;;
   revoke)
     # 全端末のログインを取り消す(スマホの再認証が必要になる)。起動中のサーバーにも、止まっているときにも効く

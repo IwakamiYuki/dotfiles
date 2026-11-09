@@ -2360,7 +2360,7 @@ help_lines() {
     "c|作業の一覧を Markdown でコピー" \
     "t|タスク(Obsidian)を一覧・完了にする|(ポップアップ。⏎ で Obsidian、x で done)" \
     "w|スマホ用 WEB のモードを切り替え|(auto = 自宅なら ON → on → off)" \
-    "W|WEB の URL をコピー" \
+    "W|WEB の URL をコピーし、QR も出す|(qrencode が要る)" \
     "H|いまのネットワークを自宅に登録 / 解除|(auto が、自宅で ON にする目印)" \
     "-" \
     "C-c|sidebar を閉じる" \
@@ -2469,6 +2469,22 @@ show_help() {
   tmux display-popup -E -w "$HELP_WIDTH" -h $((lines + 2)) -b rounded -S 'fg=colour208' -T "$title" -t "$TMUX_PANE" \
     "bash -c 'cat $file; IFS= read -rsn1 _'" 2>/dev/null
   rm -f "$file"
+  last_collect=-999
+  size_dirty=1
+  need_render=1
+}
+
+# W(URL のコピー)に続けて、スマホのカメラで読み取る QR コードをポップアップに出す(何かキーを押すと閉じる)。
+# qrencode が無い・サーバーが止まっているときは、何も出さない(コピーだけ)。URL(トークン)はファイルに書かず、ポップアップの中で作る
+show_web_qr() {
+  local size cols rows
+  "$WEB_BIN" qr --check >/dev/null 2>&1 || return 0
+  size=$("$WEB_BIN" qr --size 2>/dev/null)
+  cols=${size% *}; rows=${size#* }
+  [[ $cols =~ ^[0-9]+$ && $rows =~ ^[0-9]+$ ]] || return 0
+  # 幅は QR + 枠(2) + 左右の余白(2)、高さは QR + 枠(2) + 案内の 2 行
+  tmux display-popup -E -w $((cols + 4 < 46 ? 46 : cols + 4)) -h $((rows + 4)) -b rounded -S 'fg=colour208' -T " WEB QR " -t "$TMUX_PANE" \
+    "bash -c '\"$WEB_BIN\" qr | sed \"s/^/ /\"; printf \"\\n \\033[2mスマホのカメラで読む / 何かキーで閉じる\\033[0m\"; IFS= read -rsn1 _'" 2>/dev/null
   last_collect=-999
   size_dirty=1
   need_render=1
@@ -3202,6 +3218,7 @@ while :; do
       ;;
     web_copy)
       "$WEB_BIN" copy --notify >/dev/null 2>&1 &
+      show_web_qr
       ;;
     # Obsidian の Daily Note を開く(cron の通知の -open と同じ URL)。open の起動で sidebar を止めないよう、裏で実行する
     daily_open)

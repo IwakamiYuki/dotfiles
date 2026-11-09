@@ -1906,6 +1906,45 @@ class SidebarUsageTest(unittest.TestCase):
         self.press("W")
         self.wait_screen(lambda _: "copy --notify" in self.web_calls(log))
 
+    def fake_web_bin_qr(self, check_ok=True):
+        """qr(--check / --size / 本体)にも答える tmux-agent-web-toggle の代わり。受け取った引数をログへ書く。"""
+        fake = os.path.join(self.dir, "fake-web-toggle-qr")
+        log = os.path.join(self.dir, "web-calls.log")
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/bash\necho "$*" >> {log}\n'
+                    f'case "$*" in\n'
+                    f'  "qr --check") exit {0 if check_ok else 1} ;;\n'
+                    f'  "qr --size") echo "20 3" ;;\n'
+                    f'  "qr") printf "QRMARK-1\\nQRMARK-2\\nQRMARK-3\\n" ;;\n'
+                    f'esac\n')
+        os.chmod(fake, 0o755)
+        return fake, log
+
+    def test_web_W_は_コピーに続けて_QR_をポップアップに出す(self):
+        fake, log = self.fake_web_bin_qr()
+        self.render(extra_env=self.web_env(mode="off", extra={"AGENT_SIDEBAR_WEB_BIN": fake}))
+        self.attach_client()
+        time.sleep(1.5)
+        self.press("W")
+        deadline = time.time() + RENDER_TIMEOUT_SEC
+        while time.time() < deadline and b"QRMARK-3" not in bytes(self.client_output):
+            time.sleep(0.2)
+        self.assertIn(b"QRMARK-3", bytes(self.client_output))
+        self.assertIn(b"WEB QR", bytes(self.client_output))
+        self.assertIn("copy --notify", self.web_calls(log))
+
+    def test_web_W_は_QR_を出せなければ_コピーだけにする(self):
+        # qrencode が無い・サーバーが止まっているとき(qr --check が失敗)
+        fake, log = self.fake_web_bin_qr(check_ok=False)
+        self.render(extra_env=self.web_env(mode="off", extra={"AGENT_SIDEBAR_WEB_BIN": fake}))
+        self.attach_client()
+        time.sleep(1.5)
+        self.press("W")
+        self.wait_screen(lambda _: "copy --notify" in self.web_calls(log))
+        time.sleep(2)
+        self.assertNotIn(b"WEB QR", bytes(self.client_output))
+        self.assertNotIn(b"QRMARK", bytes(self.client_output))
+
     def test_web_auto_のときだけ_自宅の判定を裏で呼ぶ(self):
         fake, log = self.fake_web_bin()
         self.render(extra_env=self.web_env(registered=True, extra={"AGENT_SIDEBAR_WEB_BIN": fake}))

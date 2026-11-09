@@ -1485,6 +1485,53 @@ class ToggleAutoTest(unittest.TestCase):
         self.run_toggle("auto")
         self.assertEqual(self.state_json()["pid"], old_pid)
 
+    # --- qr(W のポップアップに出す QR コード) ---
+
+    def fake_qr(self):
+        """qrencode の代わり。受け取った引数を 1 行目に、標準入力(URL)を 2 行目に、そのまま出す。"""
+        fake = os.path.join(self.tmp, "fake-qrencode")
+        with open(fake, "w") as f:
+            f.write('#!/bin/bash\necho "ARGS: $*"\necho "URL: $(cat)"\n')
+        os.chmod(fake, 0o755)
+        self.env["AGENT_WEB_QR_CMD"] = fake
+
+    def test_qr_は_IP_版の_URL_を_qrencode_へ渡す(self):
+        self.fake_qr()
+        self.run_toggle("start")
+        out = self.run_toggle("qr")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("URL: " + self.state_json()["ipUrl"], out.stdout)
+        self.assertIn("-t ANSIUTF8", out.stdout)  # 白地に黒(端末の配色に左右されない)
+
+    def test_qr_size_は_桁数と行数を出す(self):
+        self.fake_qr()
+        self.run_toggle("start")
+        out = self.run_toggle("qr", "--size")
+        cols, rows = out.stdout.split()
+        self.assertTrue(int(cols) > 0 and int(rows) == 2, out.stdout)
+
+    def test_qr_check_は_出せるかだけ調べる(self):
+        self.fake_qr()
+        self.run_toggle("start")
+        out = self.run_toggle("qr", "--check")
+        self.assertEqual((out.returncode, out.stdout), (0, ""))
+
+    def test_qr_は_サーバーが止まっていれば_何も出さず失敗する(self):
+        self.fake_qr()
+        for args in (("qr",), ("qr", "--check")):
+            out = self.run_toggle(*args)
+            self.assertEqual((out.returncode, out.stdout), (1, ""), args)
+
+    def test_qr_は_qrencode_が無ければ_失敗する(self):
+        self.env["AGENT_WEB_QR_CMD"] = "no-such-qrencode-command"
+        self.run_toggle("start")
+        out = self.run_toggle("qr", "--check")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("qrencode", out.stderr)
+
+    def test_qr_の引数が不正なら_使い方を出す(self):
+        self.assertEqual(self.run_toggle("qr", "--bogus").returncode, 2)
+
     def test_print_host_は_いまの_LAN_側_IP_を出す(self):
         self.env["TMUX_AGENT_WEB_LAN_IP"] = "192.168.9.9"
         out = subprocess.run([str(SCRIPT), "--print-host"], env=self.env, capture_output=True, text=True, timeout=30)
