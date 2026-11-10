@@ -106,7 +106,7 @@ CALENDAR_CACHE="${AGENT_SIDEBAR_CALENDAR_CACHE:-/tmp/tmux-agent-sidebar-calendar
 CALENDAR_BIN="${AGENT_SIDEBAR_CALENDAR_BIN:-$(cd "$(dirname "$0")" && pwd)/tmux-agent-calendar}"
 CALENDAR_TTL=30          # 取得(裏で起動)の間隔(秒)
 CALENDAR_MAX_AGE=300     # 取得がこれより止まっていたら、古い予定は出さない(秒)
-CALENDAR_SOON_SEC=300    # 開始の何秒前から SOON にするか(既定。tmux の option @agent_sidebar_calendar_soon に分で書けば替わる)
+CALENDAR_SOON_SEC=180    # 開始の何秒前から SOON にするか(既定。tmux の option @agent_sidebar_calendar_soon に分で書けば替わる)
 CALENDAR_HORIZON_SEC=43200   # 何秒先の予定まで NEXT として出すか(12 時間)
 CODEX_THREADS_MAX_AGE=30
 # リポジトリ・worktree の判定(git の呼び出し)を取り直す間隔。ブランチは HEAD ファイルを毎回読むので、この間隔に依らない
@@ -1637,7 +1637,7 @@ daily_status() {
 }
 
 # 次の予定(Mac のカレンダー)。tmux-agent-calendar が書くキャッシュ(F|取得時刻 / E|開始|終了|タイトル|会議の URL)から、いま出す 1 件を選ぶ。
-#   SOON = 開始の CALENDAR_SOON_SEC 秒(既定 5 分)前から / NOW = 進行中 / NEXT = それ以外で、CALENDAR_HORIZON_SEC 秒先まで
+#   SOON = 開始の CALENDAR_SOON_SEC 秒(既定 3 分)前から / NOW = 進行中 / NEXT = それ以外で、CALENDAR_HORIZON_SEC 秒先まで
 #   開始前の予定が SOON の範囲に入ったら、進行中の予定よりそちらを優先する(次の予定に気づくため)。
 #   取得が CALENDAR_MAX_AGE 秒止まっていたら、古い予定は出さない。CAL_STATE が空なら、カードを出さない
 CAL_STATE=""
@@ -2808,7 +2808,7 @@ BELL_LOCK_STALE_SEC=10
 SOUND_CMD="${AGENT_SIDEBAR_SOUND_CMD:-afplay}"
 SOUND_WAITING_DEFAULT=Sosumi
 SOUND_DONE_DEFAULT=Glass
-SOUND_CALENDAR_DEFAULT=Hero   # 予定の SOON(開始の 5 分前)
+SOUND_CALENDAR_DEFAULT=Hero   # 予定の SOON(開始の 3 分前)
 
 ring_bell() {
   local tty
