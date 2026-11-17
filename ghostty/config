@@ -55,6 +55,13 @@ font-thicken
 background = 000
 background-opacity = 0.70
 
+# 背景画像（お試し）。明るいベージュの画像なので、文字が読めるよう opacity を下げる。
+# 画像は右寄りに絵があり、左（sidebar・文字が多い側）は無地。
+background-image = /Users/a13445/dotfiles/ghostty/background.jpg
+background-image-opacity = 0.12
+background-image-fit = cover
+background-image-position = center
+
 # カーソルはblockで点滅させない
 cursor-style = block
 cursor-style-blink = false
